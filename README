@@ -1,0 +1,128 @@
+Wireless daemon for Linux
+*************************
+
+Copyright (C) 2013-2014  Intel Corporation. All rights reserved.
+
+
+Compilation and installation
+============================
+
+In order to compile the source code you need following software packages:
+	- GCC compiler
+	- GNU C library
+	- Embedded Linux library
+
+To configure run:
+	./configure --prefix=/usr
+
+Configure automatically searches for all required components and packages.
+
+To compile and install run:
+	make && make install
+
+
+Embedded Linux library
+======================
+
+In order to compile the daemon and control utility the development version
+of Embedded Linux library is required to be present. The development
+repositories can be found here:
+
+	git://git.kernel.org/pub/scm/libs/ell/ell.git
+	https://kernel.googlesource.com/pub/scm/libs/ell/ell.git
+
+The build systems requires that the Embedded Linux library source code
+is available on the same top level directory as the Wireless daemon
+source code:
+
+	.
+	|--- ell
+	|    |--- ell
+	|    `--- unit
+	`--- iwd
+	     |--- src
+	     `--- client
+
+It is not required to build or install Embedded Linux library. The build
+will happen when building the Wireless daemon and it will then be linked
+internally.
+
+
+Netlink monitoring
+==================
+
+The included iwmon utility can be used to monitor the 802.11 subsystem
+generic netlink commands and events. It uses the nlmon kernel driver
+from Linux 3.10 and later. On startup network monitor interface named
+named 'nlmon' is created unless another interface name is given on the
+command line. If the monitor interface was created by the iwmon utility,
+it will be removed on program exit.
+
+Manually the monitor interface can be created using the following
+commands:
+
+	ip link add name nlmon type nlmon
+	ip link set dev nlmon allmulticast on
+	ip link set dev nlmon up
+
+It is possible to create netlink traces in PCAP format using tcpdump
+and then read them via iwmon utility:
+
+	tcpdump -i nlmon -w trace-file.pcap
+
+The resulting PCAP files will use Linux cooked packet format containing
+packets with ARPHRD_NETLINK type. They can be read using iwmon:
+
+	iwmon -r trace-file.pcap
+
+At this time iwmon is not able to write PCAP files by itself. This might
+change in future versions.
+
+When also the authentication protocol traffic on port 0x888e (ETH_P_PAE)
+is needed, then a second capture is required:
+
+	tcpdump -i any 'ether proto 0x888e' -w trace-pae.pcap
+
+It is possible to combine these two PCAP files using the mergecap utility
+and create a combined trace file:
+
+	mergecap -F pcap -w trace.pcap trace-file.pcap trace-pae.pcap
+
+This will create a trace.pcap file that includes the complete picture
+of nl80211 netlink traffic and authentication messages. All packets are
+merged in chronological order based on timestamps.
+
+Unfortunately it is not possible to instruct tcpdump filtering to do
+this in a single capture. Post-processing of the PCAP files is required
+at the moment.
+
+
+Simulating devices
+==================
+
+The Linux driver mac80211_hwsim provides the functionality to simulate
+Wireless devices using fake virtual air. Just load the module.
+
+	modprobe mac80211_hwsim radios=0
+
+Providing the radios=0 is important since otherwise it starts out with
+two new Wireless radios by default.
+
+With the provided hwsim utility it is now possible to add and remove
+virtual radio devices.
+
+	hwsim --create --keep
+	hwsim --destroy=<radio-id>
+
+The radio id assigned to each virtual device is its internal id used
+by the Wireless device.
+
+
+Information
+===========
+
+Mailing list:
+	https://lists.01.org/mailman/listinfo/iwd
+
+IRC:
+	irc://irc.freenode.net/#iwd
