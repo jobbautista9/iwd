@@ -29,17 +29,19 @@
 #include <readline/readline.h>
 #include <stdio.h>
 
+#include "agent.h"
 #include "command.h"
 #include "display.h"
 
 #define IWD_PROMPT COLOR_GREEN "[iwd]" COLOR_OFF "# "
-#define LINE_LEN   81
+#define LINE_LEN 81
 
 static struct l_signal *resize_signal;
 static struct l_io *io;
 static char dashed_line[LINE_LEN];
 static char empty_line[LINE_LEN];
 static struct l_timeout *refresh_timeout;
+static struct saved_input *agent_saved_input;
 
 static struct display_refresh {
 	char *family;
@@ -353,6 +355,57 @@ static void display_completion_matches(char **matches, int num_matches,
 	display_text(line);
 }
 
+#define MAX_PASSPHRASE_LEN 63
+
+static struct masked_input {
+	bool use_mask;
+	char passphrase[MAX_PASSPHRASE_LEN];
+	char mask[MAX_PASSPHRASE_LEN];
+} masked_input;
+
+static void mask_input(void)
+{
+	int point;
+	char *line;
+	size_t len;
+
+	if (!masked_input.use_mask)
+		return;
+
+	line = rl_copy_text(0, rl_end);
+	len = strlen(line);
+
+	if (!len)
+		goto done;
+
+	point = rl_point;
+
+	if (len > MAX_PASSPHRASE_LEN) {
+		point--;
+	} else if (strlen(masked_input.passphrase) > len) {
+		masked_input.passphrase[len] = 0;
+		masked_input.mask[len] = 0;
+	} else {
+		masked_input.passphrase[len - 1] = line[len - 1];
+		masked_input.mask[len - 1] = '*';
+	}
+
+	rl_replace_line("", 0);
+	rl_redisplay();
+	rl_replace_line(masked_input.mask, 0);
+	rl_point = point;
+	rl_redisplay();
+
+done:
+	l_free(line);
+}
+
+static void reset_masked_input(void)
+{
+	memset(masked_input.passphrase, 0, MAX_PASSPHRASE_LEN);
+	memset(masked_input.mask, 0, MAX_PASSPHRASE_LEN);
+}
+
 static void readline_callback(char *prompt)
 {
 	HIST_ENTRY *previous_prompt;
@@ -364,6 +417,10 @@ static void readline_callback(char *prompt)
 
 		return;
 	}
+
+	if (agent_prompt(masked_input.use_mask ?
+					masked_input.passphrase : prompt))
+		goto done;
 
 	if (!strlen(prompt))
 		goto done;
@@ -381,9 +438,20 @@ done:
 	l_free(prompt);
 }
 
+bool display_agent_is_active(void)
+{
+	if (agent_saved_input)
+		return true;
+
+	return false;
+}
+
 static bool read_handler(struct l_io *io, void *user_data)
 {
 	rl_callback_read_char();
+
+	if (display_agent_is_active())
+		mask_input();
 
 	return true;
 }
@@ -414,6 +482,64 @@ void display_disable_cmd_prompt(void)
 	printf("\r");
 	rl_on_new_line();
 	rl_redisplay();
+}
+
+void display_agent_prompt(const char *label, bool mask_input)
+{
+	char *prompt;
+
+	if (agent_saved_input)
+		return;
+
+	masked_input.use_mask = mask_input;
+
+	if (mask_input)
+		reset_masked_input();
+
+	agent_saved_input = l_new(struct saved_input, 1);
+
+	agent_saved_input->point = rl_point;
+	agent_saved_input->line = rl_copy_text(0, rl_end);
+	rl_set_prompt("");
+	rl_replace_line("", 0);
+	rl_redisplay();
+
+	rl_erase_empty_line = 0;
+
+	prompt = l_strdup_printf(COLOR_BLUE "%s " COLOR_OFF, label);
+	rl_set_prompt(prompt);
+	l_free(prompt);
+
+	rl_forced_update_display();
+}
+
+void display_agent_prompt_release(const char *label)
+{
+	if (!agent_saved_input)
+		return;
+
+	if (display_refresh.cmd) {
+		char *text = rl_copy_text(0, rl_end);
+		char *prompt = l_strdup_printf(COLOR_BLUE "%s " COLOR_OFF
+							"%s\n", label, text);
+		l_free(text);
+
+		l_queue_push_tail(display_refresh.redo_entries, prompt);
+		display_refresh.undo_lines++;
+	}
+
+	rl_erase_empty_line = 1;
+
+	rl_replace_line(agent_saved_input->line, 0);
+	rl_point = agent_saved_input->point;
+
+	l_free(agent_saved_input->line);
+	l_free(agent_saved_input);
+	agent_saved_input = NULL;
+
+	rl_set_prompt(IWD_PROMPT);
+
+	rl_forced_update_display();
 }
 
 void display_quit(void)
@@ -461,6 +587,12 @@ void display_init(void)
 
 void display_exit(void)
 {
+	if (agent_saved_input) {
+		l_free(agent_saved_input->line);
+		l_free(agent_saved_input);
+		agent_saved_input = NULL;
+	}
+
 	l_timeout_remove(refresh_timeout);
 	refresh_timeout = NULL;
 

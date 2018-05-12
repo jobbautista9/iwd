@@ -588,7 +588,7 @@ static void device_disassociated(struct device *device)
 		device_enter_state(device, DEVICE_STATE_AUTOCONNECT);
 }
 
-static void device_disconnect_by_ap(struct device *device)
+static void device_disconnect_event(struct device *device)
 {
 	l_debug("%d", device->index);
 
@@ -731,7 +731,8 @@ static struct handshake_state *device_handshake_setup(struct device *device,
 		}
 
 		if (security == SECURITY_PSK)
-			handshake_state_set_pmk(hs, network_get_psk(network));
+			handshake_state_set_pmk(hs, network_get_psk(network),
+						32);
 		else
 			handshake_state_set_8021x_config(hs,
 						network_get_settings(network));
@@ -898,7 +899,7 @@ static void device_preauthenticate_cb(struct netdev *netdev,
 		uint8_t rsne_buf[300];
 		struct ie_rsn_info rsn_info;
 
-		handshake_state_set_pmk(new_hs, pmk);
+		handshake_state_set_pmk(new_hs, pmk, 32);
 		handshake_state_set_authenticator_address(new_hs,
 					device->preauth_bssid);
 		handshake_state_set_supplicant_address(new_hs,
@@ -1179,16 +1180,36 @@ static void device_roam_scan(struct device *device,
 }
 
 static uint32_t device_freq_from_neighbor_report(const uint8_t *country,
-		struct ie_neighbor_report_info *info)
+		struct ie_neighbor_report_info *info, enum scan_band *out_band)
 {
 	enum scan_band band;
 	uint32_t freq;
 
-	band = scan_oper_class_to_band(country, info->oper_class);
-	if (!band) {
-		l_debug("Ignored: unsupported oper class");
+	if (info->oper_class == 0) {
+		/*
+		 * Some Cisco APs report all operating class values as 0
+		 * in the Neighbor Report Responses.  Work around this by
+		 * using the most likely operating class for the channel
+		 * number as the 2.4GHz and 5GHz bands happen to mostly
+		 * use channels in two disjoint ranges.
+		 */
+		if (info->channel_num >= 1 && info->channel_num <= 14)
+			band = SCAN_BAND_2_4_GHZ;
+		else if (info->channel_num >= 36 && info->channel_num <= 169)
+			band = SCAN_BAND_5_GHZ;
+		else {
+			l_debug("Ignored: 0 oper class with an unusual "
+				"channel number");
 
-		return 0;
+			return 0;
+		}
+	} else {
+		band = scan_oper_class_to_band(country, info->oper_class);
+		if (!band) {
+			l_debug("Ignored: unsupported oper class");
+
+			return 0;
+		}
 	}
 
 	freq = scan_channel_to_freq(info->channel_num, band);
@@ -1197,6 +1218,9 @@ static uint32_t device_freq_from_neighbor_report(const uint8_t *country,
 
 		return 0;
 	}
+
+	if (out_band)
+		*out_band = band;
 
 	return freq;
 }
@@ -1235,6 +1259,7 @@ static void device_neighbor_report_cb(struct netdev *netdev, int err,
 	while (ie_tlv_iter_next(&iter)) {
 		struct ie_neighbor_report_info info;
 		uint32_t freq;
+		enum scan_band band;
 		const uint8_t *cc = NULL;
 
 		if (ie_tlv_iter_get_tag(&iter) != IE_TYPE_NEIGHBOR_REPORT)
@@ -1252,8 +1277,12 @@ static void device_neighbor_report_cb(struct netdev *netdev, int err,
 		if (device->connected_bss->cc_present)
 			cc = device->connected_bss->cc;
 
-		freq = device_freq_from_neighbor_report(cc, &info);
+		freq = device_freq_from_neighbor_report(cc, &info, &band);
 		if (!freq)
+			continue;
+
+		/* Skip if the band is not supported */
+		if (!(band & wiphy_get_supported_bands(device->wiphy)))
 			continue;
 
 		if (!memcmp(info.addr, device->connected_bss->addr, ETH_ALEN)) {
@@ -1574,10 +1603,8 @@ static void device_netdev_event(struct netdev *netdev, enum netdev_event event,
 		device_lost_beacon(device);
 		break;
 	case NETDEV_EVENT_DISCONNECT_BY_AP:
-		device_disconnect_by_ap(device);
-		break;
 	case NETDEV_EVENT_DISCONNECT_BY_SME:
-		device_disassociated(device);
+		device_disconnect_event(device);
 		break;
 	case NETDEV_EVENT_RSSI_THRESHOLD_LOW:
 		if (device->signal_low)
@@ -1698,6 +1725,7 @@ static struct l_dbus_message *device_scan(struct l_dbus *dbus,
 						void *user_data)
 {
 	struct device *device = user_data;
+	uint32_t id;
 
 	l_debug("Scan called from DBus");
 
@@ -1710,8 +1738,19 @@ static struct l_dbus_message *device_scan(struct l_dbus *dbus,
 
 	device->scan_pending = l_dbus_message_ref(message);
 
-	if (!scan_passive(device->index, device_scan_triggered,
-				new_scan_results, device, NULL))
+	/*
+	 * If device is not connected to a BSS use a passive scan to
+	 * avoid advertising our address until we support address
+	 * randomization (on the devices that support it).
+	 */
+	if (!device->connected_bss)
+		id = scan_passive(device->index, device_scan_triggered,
+					new_scan_results, device, NULL);
+	else
+		id = scan_active(device->index, NULL, 0, device_scan_triggered,
+					new_scan_results, device, NULL);
+
+	if (!id)
 		return dbus_error_failed(message);
 
 	return NULL;

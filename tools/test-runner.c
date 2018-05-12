@@ -74,6 +74,7 @@ static int test_argc;
 static char **verbose_apps;
 static char *verbose_opt;
 static bool valgrind;
+static char *gdb_opt;
 static bool enable_debug;
 const char *debug_filter;
 static const char *qemu_binary;
@@ -378,7 +379,8 @@ static void start_qemu(void)
 			"mac80211_hwsim.radios=0 init=%s TESTHOME=%s "
 			"TESTVERBOUT=\'%s\' DEBUG_FILTER=\'%s\'"
 			"TEST_ACTION=%u TEST_ACTION_PARAMS=\'%s\' "
-			"TESTARGS=\'%s\' PATH=\'%s\' VALGRIND=%u",
+			"TESTARGS=\'%s\' PATH=\'%s\' VALGRIND=%u"
+			"GDB=\'%s\'",
 			check_verbosity("kernel") ? "ignore_loglevel" : "quiet",
 			initcmd, cwd, verbose_opt ? verbose_opt : "none",
 			enable_debug ? debug_filter : "",
@@ -386,7 +388,8 @@ static void start_qemu(void)
 			test_action_params ? test_action_params : "",
 			testargs,
 			getenv("PATH"),
-			valgrind);
+			valgrind,
+			gdb_opt ? gdb_opt : "none");
 
 	argv = alloca(sizeof(qemu_argv) + sizeof(char *) * 7);
 	memcpy(argv, qemu_argv, sizeof(qemu_argv));
@@ -480,7 +483,7 @@ static bool wait_for_socket(const char *socket, useconds_t wait_time)
 			return true;
 
 		usleep(wait_time);
-	} while (i++ < 20);
+	} while ((wait_time > 0) ? i++ < 20 : true);
 
 	l_error("Error: cannot find socket: %s", socket);
 	return false;
@@ -501,6 +504,7 @@ static void create_dbus_system_conf(void)
 	fputs("<busconfig>\n", fp);
 	fputs("<type>system</type>\n", fp);
 	fputs("<listen>unix:path=/run/dbus/system_bus_socket</listen>\n", fp);
+	fputs("<limit name=\"reply_timeout\">2147483647</limit>", fp);
 	fputs("<policy context=\"default\">\n", fp);
 	fputs("<allow user=\"*\"/>\n", fp);
 	fputs("<allow own=\"*\"/>\n", fp);
@@ -788,25 +792,51 @@ static void stop_ofono(pid_t pid)
 	kill_process(pid);
 }
 
-static pid_t start_hostapd(const char *config_file, const char *interface_name,
-				const char *ctrl_interface)
+static pid_t start_hostapd(char **config_files, struct wiphy **wiphys)
 {
-	char *argv[8];
+	char **argv;
 	pid_t pid;
+	int idx = 0;
+	uint32_t wait = 25 * 10000;
 	bool verbose = check_verbosity(BIN_HOSTAPD);
+	size_t ifnames_size;
+	char *ifnames;
+	int i;
 
-	argv[0] = BIN_HOSTAPD;
-	argv[1] = "-g";
-	argv[2] = (char *) ctrl_interface;
-	argv[3] = "-i";
-	argv[4] = (char *) interface_name;
-	argv[5] = (char *) config_file;
+	for (i = 0, ifnames_size = 0; wiphys[i]; i++)
+		ifnames_size += 1 + strlen(wiphys[i]->interface_name);
+
+	argv = alloca(sizeof(char *) * (9 + i));
+
+	if (strcmp(gdb_opt, "hostapd") == 0) {
+		argv[idx++] = "gdb";
+		argv[idx++] = "--args";
+		wait = 0;
+	}
+
+	argv[idx++] = BIN_HOSTAPD;
+
+	ifnames = alloca(ifnames_size);
+	argv[idx++] = "-i";
+	argv[idx++] = ifnames;
+
+	argv[idx++] = "-g";
+	argv[idx++] = wiphys[0]->hostapd_ctrl_interface;
+
+	for (i = 0, ifnames_size = 0; wiphys[i]; i++) {
+		if (ifnames_size)
+			ifnames[ifnames_size++] = ',';
+		strcpy(ifnames + ifnames_size, wiphys[i]->interface_name);
+		ifnames_size += strlen(wiphys[i]->interface_name);
+
+		argv[idx++] = config_files[i];
+	}
 
 	if (verbose) {
-		argv[6] = "-d";
-		argv[7] = NULL;
+		argv[idx++] = "-d";
+		argv[idx++] = NULL;
 	} else {
-		argv[6] = NULL;
+		argv[idx++] = NULL;
 	}
 
 	pid = execute_program(argv, false, verbose);
@@ -814,9 +844,8 @@ static pid_t start_hostapd(const char *config_file, const char *interface_name,
 		goto exit;
 	}
 
-	if (!wait_for_socket(ctrl_interface, 25 * 10000))
+	if (!wait_for_socket(wiphys[0]->hostapd_ctrl_interface, wait))
 		pid = -1;
-
 exit:
 	return pid;
 }
@@ -1123,7 +1152,9 @@ static bool configure_hostapd_instances(struct l_settings *hw_settings,
 						pid_t hostapd_pids_out[])
 {
 	char **hostap_keys;
-	int i = 0;
+	int i;
+	char **hostapd_config_file_paths;
+	struct wiphy **wiphys;
 
 	if (!l_settings_has_group(hw_settings, HW_CONFIG_GROUP_HOSTAPD)) {
 		l_info("No hostapd instances to create");
@@ -1133,34 +1164,38 @@ static bool configure_hostapd_instances(struct l_settings *hw_settings,
 	hostap_keys =
 		l_settings_get_keys(hw_settings, HW_CONFIG_GROUP_HOSTAPD);
 
-	while (hostap_keys[i]) {
-		char hostapd_config_file_path[PATH_MAX];
-		const char *hostapd_config_file;
+	for (i = 0; hostap_keys[i]; i++);
+
+	hostapd_config_file_paths = l_new(char *, i + 1);
+	wiphys = alloca(sizeof(struct wiphy *) * (i + 1));
+	wiphys[i] = NULL;
+
+	hostapd_pids_out[0] = -1;
+
+	for (i = 0; hostap_keys[i]; i++) {
 		const struct l_queue_entry *wiphy_entry;
-		struct wiphy *wiphy;
+		const char *hostapd_config_file;
 
 		hostapd_config_file =
 			l_settings_get_value(hw_settings,
 						HW_CONFIG_GROUP_HOSTAPD,
 						hostap_keys[i]);
 
-		snprintf(hostapd_config_file_path, PATH_MAX - 1, "%s/%s",
-				config_dir_path,
-				hostapd_config_file);
+		hostapd_config_file_paths[i] =
+			l_strdup_printf("%s/%s", config_dir_path,
+					hostapd_config_file);
 
-		hostapd_config_file_path[PATH_MAX - 1] = '\0';
-
-		if (!path_exist(hostapd_config_file_path)) {
+		if (!path_exist(hostapd_config_file_paths[i])) {
 			l_error("%s : hostapd configuration file [%s] "
 				"does not exist.", HW_CONFIG_FILE_NAME,
-						hostapd_config_file_path);
-			return false;
+						hostapd_config_file_paths[i]);
+			goto done;
 		}
 
 		for (wiphy_entry = l_queue_get_entries(wiphy_list);
 					wiphy_entry;
 					wiphy_entry = wiphy_entry->next) {
-			wiphy = wiphy_entry->data;
+			struct wiphy *wiphy = wiphy_entry->data;
 
 			if (strcmp(wiphy->name, hostap_keys[i]))
 				continue;
@@ -1168,32 +1203,33 @@ static bool configure_hostapd_instances(struct l_settings *hw_settings,
 			if (wiphy->used_by_hostapd) {
 				l_error("Wiphy %s already used by hostapd",
 					wiphy->name);
-				return false;
+				goto done;
 			}
 
-			wiphy->used_by_hostapd = true;
+			wiphys[i] = wiphy;
 			break;
 		}
 
 		if (!wiphy_entry) {
 			l_error("Failed to find available interface.");
-			return false;
+			goto done;
 		}
 
-		wiphy->hostapd_ctrl_interface =
+		wiphys[i]->used_by_hostapd = true;
+		wiphys[i]->hostapd_ctrl_interface =
 			l_strdup_printf("%s/%s", HOSTAPD_CTRL_INTERFACE_PREFIX,
-					wiphy->interface_name);
-		wiphy->hostapd_config = l_strdup(hostapd_config_file);
-
-		hostapd_pids_out[i] = start_hostapd(hostapd_config_file_path,
-						wiphy->interface_name,
-						wiphy->hostapd_ctrl_interface);
-
-		if (hostapd_pids_out[i] < 1)
-			return false;
-
-		i++;
+					wiphys[0]->interface_name);
+		wiphys[i]->hostapd_config = l_strdup(hostapd_config_file);
 	}
+
+	hostapd_pids_out[0] = start_hostapd(hostapd_config_file_paths, wiphys);
+	hostapd_pids_out[1] = -1;
+
+done:
+	l_strfreev(hostapd_config_file_paths);
+
+	if (hostapd_pids_out[0] < 1)
+		return false;
 
 	return true;
 }
@@ -1201,7 +1237,7 @@ static bool configure_hostapd_instances(struct l_settings *hw_settings,
 static pid_t start_iwd(const char *config_dir, struct l_queue *wiphy_list,
 		const char *ext_options)
 {
-	char *argv[9];
+	char *argv[11];
 	char *iwd_phys = NULL;
 	pid_t ret;
 	int idx = 0;
@@ -1209,6 +1245,11 @@ static pid_t start_iwd(const char *config_dir, struct l_queue *wiphy_list,
 	if (valgrind) {
 		argv[idx++] = "valgrind";
 		argv[idx++] = "--leak-check=full";
+	}
+
+	if (strcmp(gdb_opt, "iwd") == 0) {
+		argv[idx++] = "gdb";
+		argv[idx++] = "--args";
 	}
 
 	argv[idx++] = BIN_IWD;
@@ -1482,7 +1523,7 @@ static void run_py_tests(struct l_settings *hw_settings,
 					struct l_queue *test_stats_queue)
 {
 	char *argv[3];
-	pid_t test_exec_pid, test_timer_pid;
+	pid_t test_exec_pid, test_timer_pid = -1;
 	struct timeval time_before, time_after, time_elapsed;
 	unsigned int max_exec_interval;
 	char *py_test = NULL;
@@ -1515,8 +1556,9 @@ start_next_test:
 
 	gettimeofday(&time_before, NULL);
 
-	test_timer_pid = start_execution_timeout_timer(max_exec_interval,
-								&test_exec_pid);
+	if (!strcmp(gdb_opt, "none"))
+		test_timer_pid = start_execution_timeout_timer(
+				max_exec_interval, &test_exec_pid);
 
 	test_stats = (struct test_stats *) l_queue_peek_tail(test_stats_queue);
 
@@ -1533,7 +1575,8 @@ start_next_test:
 		if (test_exec_pid == corpse) {
 			gettimeofday(&time_after, NULL);
 
-			kill_process(test_timer_pid);
+			if (test_timer_pid != -1)
+				kill_process(test_timer_pid);
 
 			timersub(&time_after, &time_before, &time_elapsed);
 			interval = time_elapsed.tv_sec +
@@ -1718,6 +1761,12 @@ static void create_network_and_run_tests(const void *key, void *value,
 		}
 	}
 
+	/* turn on/off timeouts if GDB is being used */
+	if (!strcmp(gdb_opt, "none"))
+		setenv("IWD_TEST_TIMEOUTS", "on", true);
+	else
+		setenv("IWD_TEST_TIMEOUTS", "off", true);
+
 	if (!create_tmpfs_extra_stuff(tmpfs_extra_stuff))
 		goto exit_hwsim;
 
@@ -1753,6 +1802,10 @@ static void create_network_and_run_tests(const void *key, void *value,
 
 		if (iwd_pid == -1)
 			goto exit_hostapd;
+	} else {
+		/* tells pytest to start iwd with valgrind */
+		if (valgrind)
+			setenv("IWD_TEST_VALGRIND", "on", true);
 	}
 
 	if (ofono_req) {
@@ -1770,8 +1823,6 @@ static void create_network_and_run_tests(const void *key, void *value,
 	if (iwd_pid > 0)
 		terminate_iwd(iwd_pid);
 
-	terminate_medium(medium_pid);
-
 	if (ofono_req) {
 		loopback_started = false;
 		stop_ofono(ofono_pid);
@@ -1780,6 +1831,8 @@ static void create_network_and_run_tests(const void *key, void *value,
 
 exit_hostapd:
 	destroy_hostapd_instances(hostapd_pids);
+
+	terminate_medium(medium_pid);
 
 exit_hwsim:
 	l_queue_destroy(wiphy_list, wiphy_free);
@@ -2032,6 +2085,18 @@ static void run_tests(void)
 		return;
 	}
 
+	ptr = strstr(cmdline, "GDB=");
+
+	if (ptr) {
+		test_action_str = ptr + 5;
+
+		ptr = strchr(test_action_str, '\'');
+
+		*ptr = '\0';
+
+		gdb_opt = l_strdup(test_action_str);
+	}
+
 	ptr = strstr(cmdline, "VALGRIND=");
 
 	if (ptr) {
@@ -2188,7 +2253,9 @@ static void usage(void)
 		"\t-V, --valgrind		Run valgrind on iwd. Note: \"-v"
 						" iwd\" is required\n"
 						"\t\t\t\tto see valgrind"
-						" output");
+						" output\n"
+		"\t-g, --gdb <iwd|hostapd>	Run gdb on the specified"
+						" executable");
 	l_info("Commands:\n"
 		"\t-A, --auto-tests <dirs>	Comma separated list of the "
 						"test configuration\n\t\t\t\t"
@@ -2204,6 +2271,7 @@ static const struct option main_options[] = {
 	{ "kernel",	required_argument, NULL, 'k' },
 	{ "verbose",	required_argument, NULL, 'v' },
 	{ "debug",	optional_argument, NULL, 'd' },
+	{ "gdb",	required_argument, NULL, 'g' },
 	{ "valgrind",	no_argument,       NULL, 'V' },
 	{ "help",	no_argument,       NULL, 'h' },
 	{ }
@@ -2230,7 +2298,7 @@ int main(int argc, char *argv[])
 	for (;;) {
 		int opt;
 
-		opt = getopt_long(argc, argv, "A:U:q:k:v:Vdh", main_options,
+		opt = getopt_long(argc, argv, "A:U:q:k:v:g:Vdh", main_options,
 									NULL);
 		if (opt < 0)
 			break;
@@ -2264,9 +2332,19 @@ int main(int argc, char *argv[])
 			break;
 		case 'v':
 			verbose_opt = optarg;
+			verbose_apps = l_strsplit(optarg, ',');
 			break;
 		case 'V':
 			valgrind = true;
+			break;
+		case 'g':
+			gdb_opt = optarg;
+			if (!(!strcmp(gdb_opt, "iwd") ||
+					!strcmp(gdb_opt, "hostapd"))) {
+				l_error("--gdb can only be used with iwd"
+					" or hostapd");
+				return EXIT_FAILURE;
+			}
 			break;
 		case 'h':
 			usage();

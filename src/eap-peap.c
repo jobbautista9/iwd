@@ -32,6 +32,13 @@
 
 #include "eap.h"
 
+/*
+ * Protected EAP Protocol (PEAP): EAP type 25 as described in:
+ *
+ * PEAPv0: draft-kamath-pppext-peapv0-00
+ * PEAPv1: draft-josefsson-pppext-eap-tls-eap-05
+ */
+
 #define PEAP_PDU_MAX_LEN 65536
 
 #define PEAP_HEADER_LEN  6
@@ -54,12 +61,22 @@ enum peap_flag {
 	PEAP_FLAG_L    = 0x80,
 };
 
+struct databuf {
+	uint8_t *data;
+	size_t len;
+	size_t capacity;
+};
+
 struct eap_peap_state {
 	enum peap_version version;
 	struct l_tls *tunnel;
+	bool completed:1;
+	bool phase2_failed:1;
 
-	uint8_t *tx_pdu_buf;
-	size_t tx_pdu_buf_len;
+	struct eap_state *phase2_eap;
+
+	struct databuf *tx_pdu_buf;
+	struct databuf *plain_buf;
 
 	uint8_t *rx_pdu_buf;
 	size_t rx_pdu_buf_len;
@@ -76,16 +93,47 @@ struct eap_peap_state {
 	char *passphrase;
 };
 
-static void eap_peap_free_tx_buffer(struct eap_state *eap)
+static struct databuf *databuf_new(size_t capacity)
 {
-	struct eap_peap_state *peap = eap_get_data(eap);
+	struct databuf *databuf;
 
-	if (!peap->tx_pdu_buf)
+	if (!capacity)
+		return NULL;
+
+	databuf = l_new(struct databuf, 1);
+	databuf->data = l_malloc(capacity);
+	databuf->capacity = capacity;
+
+	return databuf;
+}
+
+static void databuf_append(struct databuf *databuf, const uint8_t *data,
+								size_t data_len)
+{
+	size_t new_len;
+
+	if (!databuf)
 		return;
 
-	l_free(peap->tx_pdu_buf);
-	peap->tx_pdu_buf = NULL;
-	peap->tx_pdu_buf_len = 0;
+	new_len = databuf->len + data_len;
+
+	if (new_len > databuf->capacity) {
+		databuf->capacity = new_len * 2;
+		databuf->data = l_realloc(databuf->data, databuf->capacity);
+	}
+
+	memcpy(databuf->data + databuf->len, data, data_len);
+
+	databuf->len = new_len;
+}
+
+static void databuf_free(struct databuf *databuf)
+{
+	if (!databuf)
+		return;
+
+	l_free(databuf->data);
+	l_free(databuf);
 }
 
 static void eap_peap_free_rx_buffer(struct eap_state *eap)
@@ -110,7 +158,20 @@ static void eap_peap_free(struct eap_state *eap)
 		peap->tunnel = NULL;
 	}
 
-	eap_peap_free_tx_buffer(eap);
+	if (peap->phase2_eap) {
+		eap_free(peap->phase2_eap);
+		peap->phase2_eap = NULL;
+	}
+
+	if (peap->tx_pdu_buf) {
+		databuf_free(peap->tx_pdu_buf);
+		peap->tx_pdu_buf = NULL;
+	}
+
+	if (peap->plain_buf) {
+		databuf_free(peap->plain_buf);
+		peap->plain_buf = NULL;
+	}
 
 	eap_peap_free_rx_buffer(eap);
 
@@ -119,9 +180,201 @@ static void eap_peap_free(struct eap_state *eap)
 	l_free(peap->ca_cert);
 	l_free(peap->client_cert);
 	l_free(peap->client_key);
+	if (peap->passphrase)
+		memset(peap->passphrase, 0, strlen(peap->passphrase));
 	l_free(peap->passphrase);
 
 	l_free(peap);
+}
+
+static void eap_peap_phase2_send_response(const uint8_t *pdu, size_t pdu_len,
+								void *user_data)
+{
+	struct eap_state *eap = user_data;
+	struct eap_peap_state *peap = eap_get_data(eap);
+
+	if (peap->version == PEAP_VERSION_0) {
+		if (pdu_len < 5)
+			return;
+
+		if (pdu[4] != EAP_TYPE_EXTENSIONS) {
+			pdu += 4;
+			pdu_len -= 4;
+		}
+	}
+
+	l_tls_write(peap->tunnel, pdu, pdu_len);
+}
+
+static void eap_peap_phase2_complete(enum eap_result result, void *user_data)
+{
+	struct eap_state *eap = user_data;
+	struct eap_peap_state *peap = eap_get_data(eap);
+
+	/*
+	 * PEAPv1: draft-josefsson-pppext-eap-tls-eap-05, Section 2.2
+	 *
+	 * The receipt of a EAP-Failure or EAP-Success within the TLS protected
+	 * channel results in a shutdown of the TLS channel by the peer.
+	 */
+	l_tls_close(peap->tunnel);
+
+	eap_discard_success_and_failure(eap, false);
+	peap->completed = true;
+
+	if (result != EAP_RESULT_SUCCESS) {
+		peap->phase2_failed = true;
+		return;
+	}
+
+	eap_method_success(eap);
+}
+
+/*
+ * PEAPv0: draft-kamath-pppext-peapv0-00, Section 2
+ */
+#define EAP_EXTENSIONS_HEADER_LEN 5
+#define EAP_EXTENSIONS_AVP_HEADER_LEN 4
+
+enum eap_extensions_avp_type {
+	/* Reserved = 0x0000, */
+	/* Reserved = 0x0001, */
+	/* Reserved = 0x0002, */
+	EAP_EXTENSIONS_AVP_TYPE_RESULT = 0x8003,
+};
+
+enum eap_extensions_result {
+	EAP_EXTENSIONS_RESULT_SUCCCESS = 1,
+	EAP_EXTENSIONS_RESULT_FAILURE  = 2,
+};
+
+static int eap_extensions_handle_result_avp(struct eap_state *eap,
+						const uint8_t *data,
+						size_t data_len,
+						uint8_t *response)
+{
+	struct eap_peap_state *peap = eap_get_data(eap);
+	uint16_t type;
+	uint16_t len;
+	uint16_t result;
+
+	if (data_len < EAP_EXTENSIONS_AVP_HEADER_LEN + 2)
+		return -ENOENT;
+
+	type = l_get_be16(data);
+
+	if (type != EAP_EXTENSIONS_AVP_TYPE_RESULT)
+		return -ENOENT;
+
+	data += 2;
+
+	len = l_get_be16(data);
+
+	if (len != 2)
+		return -ENOENT;
+
+	data += 2;
+
+	result = l_get_be16(data);
+
+	switch (result) {
+	case EAP_EXTENSIONS_RESULT_SUCCCESS:
+		result = eap_method_is_success(peap->phase2_eap) ?
+					EAP_EXTENSIONS_RESULT_SUCCCESS :
+					EAP_EXTENSIONS_RESULT_FAILURE;
+		/* fall through */
+	case EAP_EXTENSIONS_RESULT_FAILURE:
+		break;
+	default:
+		return -ENOENT;
+	}
+
+	l_put_be16(EAP_EXTENSIONS_AVP_TYPE_RESULT,
+					&response[EAP_EXTENSIONS_HEADER_LEN]);
+	l_put_be16(2, &response[EAP_EXTENSIONS_HEADER_LEN + 2]);
+	l_put_be16(result, &response[EAP_EXTENSIONS_HEADER_LEN +
+						EAP_EXTENSIONS_AVP_HEADER_LEN]);
+
+	return result;
+}
+
+static void eap_extensions_handle_request(struct eap_state *eap,
+							uint8_t id,
+							const uint8_t *pkt,
+							size_t len)
+{
+	struct eap_peap_state *peap = eap_get_data(eap);
+	uint8_t response[EAP_EXTENSIONS_HEADER_LEN +
+					EAP_EXTENSIONS_AVP_HEADER_LEN + 2];
+	int r = eap_extensions_handle_result_avp(eap, pkt, len, response);
+
+	if (r < 0)
+		return;
+
+	response[0] = EAP_CODE_RESPONSE;
+	response[1] = id;
+	l_put_be16(sizeof(response), &response[2]);
+	response[4] = EAP_TYPE_EXTENSIONS;
+
+	eap_peap_phase2_send_response(response, sizeof(response), eap);
+
+	l_tls_close(peap->tunnel);
+
+	eap_discard_success_and_failure(eap, false);
+	peap->completed = true;
+
+	if (r != EAP_EXTENSIONS_RESULT_SUCCCESS)
+		return;
+
+	eap_method_success(eap);
+}
+
+static void eap_peap_phase2_handle_request(struct eap_state *eap,
+							const uint8_t *pkt,
+								size_t len)
+{
+	struct eap_peap_state *peap = eap_get_data(eap);
+
+	if (peap->version == PEAP_VERSION_0) {
+		uint8_t id;
+
+		if (len > 4 && pkt[4] == EAP_TYPE_EXTENSIONS) {
+			uint16_t pkt_len;
+			uint8_t code = pkt[0];
+
+			if (code != EAP_CODE_REQUEST)
+				return;
+
+			pkt_len = l_get_be16(pkt + 2);
+			if (pkt_len != len)
+				return;
+
+			id = pkt[1];
+
+			eap_extensions_handle_request(eap, id,
+					pkt + EAP_EXTENSIONS_HEADER_LEN,
+					len - EAP_EXTENSIONS_HEADER_LEN);
+
+			return;
+		}
+
+		if (len < 1)
+			return;
+
+		/*
+		 * The PEAPv0 phase2 packets are headerless. Our implementation
+		 * of the EAP methods requires packet identifier. Therefore,
+		 * PEAP packet identifier is used for the headerless
+		 * phase2 packets.
+		 */
+		eap_save_last_id(eap, &id);
+
+		__eap_handle_request(peap->phase2_eap, id, pkt, len);
+
+		return;
+	}
+
+	eap_rx_packet(peap->phase2_eap, pkt, len);
 }
 
 static void eap_peap_send_fragment(struct eap_state *eap)
@@ -129,7 +382,7 @@ static void eap_peap_send_fragment(struct eap_state *eap)
 	struct eap_peap_state *peap = eap_get_data(eap);
 	size_t mtu = eap_get_mtu(eap);
 	uint8_t buf[mtu];
-	size_t len = peap->tx_pdu_buf_len - peap->tx_frag_offset;
+	size_t len = peap->tx_pdu_buf->len - peap->tx_frag_offset;
 	size_t header_len = PEAP_HEADER_LEN;
 
 	buf[PEAP_HEADER_OCTET_FLAGS] = peap->version;
@@ -142,13 +395,14 @@ static void eap_peap_send_fragment(struct eap_state *eap)
 
 	if (!peap->tx_frag_offset) {
 		buf[PEAP_HEADER_OCTET_FLAGS] |= PEAP_FLAG_L;
-		l_put_be32(peap->tx_pdu_buf_len,
+		l_put_be32(peap->tx_pdu_buf->len,
 					&buf[PEAP_HEADER_OCTET_FRAG_LEN]);
 		len -= 4;
 		header_len += 4;
 	}
 
-	memcpy(buf + header_len, peap->tx_pdu_buf + peap->tx_frag_offset, len);
+	memcpy(buf + header_len, peap->tx_pdu_buf->data + peap->tx_frag_offset,
+									len);
 	eap_send_response(eap, EAP_TYPE_PEAP, buf, header_len + len);
 
 	peap->tx_frag_last_len = len;
@@ -187,11 +441,25 @@ static void eap_peap_send_empty_response(struct eap_state *eap)
 static void eap_peap_tunnel_data_send(const uint8_t *data, size_t data_len,
 								void *user_data)
 {
+	struct eap_state *eap = user_data;
+	struct eap_peap_state *peap = eap_get_data(eap);
+
+	if (!peap->tx_pdu_buf)
+		peap->tx_pdu_buf = databuf_new(data_len);
+
+	databuf_append(peap->tx_pdu_buf, data, data_len);
 }
 
 static void eap_peap_tunnel_data_received(const uint8_t *data, size_t data_len,
 								void *user_data)
 {
+	struct eap_state *eap = user_data;
+	struct eap_peap_state *peap = eap_get_data(eap);
+
+	if (!peap->plain_buf)
+		peap->plain_buf = databuf_new(data_len);
+
+	databuf_append(peap->plain_buf, data, data_len);
 }
 
 static void eap_peap_tunnel_ready(const char *peer_identity, void *user_data)
@@ -203,12 +471,21 @@ static void eap_peap_tunnel_ready(const char *peer_identity, void *user_data)
 	uint8_t random[64];
 
 	/*
-	* PEAP V5, Section 2.1.1
+	* PEAPv1: draft-josefsson-pppext-eap-tls-eap-05, Section 2.1.1
 	*
-	* Cleartext Failure packets MUST be silently discarded once TLS tunnel
-	* has been brought up.
+	* Cleartext Success/Failure packets MUST be silently discarded once TLS
+	* tunnel has been brought up.
 	*/
-	eap_method_success(eap);
+	eap_discard_success_and_failure(eap, true);
+
+	/*
+	 * PEAPv1: draft-josefsson-pppext-eap-tls-eap-05, Section 2.2
+	 *
+	 * Since authenticator may not send us EAP-Success/EAP-Failure
+	 * in cleartext for the outer EAP method (PEAP), we reinforce
+	 * the completion with a timer.
+	 */
+	eap_start_complete_timeout(eap);
 
 	/* MSK, EMSK and challenge derivation */
 	memcpy(random +  0, peap->tunnel->pending.client_random, 32);
@@ -221,6 +498,8 @@ static void eap_peap_tunnel_ready(const char *peer_identity, void *user_data)
 				msk_emsk, 128);
 
 	eap_set_key_material(eap, msk_emsk + 0, 64, NULL, 0, NULL, 0);
+
+	eap_peap_send_empty_response(eap);
 }
 
 static void eap_peap_tunnel_disconnected(enum l_tls_alert_desc reason,
@@ -263,6 +542,19 @@ static void eap_peap_handle_payload(struct eap_state *eap,
 						const uint8_t *pkt,
 						size_t pkt_len)
 {
+	struct eap_peap_state *peap = eap_get_data(eap);
+
+	l_tls_handle_rx(peap->tunnel, pkt, pkt_len);
+
+	/* Plaintext phase two eap packet is stored into peap->plain_buf */
+	if (!peap->plain_buf)
+		return;
+
+	eap_peap_phase2_handle_request(eap, peap->plain_buf->data,
+							peap->plain_buf->len);
+
+	databuf_free(peap->plain_buf);
+	peap->plain_buf = NULL;
 }
 
 static bool eap_peap_init_request_assembly(struct eap_state *eap,
@@ -387,6 +679,9 @@ static void eap_peap_handle_request(struct eap_state *eap,
 	struct eap_peap_state *peap = eap_get_data(eap);
 	uint8_t flags_version;
 
+	if (peap->completed)
+		return;
+
 	if (len < 1) {
 		l_error("EAP-PEAP request too short");
 		goto error;
@@ -432,7 +727,10 @@ static void eap_peap_handle_request(struct eap_state *eap,
 	 * tx_pdu_buf is used for the retransmission and needs to be cleared on
 	 * a new request
 	 */
-	eap_peap_free_tx_buffer(eap);
+	if (peap->tx_pdu_buf) {
+		databuf_free(peap->tx_pdu_buf);
+		peap->tx_pdu_buf = NULL;
+	}
 
 	if (flags_version & PEAP_FLAG_S) {
 		if (!eap_peap_tunnel_init(eap))
@@ -456,15 +754,175 @@ static void eap_peap_handle_request(struct eap_state *eap,
 	eap_peap_free_rx_buffer(eap);
 
 send_response:
-	if (!peap->tx_pdu_buf)
-		return;
+	if (!peap->tx_pdu_buf) {
+		if (peap->phase2_failed)
+			goto error;
 
-	eap_peap_send_response(eap, peap->tx_pdu_buf, peap->tx_pdu_buf_len);
+		return;
+	}
+
+	eap_peap_send_response(eap, peap->tx_pdu_buf->data,
+							peap->tx_pdu_buf->len);
+
+	if (peap->phase2_failed)
+		goto error;
 
 	return;
 
 error:
 	eap_method_error(eap);
+}
+
+static void eap_peap_handle_retransmit(struct eap_state *eap,
+						const uint8_t *pkt, size_t len)
+{
+	struct eap_peap_state *peap = eap_get_data(eap);
+	uint8_t flags_version;
+
+	if (len < 1) {
+		l_error("EAP-PEAP request too short");
+		goto error;
+	}
+
+	flags_version = pkt[0];
+
+	if (!eap_peap_validate_version(eap, flags_version)) {
+		l_error("EAP-PEAP version validation failed");
+		goto error;
+	}
+
+	if (flags_version & PEAP_FLAG_M) {
+		if (!peap->rx_pdu_buf)
+			goto error;
+
+		eap_peap_send_fragmented_request_ack(eap);
+
+		return;
+	}
+
+	if (!peap->tx_pdu_buf || !peap->tx_pdu_buf->data ||
+							!peap->tx_pdu_buf->len)
+		goto error;
+
+	if (PEAP_HEADER_LEN + peap->tx_pdu_buf->len > eap_get_mtu(eap))
+		eap_peap_send_fragment(eap);
+	else
+		eap_peap_send_response(eap, peap->tx_pdu_buf->data,
+							peap->tx_pdu_buf->len);
+
+	return;
+
+error:
+	eap_method_error(eap);
+}
+
+static int eap_peap_check_settings(struct l_settings *settings,
+					struct l_queue *secrets,
+					const char *prefix,
+					struct l_queue **out_missing)
+{
+	char entry[64], client_cert_entry[64], passphrase_entry[64];
+	const char *path, *client_cert, *passphrase;
+	uint8_t *cert;
+	size_t size;
+
+	snprintf(entry, sizeof(entry), "%sPEAP-CACert", prefix);
+	path = l_settings_get_value(settings, "Security", entry);
+	if (path) {
+		cert = l_pem_load_certificate(path, &size);
+		if (!cert) {
+			l_error("Failed to load %s", path);
+			return -EIO;
+		}
+
+		l_free(cert);
+	}
+
+	snprintf(client_cert_entry, sizeof(client_cert_entry),
+			"%sPEAP-ClientCert", prefix);
+	client_cert = l_settings_get_value(settings, "Security",
+						client_cert_entry);
+	if (client_cert) {
+		cert = l_pem_load_certificate(client_cert, &size);
+		if (!cert) {
+			l_error("Failed to load %s", client_cert);
+			return -EIO;
+		}
+
+		l_free(cert);
+	}
+
+	snprintf(entry, sizeof(entry), "%sPEAP-ClientKey", prefix);
+	path = l_settings_get_value(settings, "Security", entry);
+
+	if (path && !client_cert) {
+		l_error("%s present but no client certificate (%s)",
+			entry, client_cert_entry);
+		return -ENOENT;
+	}
+
+	snprintf(passphrase_entry, sizeof(passphrase_entry),
+			"%sPEAP-ClientKeyPassphrase", prefix);
+	passphrase = l_settings_get_value(settings, "Security",
+						passphrase_entry);
+
+	if (!passphrase) {
+		const struct eap_secret_info *secret;
+
+		secret = l_queue_find(secrets, eap_secret_info_match,
+					passphrase_entry);
+		if (secret)
+			passphrase = secret->value;
+	}
+
+	if (path) {
+		bool encrypted;
+		uint8_t *priv_key;
+		size_t size;
+
+		priv_key = l_pem_load_private_key(path, passphrase,
+							&encrypted, &size);
+		if (!priv_key) {
+			if (!encrypted) {
+				l_error("Error loading client private key %s",
+					path);
+				return -EIO;
+			}
+
+			if (passphrase) {
+				l_error("Error loading encrypted client "
+					"private key %s", path);
+				return -EACCES;
+			}
+
+			/*
+			 * We've got an encrypted key and passphrase was not
+			 * saved in the network settings, need to request
+			 * the passphrase.
+			 */
+			eap_append_secret(out_missing,
+					EAP_SECRET_LOCAL_PKEY_PASSPHRASE,
+					passphrase_entry, path);
+		} else {
+			memset(priv_key, 0, size);
+			l_free(priv_key);
+
+			if (passphrase && !encrypted) {
+				l_error("%s present but client private "
+					"key %s is not encrypted",
+					passphrase_entry, path);
+				return -EIO;
+			}
+		}
+	} else if (passphrase) {
+		l_error("%s present but no client private key path set (%s)",
+			passphrase_entry, entry);
+		return -ENOENT;
+	}
+
+	snprintf(entry, sizeof(entry), "%sPEAP-Phase2-", prefix);
+
+	return eap_check_settings(settings, secrets, entry, false, out_missing);
 }
 
 static bool eap_peap_load_settings(struct eap_state *eap,
@@ -494,13 +952,19 @@ static bool eap_peap_load_settings(struct eap_state *eap,
 	peap->passphrase = l_strdup(l_settings_get_value(settings, "Security",
 									entry));
 
-	if (!peap->client_cert && peap->client_key) {
-		l_error("Client key present but no client certificate");
+	peap->phase2_eap = eap_new(eap_peap_phase2_send_response,
+					eap_peap_phase2_complete, eap);
+
+	if (!peap->phase2_eap) {
+		l_error("Could not create the PEAP phase two EAP instance");
 		goto error;
 	}
 
-	if (!peap->client_key && peap->passphrase) {
-		l_error("Passphrase present but no client private key");
+	snprintf(entry, sizeof(entry), "%sPEAP-Phase2-", prefix);
+
+	if (!eap_load_settings(peap->phase2_eap, settings, entry)) {
+		eap_free(peap->phase2_eap);
+
 		goto error;
 	}
 
@@ -512,6 +976,8 @@ error:
 	l_free(peap->ca_cert);
 	l_free(peap->client_cert);
 	l_free(peap->client_key);
+	if (peap->passphrase)
+		memset(peap->passphrase, 0, strlen(peap->passphrase));
 	l_free(peap->passphrase);
 	l_free(peap);
 
@@ -524,6 +990,8 @@ static struct eap_method eap_peap = {
 	.exports_msk = true,
 
 	.handle_request = eap_peap_handle_request,
+	.handle_retransmit = eap_peap_handle_retransmit,
+	.check_settings = eap_peap_check_settings,
 	.load_settings = eap_peap_load_settings,
 	.free = eap_peap_free,
 };

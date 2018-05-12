@@ -20,13 +20,7 @@
  *
  */
 
-struct network_args {
-	char *name;
-	char *type;
-};
+bool agent_prompt(const char *prompt);
 
-bool network_is_connected(const char *path);
-void network_connect(const char *path);
-
-struct network_args *network_parse_args(const char *args);
-void network_args_destroy(struct network_args *network_args);
+bool agent_init(const char *path);
+bool agent_exit(const char *path);

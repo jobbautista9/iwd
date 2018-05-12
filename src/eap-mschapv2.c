@@ -641,57 +641,144 @@ static void set_user_name(struct eap_mschapv2_state *state, const char *user)
 	state->user = l_strdup(user);
 }
 
+static int eap_mschapv2_check_settings(struct l_settings *settings,
+					struct l_queue *secrets,
+					const char *prefix,
+					struct l_queue **out_missing)
+{
+	const char *identity, *password = NULL, *password_hash;
+	const struct eap_secret_info *secret;
+	char setting[64], setting2[64];
+	uint8_t hash[16];
+
+	snprintf(setting, sizeof(setting), "%sIdentity", prefix);
+	identity = l_settings_get_value(settings, "Security", setting);
+
+	if (!identity) {
+		secret = l_queue_find(secrets, eap_secret_info_match, setting);
+		if (secret) {
+			identity = secret->value;
+			password = secret->value + strlen(secret->value) + 1;
+
+			goto validate;
+		}
+
+		eap_append_secret(out_missing, EAP_SECRET_REMOTE_USER_PASSWORD,
+					setting, NULL);
+		return 0;
+	}
+
+	snprintf(setting, sizeof(setting), "%sPassword-Hash", prefix);
+	password_hash = l_settings_get_value(settings, "Security",
+						setting);
+
+	snprintf(setting2, sizeof(setting2), "%sPassword", prefix);
+	password = l_settings_get_value(settings, "Security", setting2);
+
+	if (password && password_hash) {
+		l_error("Exactly one of (%s, %s) must be present",
+			setting, setting2);
+		return -EEXIST;
+	}
+
+	if (password_hash) {
+		unsigned char *tmp;
+		size_t len;
+
+		tmp = l_util_from_hexstring(password, &len);
+		l_free(tmp);
+
+		if (!tmp || len != 16) {
+			l_error("Property %s is not a 16-byte hexstring",
+				setting);
+			return -EINVAL;
+		}
+
+		return 0;
+	} else if (password)
+		goto validate;
+
+	secret = l_queue_find(secrets, eap_secret_info_match, setting2);
+	if (!secret) {
+		eap_append_secret(out_missing, EAP_SECRET_REMOTE_PASSWORD,
+					setting2, identity);
+		return 0;
+	}
+
+	password = secret->value;
+
+validate:
+	if (!l_utf8_validate(password, strlen(password), NULL)) {
+		l_error("Password is not valid UTF-8");
+		return -EINVAL;
+	}
+
+	if (!mschapv2_nt_password_hash(password, hash))
+		return -EINVAL;
+
+	return 0;
+}
+
 static bool eap_mschapv2_load_settings(struct eap_state *eap,
 					struct l_settings *settings,
 					const char *prefix)
 {
 	struct eap_mschapv2_state *state;
-	const char *password;
+	const char *identity, *password = NULL;
 	char setting[64];
 
 	state = l_new(struct eap_mschapv2_state, 1);
 
 	snprintf(setting, sizeof(setting), "%sIdentity", prefix);
-	set_user_name(state,
-			l_settings_get_value(settings, "Security", setting));
+	identity = l_settings_get_value(settings, "Security", setting);
 
-	if (!state->user)
-		goto err;
+	if (!identity) {
+		snprintf(setting, sizeof(setting), "%sIdentity-User", prefix);
+		identity = l_settings_get_value(settings, "Security", setting);
+		if (!identity)
+			goto error;
 
+		snprintf(setting, sizeof(setting), "%sIdentity-Password",
+				prefix);
+		password = l_settings_get_value(settings, "Security", setting);
+		if (!password)
+			goto error;
+
+		set_password_from_string(state, password);
+	}
+
+	set_user_name(state, identity);
 	state->user_len = strlen(state->user);
 
 	/* Either read the password-hash from hexdump or password and hash it */
-	snprintf(setting, sizeof(setting), "%sPassword-Hash", prefix);
-	password = l_settings_get_value(settings, "Security", setting);
-	if (password) {
-		unsigned char *tmp;
-		size_t len;
+	if (!password) {
+		snprintf(setting, sizeof(setting), "%sPassword-Hash", prefix);
+		password = l_settings_get_value(settings, "Security", setting);
+		if (password) {
+			unsigned char *tmp;
+			size_t len;
 
-		tmp = l_util_from_hexstring(password, &len);
-		if (len != 16) {
-			l_error("Read an impossible password hash");
+			tmp = l_util_from_hexstring(password, &len);
+			memcpy(state->password_hash, tmp, 16);
 			l_free(tmp);
-			goto err;
 		}
+	}
 
-		memcpy(state->password_hash, tmp, 16);
-		l_free(tmp);
-	} else {
+	if (!password) {
 		snprintf(setting, sizeof(setting), "%sPassword", prefix);
-		password = l_settings_get_value(settings, "Security",
-								setting);
-		if (!password || !set_password_from_string(state, password))
-			goto err;
+		password = l_settings_get_value(settings, "Security", setting);
+		if (!password)
+			goto error;
+
+		set_password_from_string(state, password);
 	}
 
 	eap_set_data(eap, state);
 
 	return true;
 
-err:
-	l_free(state->user);
-	l_free(state);
-
+error:
+	free(state);
 	return false;
 }
 
@@ -702,12 +789,20 @@ static struct eap_method eap_mschapv2 = {
 
 	.free = eap_mschapv2_free,
 	.handle_request = eap_mschapv2_handle_request,
+	.check_settings = eap_mschapv2_check_settings,
 	.load_settings = eap_mschapv2_load_settings,
 };
 
 static int eap_mschapv2_init(void)
 {
 	l_debug("");
+
+	if (!l_checksum_is_supported(L_CHECKSUM_MD4, false)) {
+		l_warn("EAP_MSCHAPv2 init: MD4 support not found, skipping");
+		l_warn("Ensure that CONFIG_CRYPTO_MD4 is enabled");
+		return -ENOTSUP;
+	}
+
 	return eap_register_method(&eap_mschapv2);
 }
 
