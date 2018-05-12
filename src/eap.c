@@ -49,6 +49,8 @@ struct eap_state {
 	void *method_state;
 	bool method_success;
 	struct l_timeout *complete_timeout;
+
+	bool discard_success_and_failure:1;
 };
 
 struct eap_state *eap_new(eap_tx_packet_func_t tx_packet,
@@ -173,7 +175,7 @@ static void eap_send_identity_response(struct eap_state *eap, char *identity)
 	eap_send_response(eap, EAP_TYPE_IDENTITY, buf, len + 5);
 }
 
-static void eap_handle_request(struct eap_state *eap, uint16_t id,
+void __eap_handle_request(struct eap_state *eap, uint16_t id,
 				const uint8_t *pkt, size_t len)
 {
 	enum eap_type type;
@@ -282,17 +284,28 @@ void eap_rx_packet(struct eap_state *eap, const uint8_t *pkt, size_t len)
 
 	switch ((enum eap_code) code) {
 	case EAP_CODE_REQUEST:
-		eap_handle_request(eap, id, pkt + 4, eap_len - 4);
+		__eap_handle_request(eap, id, pkt + 4, eap_len - 4);
 		return;
 
 	case EAP_CODE_FAILURE:
 	case EAP_CODE_SUCCESS:
+		if (eap->discard_success_and_failure)
+			return;
+
 		l_timeout_remove(eap->complete_timeout);
 		eap->complete_timeout = NULL;
 
-		/* Section 4.2 */
-
-		if (id != eap->last_id)
+		/* RFC3748, Section 4.2
+		 *
+		 * The Identifier field of the Success and Failure packets
+		 * MUST match the Identifier field of the Response packet that
+		 * it is sent in response to. However, many currently deployed
+		 * implementations ignore this rule and increment Identity for
+		 * the Success and Failure packets. In order to support
+		 * interoperability with these products we validate id against
+		 * eap->last_id and its incremented value.
+		 */
+		if (id != eap->last_id && id != eap->last_id + 1)
 			return;
 
 		if (eap_len != 4)
@@ -334,6 +347,105 @@ void eap_rx_packet(struct eap_state *eap, const uint8_t *pkt, size_t len)
 	}
 }
 
+bool eap_secret_info_match(const void *a, const void *b)
+{
+	const struct eap_secret_info *s = a;
+
+	return !strcmp(s->id, b);
+}
+
+void eap_append_secret(struct l_queue **out_missing, enum eap_secret_type type,
+			const char *id, const char *parameter)
+{
+	struct eap_secret_info *info;
+
+	if (!*out_missing)
+		*out_missing = l_queue_new();
+
+	info = l_new(struct eap_secret_info, 1);
+	info->id = l_strdup(id);
+	info->type = type;
+	info->parameter = l_strdup(parameter);
+	l_queue_push_tail(*out_missing, info);
+}
+
+void eap_secret_info_free(void *data)
+{
+	struct eap_secret_info *info = data;
+
+	if (!info)
+		return;
+
+	if (info->value) {
+		memset(info->value, 0, strlen(info->value));
+		l_free(info->value);
+	}
+
+	if (info->parameter) {
+		memset(info->parameter, 0, strlen(info->parameter));
+		l_free(info->parameter);
+	}
+
+	l_free(info->id);
+	l_free(info);
+}
+
+int eap_check_settings(struct l_settings *settings, struct l_queue *secrets,
+			const char *prefix, bool set_key_material,
+			struct l_queue **out_missing)
+{
+	char setting[64];
+	const char *method_name;
+	const struct l_queue_entry *entry;
+	struct eap_method *method;
+
+	snprintf(setting, sizeof(setting), "%sMethod", prefix);
+	method_name = l_settings_get_value(settings, "Security", setting);
+
+	if (!method_name) {
+		l_error("Property %s missing", setting);
+
+		return -ENOENT;
+	}
+
+	for (entry = l_queue_get_entries(eap_methods); entry;
+					entry = entry->next) {
+		method = entry->data;
+
+		if (!strcasecmp(method_name, method->name))
+			break;
+	}
+
+	if (!entry) {
+		l_error("EAP method \"%s\" unsupported", method_name);
+
+		return -ENOTSUP;
+	}
+
+	/* Check if selected method is suitable for 802.1x */
+	if (set_key_material && !method->exports_msk) {
+		l_error("EAP method \"%s\" doesn't export key material",
+				method_name);
+
+		return -ENOTSUP;
+	}
+
+	/* method may not store identity in settings file */
+	if (!method->get_identity) {
+		snprintf(setting, sizeof(setting), "%sIdentity", prefix);
+		if (!l_settings_get_value(settings, "Security", setting)) {
+			l_error("Property %s is missing", setting);
+
+			return -ENOENT;
+		}
+	}
+
+	if (!method->check_settings)
+		return 0;
+
+	return method->check_settings(settings, secrets, prefix, out_missing);
+}
+
 bool eap_load_settings(struct eap_state *eap, struct l_settings *settings,
 			const char *prefix)
 {
@@ -363,12 +475,8 @@ bool eap_load_settings(struct eap_state *eap, struct l_settings *settings,
 		return false;
 
 	/* Check if selected method is suitable for 802.1x */
-	if (eap->set_key_material && !eap->method->exports_msk) {
-		l_error("EAP method \"%s\" doesn't export key material",
-				method_name);
-
+	if (eap->set_key_material && !eap->method->exports_msk)
 		goto err;
-	}
 
 	if (eap->method->load_settings)
 		if (!eap->method->load_settings(eap, settings, prefix))
@@ -383,11 +491,8 @@ bool eap_load_settings(struct eap_state *eap, struct l_settings *settings,
 		eap->identity = l_strdup(eap->method->get_identity(eap));
 	}
 
-	if (!eap->identity) {
-		l_error("EAP Identity is missing");
-
+	if (!eap->identity)
 		goto err;
-	}
 
 	return true;
 
@@ -430,9 +535,19 @@ void eap_method_event(struct eap_state *eap, unsigned int id, const void *data)
 	eap->event_func(id, data, eap->user_data);
 }
 
+bool eap_method_is_success(struct eap_state *eap)
+{
+	return eap->method_success;
+}
+
 void eap_method_success(struct eap_state *eap)
 {
 	eap->method_success = true;
+}
+
+void eap_discard_success_and_failure(struct eap_state *eap, bool discard)
+{
+	eap->discard_success_and_failure = discard;
 }
 
 void eap_method_error(struct eap_state *eap)

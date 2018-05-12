@@ -25,14 +25,7 @@
 #endif
 
 #include <string.h>
-#include <unistd.h>
-#include <errno.h>
-#include <sys/socket.h>
-#include <linux/if.h>
-#include <linux/if_packet.h>
 #include <linux/if_ether.h>
-#include <arpa/inet.h>
-#include <linux/filter.h>
 #include <ell/ell.h>
 
 #include "crypto.h"
@@ -47,132 +40,15 @@
 struct l_queue *state_machines;
 struct l_queue *preauths;
 struct watchlist frame_watches;
+static uint32_t eapol_4way_handshake_time = 2;
 
 eapol_deauthenticate_func_t deauthenticate = NULL;
 eapol_rekey_offload_func_t rekey_offload = NULL;
 
-static struct l_io *pae_io;
 eapol_tx_packet_func_t tx_packet = NULL;
 void *tx_user_data;
 
 uint32_t next_frame_watch_id;
-
-/*
- * BPF filter to match skb->dev->type == 1 (ARPHRD_ETHER) and
- * match skb->protocol == 0x888e (PAE) or 0x88c7 (preauthentication).
- */
-static struct sock_filter pae_filter[] = {
-	{ 0x28,  0,  0, 0xfffff01c },	/* ldh #hatype		*/
-	{ 0x15,  0,  4, 0x00000001 },	/* jne #1, drop		*/
-	{ 0x28,  0,  0, 0xfffff000 },	/* ldh #proto		*/
-	{ 0x15,  1,  0, 0x0000888e },	/* je  #0x888e, keep	*/
-	{ 0x15,  0,  1, 0x000088c7 },	/* jne #0x88c7, drop	*/
-	{ 0x06,  0,  0, 0xffffffff },	/* keep: ret #-1	*/
-	{ 0x06,  0,  0, 0000000000 },	/* drop: ret #0		*/
-};
-
-static const struct sock_fprog pae_fprog = { .len = 7, .filter = pae_filter };
-
-static struct l_io *pae_open(void)
-{
-	struct l_io *io;
-	int fd;
-
-	fd = socket(PF_PACKET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
-							htons(ETH_P_ALL));
-	if (fd < 0)
-		return NULL;
-
-	if (setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER,
-					&pae_fprog, sizeof(pae_fprog)) < 0) {
-		close(fd);
-		return NULL;
-	}
-
-	io = l_io_new(fd);
-	l_io_set_close_on_destroy(io, true);
-
-	return io;
-}
-
-static bool pae_read(struct l_io *io, void *user_data)
-{
-	int fd = l_io_get_fd(io);
-	struct sockaddr_ll sll;
-	socklen_t sll_len;
-	ssize_t bytes;
-	uint8_t frame[IEEE80211_MAX_DATA_LEN];
-
-	memset(&sll, 0, sizeof(sll));
-	sll_len = sizeof(sll);
-
-	bytes = recvfrom(fd, frame, sizeof(frame), 0,
-				(struct sockaddr *) &sll, &sll_len);
-	if (bytes <= 0) {
-		l_error("EAPoL read socket: %s", strerror(errno));
-		return false;
-	}
-
-	if (sll.sll_halen != ETH_ALEN)
-		return true;
-
-	__eapol_rx_packet(sll.sll_ifindex, sll.sll_addr,
-				ntohs(sll.sll_protocol), frame, bytes);
-
-	return true;
-}
-
-static void pae_destroy()
-{
-	pae_io = NULL;
-}
-
-static void pae_write(uint32_t ifindex, const uint8_t *aa, const uint8_t *spa,
-			uint16_t proto, const struct eapol_frame *ef)
-{
-	size_t frame_size;
-	struct sockaddr_ll sll;
-	ssize_t r;
-	int fd;
-
-	if (!pae_io) {
-		if (tx_packet) /* Used for unit tests */
-			tx_packet(ifindex, aa, spa, ef, tx_user_data);
-
-		return;
-	}
-
-	fd = l_io_get_fd(pae_io);
-
-	memset(&sll, 0, sizeof(sll));
-	sll.sll_family = AF_PACKET;
-	sll.sll_ifindex = ifindex;
-	sll.sll_protocol = htons(proto);
-	sll.sll_halen = ETH_ALEN;
-	memcpy(sll.sll_addr, aa, ETH_ALEN);
-
-	frame_size = sizeof(struct eapol_header) +
-			L_BE16_TO_CPU(ef->header.packet_len);
-
-	r = sendto(fd, ef, frame_size, 0,
-			(struct sockaddr *) &sll, sizeof(sll));
-	if (r < 0)
-		l_error("EAPoL write socket: %s", strerror(errno));
-}
-
-void eapol_pae_open()
-{
-	pae_io = pae_open();
-	if (!pae_io)
-		return;
-
-	l_io_set_read_handler(pae_io, pae_read, NULL, pae_destroy);
-}
-
-void eapol_pae_close()
-{
-	l_io_destroy(pae_io);
-}
 
 #define VERIFY_IS_ZERO(field)						\
 	do {								\
@@ -855,6 +731,13 @@ void eapol_sm_set_event_func(struct eapol_sm *sm, eapol_sm_event_func_t func)
 	sm->event_func = func;
 }
 
+static void eapol_sm_write(struct eapol_sm *sm, const struct eapol_frame *ef,
+				bool noencrypt)
+{
+	__eapol_tx_packet(sm->handshake->ifindex, sm->handshake->aa, ETH_P_PAE,
+				ef, noencrypt);
+}
+
 static inline void handshake_failed(struct eapol_sm *sm, uint16_t reason_code)
 {
 	if (deauthenticate)
@@ -873,12 +756,6 @@ static void eapol_timeout(struct l_timeout *timeout, void *user_data)
 	sm->timeout = NULL;
 
 	handshake_failed(sm, MMPDU_REASON_CODE_4WAY_HANDSHAKE_TIMEOUT);
-}
-
-static void eapol_write(struct eapol_sm *sm, const struct eapol_frame *ef)
-{
-	pae_write(sm->handshake->ifindex,
-			sm->handshake->aa, sm->handshake->spa, ETH_P_PAE, ef);
 }
 
 static void eapol_install_gtk(struct eapol_sm *sm, uint8_t gtk_key_index,
@@ -932,7 +809,7 @@ static void send_eapol_start(struct l_timeout *timeout, void *user_data)
 	frame->header.packet_type = 1;
 	l_put_be16(0, &frame->header.packet_len);
 
-	eapol_write(sm, frame);
+	eapol_sm_write(sm, frame, false);
 }
 
 static void eapol_handle_ptk_1_of_4(struct eapol_sm *sm,
@@ -953,6 +830,8 @@ static void eapol_handle_ptk_1_of_4(struct eapol_sm *sm,
 	pmkid = handshake_util_find_pmkid_kde(ek->key_data,
 					L_BE16_TO_CPU(ek->key_data_len));
 
+	ie_parse_rsne_from_data(own_ie, own_ie[1] + 2, &rsn_info);
+
 	/*
 	 * Require the PMKID KDE whenever we've sent a list of PMKIDs in
 	 * our RSNE and we've haven't seen any EAPOL-EAP frame since
@@ -962,8 +841,6 @@ static void eapol_handle_ptk_1_of_4(struct eapol_sm *sm,
 	 * send no PMKID KDE.
 	 */
 	if (!sm->eap_exchanged && !sm->handshake->wpa_ie &&
-			ie_parse_rsne_from_data(own_ie, own_ie[1] + 2,
-						&rsn_info) >= 0 &&
 			rsn_info.num_pmkids) {
 		bool found = false;
 		int i;
@@ -1060,11 +937,11 @@ static void eapol_handle_ptk_1_of_4(struct eapol_sm *sm,
 	}
 
 	memcpy(step2->key_mic_data, mic, sizeof(mic));
-	eapol_write(sm, (struct eapol_frame *) step2);
+	eapol_sm_write(sm, (struct eapol_frame *) step2, false);
 	l_free(step2);
 
-	l_timeout_remove(sm->timeout);
-	sm->timeout = NULL;
+	l_timeout_remove(sm->eapol_start_timeout);
+	sm->eapol_start_timeout = NULL;
 
 	return;
 
@@ -1328,7 +1205,7 @@ retransmit:
 	}
 
 	memcpy(step4->key_mic_data, mic, sizeof(mic));
-	eapol_write(sm, (struct eapol_frame *) step4);
+	eapol_sm_write(sm, (struct eapol_frame *) step4, false);
 	l_free(step4);
 
 	if (sm->handshake->ptk_complete)
@@ -1345,6 +1222,9 @@ retransmit:
 	if (rekey_offload)
 		rekey_offload(sm->handshake->ifindex, ptk->kek, ptk->kck,
 				sm->replay_counter, sm->user_data);
+
+	l_timeout_remove(sm->timeout);
+	sm->timeout = NULL;
 
 	return;
 
@@ -1438,7 +1318,7 @@ static void eapol_handle_gtk_1_of_2(struct eapol_sm *sm,
 	}
 
 	memcpy(step2->key_mic_data, mic, sizeof(mic));
-	eapol_write(sm, (struct eapol_frame *) step2);
+	eapol_sm_write(sm, (struct eapol_frame *) step2, false);
 	l_free(step2);
 
 	eapol_install_gtk(sm, gtk_key_index, gtk, gtk_len, ek->key_rsc);
@@ -1595,7 +1475,7 @@ static void eapol_eap_msg_cb(const uint8_t *eap_data, size_t len,
 
 	memcpy(frame->data, eap_data, len);
 
-	eapol_write(sm, frame);
+	eapol_sm_write(sm, frame, false);
 }
 
 /* This respresentes the eapTimout, eapFail and eapSuccess messages */
@@ -1621,8 +1501,6 @@ static void eapol_eap_results_cb(const uint8_t *msk_data, size_t msk_len,
 				void *user_data)
 {
 	struct eapol_sm *sm = user_data;
-	ssize_t pmk_len;
-	const uint8_t *pmk_data;
 
 	l_debug("EAP key material received");
 
@@ -1631,34 +1509,35 @@ static void eapol_eap_results_cb(const uint8_t *msk_data, size_t msk_len,
 	 *    "When not using a PSK, the PMK is derived from the AAA key.
 	 *    The PMK shall be computed as the first 256 bits (bits 0–255)
 	 *    of the AAA key: PMK ← L(PTK, 0, 256)."
-	 * 802.11 11.6.1.3:
+	 * 802.11-2016 12.7.1.3:
 	 *    "When not using a PSK, the PMK is derived from the MSK.
-	 *    The PMK shall be computed as the first 256 bits (bits 0–255)
-	 *    of the MSK: PMK ← L(MSK, 0, 256)."
+	 *    The PMK shall be computed as the first PMK_bits bits
+	 *    (bits 0 to PMK_bits–1) of the MSK: PMK = L(MSK, 0, PMK_bits)."
 	 * RFC5247 explains AAA-Key refers to the MSK and confirms the
 	 * first 32 bytes of the MSK are used.  MSK is at least 64 octets
 	 * long per RFC3748.  Note WEP derives the PTK from MSK differently.
 	 *
 	 * In a Fast Transition initial mobility domain association the PMK
-	 * maps to the XXKey except with EAP:
-	 * 802.11 11.6.1.7.3:
-	 *    "If the AKM negotiated is 00-0F-AC:3, then XXKey shall be the
-	 *    second 256 bits of the MSK (which is derived from the IEEE
+	 * maps to the XXKey, except with EAP:
+	 * 802.11-2016 12.7.1.7.3:
+	 *    "If the AKM negotiated is 00-0F-AC:3, then [...] XXKey shall be
+	 *    the second 256 bits of the MSK (which is derived from the IEEE
 	 *    802.1X authentication), i.e., XXKey = L(MSK, 256, 256)."
+	 * So we need to save the first 64 bytes at minimum.
 	 */
 
 	if (sm->handshake->akm_suite == IE_RSN_AKM_SUITE_FT_OVER_8021X) {
-		pmk_len = (ssize_t) msk_len - 32;
-		pmk_data = msk_data + 32;
+		if (msk_len < 64)
+			goto msk_short;
 	} else {
-		pmk_len = msk_len;
-		pmk_data = msk_data;
+		if (msk_len < 32)
+			goto msk_short;
 	}
 
-	if (pmk_len < 32)
-		goto msk_short;
+	if (msk_len > sizeof(sm->handshake->pmk))
+		msk_len = sizeof(sm->handshake->pmk);
 
-	handshake_state_set_pmk(sm->handshake, pmk_data);
+	handshake_state_set_pmk(sm->handshake, msk_data, msk_len);
 
 	return;
 
@@ -1837,7 +1716,8 @@ bool eapol_start(struct eapol_sm *sm)
 	sm->started = true;
 
 	if (sm->require_handshake)
-		sm->timeout = l_timeout_create(2, eapol_timeout, sm, NULL);
+		sm->timeout = l_timeout_create(eapol_4way_handshake_time,
+				eapol_timeout, sm, NULL);
 
 	if (sm->use_eapol_start) {
 		/*
@@ -1900,12 +1780,6 @@ bool eapol_frame_watch_remove(uint32_t id)
 	return watchlist_remove(&frame_watches, id);
 }
 
-void eapol_tx_frame(uint32_t ifindex, uint16_t proto, const uint8_t *dst,
-			const struct eapol_frame *frame)
-{
-	pae_write(ifindex, dst, NULL, proto, frame);
-}
-
 struct preauth_sm {
 	uint32_t ifindex;
 	uint8_t aa[6];
@@ -1948,7 +1822,7 @@ static void preauth_frame(struct preauth_sm *sm, uint8_t packet_type,
 	if (data_len)
 		memcpy(frame->data, data, data_len);
 
-	pae_write(sm->ifindex, sm->aa, sm->spa, 0x88c7, frame);
+	__eapol_tx_packet(sm->ifindex, sm->aa, 0x88c7, frame, false);
 }
 
 static void preauth_rx_packet(uint16_t proto, const uint8_t *from,
@@ -2119,7 +1993,8 @@ static bool eapol_frame_watch_match_ifindex(const void *a, const void *b)
 }
 
 void __eapol_rx_packet(uint32_t ifindex, const uint8_t *src, uint16_t proto,
-					const uint8_t *frame, size_t len)
+					const uint8_t *frame, size_t len,
+					bool noencrypt)
 {
 	const struct eapol_header *eh;
 
@@ -2145,6 +2020,22 @@ void __eapol_rx_packet(uint32_t ifindex, const uint8_t *src, uint16_t proto,
 					L_UINT_TO_PTR(ifindex),
 					eapol_frame_watch_func_t, proto, src,
 					(const struct eapol_frame *) eh);
+}
+
+void __eapol_tx_packet(uint32_t ifindex, const uint8_t *dst, uint16_t proto,
+			const struct eapol_frame *frame, bool noencrypt)
+{
+	if (!tx_packet)
+		return;
+
+	tx_packet(ifindex, dst, proto, frame, noencrypt, tx_user_data);
+}
+
+void __eapol_set_config(struct l_settings *config)
+{
+	if (!l_settings_get_uint(config, "EAPoL",
+			"max_4way_handshake_time", &eapol_4way_handshake_time))
+		eapol_4way_handshake_time = 2;
 }
 
 bool eapol_init()

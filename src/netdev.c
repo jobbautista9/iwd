@@ -30,6 +30,8 @@
 #include <linux/if.h>
 #include <linux/if_packet.h>
 #include <linux/if_ether.h>
+#include <arpa/inet.h>
+#include <linux/filter.h>
 #include <sys/socket.h>
 #include <errno.h>
 #include <fnmatch.h>
@@ -96,6 +98,8 @@ struct netdev {
 	struct watchlist event_watches;
 
 	struct watchlist frame_watches;
+
+	struct l_io *pae_io;  /* for drivers without EAPoL over NL80211 */
 
 	bool connected : 1;
 	bool operational : 1;
@@ -547,6 +551,8 @@ static void netdev_free(void *data)
 	device_remove(netdev->device);
 	watchlist_destroy(&netdev->event_watches);
 	watchlist_destroy(&netdev->frame_watches);
+
+	l_io_destroy(netdev->pae_io);
 
 	l_free(netdev);
 }
@@ -1302,7 +1308,8 @@ static void netdev_handshake_failed(uint32_t ifindex,
 	if (!netdev)
 		return;
 
-	l_error("4-Way handshake failed for ifindex: %d", ifindex);
+	l_error("4-Way handshake failed for ifindex: %d, reason: %u",
+				ifindex, reason_code);
 
 	netdev->sm = NULL;
 
@@ -1634,8 +1641,10 @@ static void netdev_connect_event(struct l_genl_msg *msg,
 
 		netdev->in_ft = false;
 
-		if (is_rsn)
+		if (is_rsn) {
 			handshake_state_install_ptk(netdev->handshake);
+			return;
+		}
 	}
 
 	netdev_connect_ok(netdev);
@@ -2136,6 +2145,12 @@ static struct l_genl_msg *netdev_build_cmd_connect(struct netdev *netdev,
 	l_genl_msg_append_attr(msg, NL80211_ATTR_SSID,
 						bss->ssid_len, bss->ssid);
 	l_genl_msg_append_attr(msg, NL80211_ATTR_AUTH_TYPE, 4, &auth_type);
+
+	if (wiphy_get_ext_feature(netdev->wiphy,
+				NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211))
+		l_genl_msg_append_attr(msg,
+				NL80211_ATTR_CONTROL_PORT_OVER_NL80211,
+				0, NULL);
 
 	if (prev_bssid)
 		l_genl_msg_append_attr(msg, NL80211_ATTR_PREV_BSSID, ETH_ALEN,
@@ -3075,6 +3090,193 @@ static void netdev_mgmt_frame_event(struct l_genl_msg *msg,
 					netdev, mpdu, body, info.body_len);
 }
 
+static void netdev_pae_destroy(void *user_data)
+{
+	struct netdev *netdev = user_data;
+
+	netdev->pae_io = NULL;
+}
+
+static bool netdev_pae_read(struct l_io *io, void *user_data)
+{
+	int fd = l_io_get_fd(io);
+	struct sockaddr_ll sll;
+	socklen_t sll_len;
+	ssize_t bytes;
+	uint8_t frame[IEEE80211_MAX_DATA_LEN];
+
+	memset(&sll, 0, sizeof(sll));
+	sll_len = sizeof(sll);
+
+	bytes = recvfrom(fd, frame, sizeof(frame), 0,
+				(struct sockaddr *) &sll, &sll_len);
+	if (bytes <= 0) {
+		l_error("EAPoL read socket: %s", strerror(errno));
+		return false;
+	}
+
+	if (sll.sll_halen != ETH_ALEN)
+		return true;
+
+	__eapol_rx_packet(sll.sll_ifindex, sll.sll_addr,
+				ntohs(sll.sll_protocol), frame, bytes, false);
+
+	return true;
+}
+
+static void netdev_control_port_frame_event(struct l_genl_msg *msg,
+							struct netdev *netdev)
+{
+	struct l_genl_attr attr;
+	uint16_t type;
+	uint16_t len;
+	const void *data;
+	const uint8_t *frame = NULL;
+	uint16_t frame_len = 0;
+	const uint8_t *src = NULL;
+	uint16_t proto = 0;
+	bool unencrypted = false;
+
+	l_debug("");
+
+	if (!l_genl_attr_init(&attr, msg))
+		return;
+
+	while (l_genl_attr_next(&attr, &type, &len, &data)) {
+		switch (type) {
+		case NL80211_ATTR_FRAME:
+			if (frame)
+				return;
+
+			frame = data;
+			frame_len = len;
+			break;
+		case NL80211_ATTR_MAC:
+			if (src)
+				return;
+
+			src = data;
+			break;
+		case NL80211_ATTR_CONTROL_PORT_ETHERTYPE:
+			if (len != sizeof(proto))
+				return;
+
+			proto = *((const uint16_t *) data);
+			break;
+		case NL80211_ATTR_CONTROL_PORT_NO_ENCRYPT:
+			unencrypted = true;
+			break;
+		}
+	}
+
+	if (!src || !frame || !proto)
+		return;
+
+	__eapol_rx_packet(netdev->index, src, proto,
+						frame, frame_len, unencrypted);
+}
+
+static struct l_genl_msg *netdev_build_control_port_frame(struct netdev *netdev,
+							const uint8_t *to,
+							uint16_t proto,
+							bool unencrypted,
+							const void *body,
+							size_t body_len)
+{
+	struct l_genl_msg *msg;
+
+	msg = l_genl_msg_new_sized(NL80211_CMD_CONTROL_PORT_FRAME,
+							128 + body_len);
+
+	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &netdev->index);
+	l_genl_msg_append_attr(msg, NL80211_ATTR_FRAME, body_len, body);
+	l_genl_msg_append_attr(msg, NL80211_ATTR_CONTROL_PORT_ETHERTYPE, 2,
+				&proto);
+	l_genl_msg_append_attr(msg, NL80211_ATTR_MAC, ETH_ALEN, to);
+
+	if (unencrypted)
+		l_genl_msg_append_attr(msg,
+				NL80211_ATTR_CONTROL_PORT_NO_ENCRYPT, 0, NULL);
+
+	return msg;
+}
+
+static void netdev_control_port_frame_cb(struct l_genl_msg *msg,
+							void *user_data)
+{
+	int err;
+
+	err = l_genl_msg_get_error(msg);
+
+	l_debug("%d", err);
+
+	if (err < 0)
+		l_info("CMD_CONTROL_PORT failed: %s", strerror(-err));
+}
+
+static int netdev_control_port_write_pae(struct netdev *netdev,
+						const uint8_t *dest,
+						uint16_t proto,
+						const struct eapol_frame *ef,
+						bool noencrypt)
+{
+	int fd = l_io_get_fd(netdev->pae_io);
+	struct sockaddr_ll sll;
+	size_t frame_size = sizeof(struct eapol_header) +
+					L_BE16_TO_CPU(ef->header.packet_len);
+	ssize_t r;
+
+	memset(&sll, 0, sizeof(sll));
+	sll.sll_family = AF_PACKET;
+	sll.sll_ifindex = netdev->index;
+	sll.sll_protocol = htons(proto);
+	sll.sll_halen = ETH_ALEN;
+	memcpy(sll.sll_addr, dest, ETH_ALEN);
+
+	r = sendto(fd, ef, frame_size, 0,
+			(struct sockaddr *) &sll, sizeof(sll));
+	if (r < 0)
+		l_error("EAPoL write socket: %s", strerror(errno));
+
+	return r;
+}
+
+static int netdev_control_port_frame(uint32_t ifindex,
+					const uint8_t *dest, uint16_t proto,
+					const struct eapol_frame *ef,
+					bool noencrypt,
+					void *user_data)
+{
+	struct l_genl_msg *msg;
+	struct netdev *netdev;
+	size_t frame_size;
+
+	netdev = netdev_find(ifindex);
+	if (!netdev)
+		return -ENOENT;
+
+	frame_size = sizeof(struct eapol_header) +
+			L_BE16_TO_CPU(ef->header.packet_len);
+
+	if (!wiphy_get_ext_feature(netdev->wiphy,
+			NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211))
+		return netdev_control_port_write_pae(netdev, dest, proto,
+							ef, noencrypt);
+
+	msg = netdev_build_control_port_frame(netdev, dest, proto, noencrypt,
+						ef, frame_size);
+	if (!msg)
+		return -ENOMEM;
+
+	if (!l_genl_family_send(nl80211, msg, netdev_control_port_frame_cb,
+				netdev, NULL)) {
+		l_genl_msg_unref(msg);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static void netdev_unicast_notify(struct l_genl_msg *msg, void *user_data)
 {
 	struct netdev *netdev = NULL;
@@ -3113,6 +3315,9 @@ static void netdev_unicast_notify(struct l_genl_msg *msg, void *user_data)
 	switch (cmd) {
 	case NL80211_CMD_FRAME:
 		netdev_mgmt_frame_event(msg, netdev);
+		break;
+	case NL80211_CMD_CONTROL_PORT_FRAME:
+		netdev_control_port_frame_event(msg, netdev);
 		break;
 	}
 }
@@ -3483,6 +3688,60 @@ bool netdev_frame_watch_remove(struct netdev *netdev, uint32_t id)
 	return watchlist_remove(&netdev->frame_watches, id);
 }
 
+static struct l_io *pae_open(uint32_t ifindex)
+{
+	/*
+	 * BPF filter to match skb->dev->type == 1 (ARPHRD_ETHER) and
+	 * match skb->protocol == 0x888e (PAE) or 0x88c7 (preauthentication).
+	 */
+	struct sock_filter pae_filter[] = {
+		{ 0x20,  0,  0, 0xfffff008 },	/* ld #ifidx		*/
+		{ 0x15,  0,  6, 0x00000000 },	/* jne #0, drop		*/
+		{ 0x28,  0,  0, 0xfffff01c },	/* ldh #hatype		*/
+		{ 0x15,  0,  4, 0x00000001 },	/* jne #1, drop		*/
+		{ 0x28,  0,  0, 0xfffff000 },	/* ldh #proto		*/
+		{ 0x15,  1,  0, 0x0000888e },	/* je  #0x888e, keep	*/
+		{ 0x15,  0,  1, 0x000088c7 },	/* jne #0x88c7, drop	*/
+		{ 0x06,  0,  0, 0xffffffff },	/* keep: ret #-1	*/
+		{ 0x06,  0,  0, 0000000000 },	/* drop: ret #0		*/
+	};
+
+	const struct sock_fprog pae_fprog = {
+		.len = L_ARRAY_SIZE(pae_filter),
+		.filter = pae_filter
+	};
+
+	struct l_io *io;
+	int fd;
+
+	fd = socket(PF_PACKET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK,
+							htons(ETH_P_ALL));
+	if (fd < 0)
+		return NULL;
+
+	/*
+	 * Here we modify the k value in the BPF program above to match the
+	 * given ifindex.  We do it this way instead of using bind to attach
+	 * to a specific interface index to avoid having to re-open the fd
+	 * whenever the device is powered down / up
+	 */
+
+	pae_filter[1].k = ifindex;
+
+	if (setsockopt(fd, SOL_SOCKET, SO_ATTACH_FILTER,
+					&pae_fprog, sizeof(pae_fprog)) < 0)
+		goto error;
+
+	io = l_io_new(fd);
+	l_io_set_close_on_destroy(io, true);
+
+	return io;
+
+error:
+	close(fd);
+	return NULL;
+}
+
 static void netdev_create_from_genl(struct l_genl_msg *msg)
 {
 	struct l_genl_attr attr;
@@ -3499,6 +3758,7 @@ static void netdev_create_from_genl(struct l_genl_msg *msg)
 	const uint8_t action_neighbor_report_prefix[2] = { 0x05, 0x05 };
 	const uint8_t action_sa_query_resp_prefix[2] = { 0x08, 0x01 };
 	const uint8_t action_sa_query_req_prefix[2] = { 0x08, 0x00 };
+	struct l_io *pae_io = NULL;
 
 	if (!l_genl_attr_init(&attr, msg))
 		return;
@@ -3576,6 +3836,17 @@ static void netdev_create_from_genl(struct l_genl_msg *msg)
 		return;
 	}
 
+	if (!wiphy_get_ext_feature(wiphy,
+			NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211)) {
+		l_debug("No Control Port over NL80211 support for ifindex: %u,"
+				" using PAE socket", *ifindex);
+		pae_io = pae_open(*ifindex);
+		if (!pae_io) {
+			l_error("Unable to open PAE interface");
+			return;
+		}
+	}
+
 	netdev = l_new(struct netdev, 1);
 	netdev->index = *ifindex;
 	netdev->type = *iftype;
@@ -3583,13 +3854,17 @@ static void netdev_create_from_genl(struct l_genl_msg *msg)
 	memcpy(netdev->addr, ifaddr, sizeof(netdev->addr));
 	memcpy(netdev->name, ifname, ifname_len);
 	netdev->wiphy = wiphy;
+
+	if (pae_io) {
+		netdev->pae_io = pae_io;
+		l_io_set_read_handler(netdev->pae_io, netdev_pae_read, netdev,
+							netdev_pae_destroy);
+	}
+
 	watchlist_init(&netdev->event_watches, NULL);
 	watchlist_init(&netdev->frame_watches, &netdev_frame_watch_ops);
 
 	l_queue_push_tail(netdev_list, netdev);
-
-	if (l_queue_length(netdev_list) == 1)
-		eapol_pae_open();
 
 	l_debug("Created interface %s[%d]", netdev->name, netdev->index);
 
@@ -3771,6 +4046,7 @@ bool netdev_init(struct l_genl_family *in,
 
 	__eapol_set_deauthenticate_func(netdev_handshake_failed);
 	__eapol_set_rekey_offload_func(netdev_set_rekey_offload);
+	__eapol_set_tx_packet_func(netdev_control_port_frame);
 
 	if (whitelist)
 		whitelist_filter = l_strsplit(whitelist, ',');
@@ -3807,6 +4083,4 @@ void netdev_shutdown(void)
 
 	l_queue_destroy(netdev_list, netdev_free);
 	netdev_list = NULL;
-
-	eapol_pae_close();
 }

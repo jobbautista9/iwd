@@ -33,6 +33,19 @@ enum eap_result {
 	EAP_RESULT_TIMEOUT,
 };
 
+enum eap_secret_type {
+	EAP_SECRET_LOCAL_PKEY_PASSPHRASE,
+	EAP_SECRET_REMOTE_PASSWORD,
+	EAP_SECRET_REMOTE_USER_PASSWORD,
+};
+
+struct eap_secret_info {
+	char *id;
+	enum eap_secret_type type;
+	char *parameter;
+	char *value;
+};
+
 typedef void (*eap_tx_packet_func_t)(const uint8_t *eap_data, size_t len,
 					void *user_data);
 typedef void (*eap_key_material_func_t)(const uint8_t *msk_data, size_t msk_len,
@@ -47,6 +60,14 @@ struct eap_state *eap_new(eap_tx_packet_func_t tx_packet,
 			eap_complete_func_t complete, void *user_data);
 void eap_free(struct eap_state *eap);
 
+bool eap_secret_info_match(const void *a, const void *b);
+void eap_append_secret(struct l_queue **out_missing, enum eap_secret_type type,
+			const char *id, const char *parameter);
+void eap_secret_info_free(void *data);
+
+int eap_check_settings(struct l_settings *settings, struct l_queue *secrets,
+			const char *prefix, bool set_key_material,
+			struct l_queue **out_missing);
 bool eap_load_settings(struct eap_state *eap, struct l_settings *settings,
 			const char *prefix);
 
@@ -59,6 +80,11 @@ size_t eap_get_mtu(struct eap_state *eap);
 
 void eap_rx_packet(struct eap_state *eap, const uint8_t *pkt, size_t len);
 
+void __eap_handle_request(struct eap_state *eap, uint16_t id,
+						const uint8_t *pkt, size_t len);
+
+void eap_discard_success_and_failure(struct eap_state *eap, bool discard);
+
 void eap_init(uint32_t default_mtu);
 void eap_exit(void);
 
@@ -70,6 +96,7 @@ enum eap_type {
 	EAP_TYPE_NAK		= 3,
 	__EAP_TYPE_MIN_METHOD	= 4,
 	EAP_TYPE_MD5_CHALLENGE	= 4,
+	EAP_TYPE_GTC		= 6,
 	EAP_TYPE_TLS_EAP	= 13,
 	EAP_TYPE_SIM		= 18,
 	EAP_TYPE_TTLS		= 21,
@@ -78,6 +105,7 @@ enum eap_type {
 	EAP_TYPE_EXTENSIONS	= 33,
 	EAP_TYPE_AKA_PRIME	= 50,
 	EAP_TYPE_MSCHAPV2	= 26,
+	EAP_TYPE_PWD		= 52,
 	EAP_TYPE_EXPANDED	= 254,
 };
 
@@ -94,6 +122,10 @@ struct eap_method {
 	uint32_t vendor_type;
 	bool exports_msk;
 	const char *name;
+
+	int (*check_settings)(struct l_settings *settings,
+				struct l_queue *secrets, const char *prefix,
+				struct l_queue **out_missing);
 
 	bool (*load_settings)(struct eap_state *eap,
 				struct l_settings *settings,
@@ -136,6 +168,7 @@ void eap_set_key_material(struct eap_state *eap,
 
 void eap_start_complete_timeout(struct eap_state *eap);
 
+bool eap_method_is_success(struct eap_state *eap);
 void eap_method_success(struct eap_state *eap);
 void eap_method_error(struct eap_state *eap);
 void eap_method_event(struct eap_state *eap, unsigned int type,

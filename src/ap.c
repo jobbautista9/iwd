@@ -375,8 +375,8 @@ static void ap_send_ptk_1_of_4(struct ap_state *ap, struct sta_state *sta)
 	ek->header.packet_len = L_CPU_TO_BE16(sizeof(struct eapol_key) +
 					L_BE16_TO_CPU(ek->key_data_len) - 4);
 
-	eapol_tx_frame(ifindex, ETH_P_PAE, sta->addr,
-			(struct eapol_frame *) ek);
+	__eapol_tx_packet(ifindex, sta->addr, ETH_P_PAE,
+				(struct eapol_frame *) ek, false);
 }
 
 static void ap_ptk_1_of_4_retry(struct l_timeout *timeout, void *user_data)
@@ -451,8 +451,8 @@ static void ap_send_ptk_3_of_4(struct ap_state *ap, struct sta_state *sta)
 	if (!eapol_calculate_mic(ptk->kck, ek, ek->key_mic_data))
 		return;
 
-	eapol_tx_frame(ifindex, ETH_P_PAE, sta->addr,
-			(struct eapol_frame *) ek);
+	__eapol_tx_packet(ifindex, sta->addr, ETH_P_PAE,
+				(struct eapol_frame *) ek, false);
 }
 
 static void ap_ptk_3_of_4_retry(struct l_timeout *timeout, void *user_data)
@@ -1519,6 +1519,7 @@ static struct l_genl_msg *ap_build_cmd_start_ap(struct ap_state *ap)
 
 	uint32_t dtim_period = 3;
 	uint32_t ifindex = device_get_ifindex(ap->device);
+	struct wiphy *wiphy = device_get_wiphy(ap->device);
 	uint32_t hidden_ssid = NL80211_HIDDEN_SSID_NOT_IN_USE;
 	uint32_t nl_ciphers = ie_rsn_cipher_suite_to_cipher(ap->ciphers);
 	uint32_t nl_akm = CRYPTO_AKM_PSK;
@@ -1538,7 +1539,7 @@ static struct l_genl_msg *ap_build_cmd_start_ap(struct ap_state *ap)
 	if (!head_len || !tail_len)
 		return NULL;
 
-	cmd = l_genl_msg_new_sized(NL80211_CMD_START_AP, 128 + head_len +
+	cmd = l_genl_msg_new_sized(NL80211_CMD_START_AP, 256 + head_len +
 					tail_len + strlen(ap->ssid));
 
 	/* SET_BEACON attrs */
@@ -1564,6 +1565,14 @@ static struct l_genl_msg *ap_build_cmd_start_ap(struct ap_state *ap)
 	l_genl_msg_append_attr(cmd, NL80211_ATTR_AUTH_TYPE, 4, &auth_type);
 	l_genl_msg_append_attr(cmd, NL80211_ATTR_WIPHY_FREQ, 4, &ch_freq);
 	l_genl_msg_append_attr(cmd, NL80211_ATTR_CHANNEL_WIDTH, 4, &ch_width);
+
+	if (wiphy_get_ext_feature(wiphy,
+			NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211)) {
+		l_genl_msg_append_attr(cmd, NL80211_ATTR_SOCKET_OWNER, 0, NULL);
+		l_genl_msg_append_attr(cmd,
+				NL80211_ATTR_CONTROL_PORT_OVER_NL80211,
+				0, NULL);
+	}
 
 	return cmd;
 }

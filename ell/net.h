@@ -1,8 +1,8 @@
 /*
  *
- *  Wireless daemon for Linux
+ *  Embedded Linux library
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2018  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,13 +20,21 @@
  *
  */
 
-struct network_args {
-	char *name;
-	char *type;
-};
+#ifndef __ELL_NET_H
+#define __ELL_NET_H
 
-bool network_is_connected(const char *path);
-void network_connect(const char *path);
+#include <stdbool.h>
+#include <stdint.h>
 
-struct network_args *network_parse_args(const char *args);
-void network_args_destroy(struct network_args *network_args);
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+bool l_net_get_mac_address(uint32_t ifindex, uint8_t *out_addr);
+char *l_net_get_name(uint32_t ifindex);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __ELL_NET_H */

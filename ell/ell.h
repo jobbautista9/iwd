@@ -46,9 +46,10 @@
 #include <ell/key.h>
 #include <ell/pkcs5.h>
 #include <ell/file.h>
-
+#include <ell/net.h>
 #include <ell/netlink.h>
 #include <ell/genl.h>
 #include <ell/dbus.h>
 #include <ell/dbus-service.h>
 #include <ell/dbus-client.h>
+#include <ell/dhcp.h>

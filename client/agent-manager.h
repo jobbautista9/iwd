@@ -20,13 +20,5 @@
  *
  */
 
-struct network_args {
-	char *name;
-	char *type;
-};
-
-bool network_is_connected(const char *path);
-void network_connect(const char *path);
-
-struct network_args *network_parse_args(const char *args);
-void network_args_destroy(struct network_args *network_args);
+bool agent_manager_register_agent(void);
+bool agent_manager_unregister_agent(void);

@@ -34,8 +34,16 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include "queue.h"
 #include "log.h"
 #include "private.h"
+
+struct debug_section {
+	struct l_debug_desc *start;
+	struct l_debug_desc *end;
+};
+
+struct l_queue *debug_sections;
 
 /**
  * SECTION:log
@@ -339,23 +347,79 @@ void debug_enable(struct l_debug_desc *start, struct l_debug_desc *stop)
 	}
 }
 
-extern struct l_debug_desc __start___debug[];
-extern struct l_debug_desc __stop___debug[];
+void debug_disable(struct l_debug_desc *start, struct l_debug_desc *stop)
+{
+	struct l_debug_desc *desc;
+
+	for (desc = start; desc < stop; desc++)
+		desc->flags &= ~L_DEBUG_FLAG_PRINT;
+}
 
 /**
- * l_debug_enable:
+ * l_debug_add_section:
+ * @start: start of the debug section
+ * @stop: stop of the debug section
+ *
+ * Add information about a debug section.  This is used by shared libraries
+ * to tell ell about their debug section start & stopping points.  This is used
+ * to make l_debug statements work across all shared libraries that might be
+ * linked into the executable
+ */
+LIB_EXPORT void l_debug_add_section(struct l_debug_desc *start,
+					struct l_debug_desc *end)
+{
+	const struct l_queue_entry *entry;
+	const struct debug_section *section;
+	struct debug_section *new_section;
+
+	if (!debug_sections) {
+		debug_sections = l_queue_new();
+		goto add;
+	}
+
+	for (entry = l_queue_get_entries(debug_sections); entry;
+					entry = entry->next) {
+		section = entry->data;
+
+		if (section->start == start && section->end == end)
+			return;
+	}
+
+add:
+	new_section = l_new(struct debug_section, 1);
+	new_section->start = start;
+	new_section->end = end;
+
+	l_queue_push_head(debug_sections, new_section);
+}
+
+/**
+ * l_debug_enable_full:
  * @pattern: debug pattern
+ * @start: start of the debug section
+ * @stop: end of the debug section
  *
  * Enable debug sections based on @pattern.
  **/
-LIB_EXPORT void l_debug_enable(const char *pattern)
+LIB_EXPORT void l_debug_enable_full(const char *pattern,
+					struct l_debug_desc *start,
+					struct l_debug_desc *end)
 {
+	const struct l_queue_entry *entry;
+	const struct debug_section *section;
+
 	if (!pattern)
 		return;
 
 	debug_pattern = pattern;
 
-	debug_enable(__start___debug, __stop___debug);
+	l_debug_add_section(start, end);
+
+	for (entry = l_queue_get_entries(debug_sections); entry;
+					entry = entry->next) {
+		section = entry->data;
+		debug_enable(section->start, section->end);
+	}
 }
 
 /**
@@ -365,10 +429,27 @@ LIB_EXPORT void l_debug_enable(const char *pattern)
  **/
 LIB_EXPORT void l_debug_disable(void)
 {
-	struct l_debug_desc *desc;
+	const struct l_queue_entry *entry;
+	const struct debug_section *section;
 
-	for (desc = __start___debug; desc < __stop___debug; desc++)
-		desc->flags &= ~L_DEBUG_FLAG_PRINT;
+	for (entry = l_queue_get_entries(debug_sections); entry;
+					entry = entry->next) {
+		section = entry->data;
+		debug_disable(section->start, section->end);
+	}
 
 	debug_pattern = NULL;
+}
+
+__attribute__((constructor)) static void register_debug_section()
+{
+	extern struct l_debug_desc __start___ell_debug[];
+	extern struct l_debug_desc __stop___ell_debug[];
+
+	l_debug_add_section(__start___ell_debug, __stop___ell_debug);
+}
+
+__attribute__((destructor(65535))) static void free_debug_sections()
+{
+	l_queue_destroy(debug_sections, l_free);
 }

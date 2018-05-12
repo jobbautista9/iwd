@@ -82,16 +82,16 @@ build_triplet = @build@
 host_triplet = @host@
 bin_PROGRAMS = $(am__EXEEXT_1) $(am__EXEEXT_2)
 libexec_PROGRAMS = src/iwd$(EXEEXT)
-@SYSTEMD_SERVICE_FALSE@src_iwd_DEPENDENCIES = ell/libell-internal.la
-@CLIENT_TRUE@am__append_1 = client/iwctl
-@MONITOR_TRUE@am__append_2 = monitor/iwmon
+@SYSTEMD_SERVICE_TRUE@am__append_1 = src/iwd.service
+@CLIENT_TRUE@am__append_2 = client/iwctl
+@MONITOR_TRUE@am__append_3 = monitor/iwmon
 noinst_PROGRAMS = tools/hwsim$(EXEEXT) tools/test-runner$(EXEEXT) \
 	$(am__EXEEXT_4)
-@SIM_HARDCODED_TRUE@am__append_3 = sim_hardcoded
-@SIM_HARDCODED_TRUE@am__append_4 = plugins/sim_hardcoded.c
-@OFONO_TRUE@am__append_5 = ofono
-@OFONO_TRUE@am__append_6 = plugins/ofono.c
-@MAINTAINER_MODE_TRUE@am__append_7 = $(unit_tests)
+@SIM_HARDCODED_TRUE@am__append_4 = sim_hardcoded
+@SIM_HARDCODED_TRUE@am__append_5 = plugins/sim_hardcoded.c
+@OFONO_TRUE@am__append_6 = ofono
+@OFONO_TRUE@am__append_7 = plugins/ofono.c
+@MAINTAINER_MODE_TRUE@am__append_8 = $(unit_tests)
 TESTS = $(am__EXEEXT_3)
 subdir = .
 DIST_COMMON = $(srcdir)/Makefile.in $(srcdir)/Makefile.am \
@@ -135,7 +135,8 @@ am__objects_1 = ell/util.lo ell/test.lo ell/queue.lo ell/hashmap.lo \
 	ell/gvariant-util.lo ell/siphash.lo ell/hwdb.lo ell/cipher.lo \
 	ell/random.lo ell/uintset.lo ell/base64.lo ell/pem.lo \
 	ell/tls.lo ell/tls-record.lo ell/uuid.lo ell/key.lo \
-	ell/pkcs5.lo ell/file.lo ell/dbus-client.lo
+	ell/pkcs5.lo ell/file.lo ell/dbus-client.lo ell/net.lo \
+	ell/dhcp.lo ell/dhcp-transport.lo ell/dhcp-lease.lo
 am_ell_libell_internal_la_OBJECTS = $(am__objects_1)
 ell_libell_internal_la_OBJECTS = $(am_ell_libell_internal_la_OBJECTS)
 AM_V_lt = $(am__v_lt_@AM_V@)
@@ -155,17 +156,19 @@ am__EXEEXT_3 = unit/test-cmac-aes$(EXEEXT) unit/test-hmac-md5$(EXEEXT) \
 	unit/test-ssid-to-utf8$(EXEEXT) \
 	unit/test-ssid-security$(EXEEXT) unit/test-arc4$(EXEEXT) \
 	unit/test-wsc$(EXEEXT) unit/test-eap-mschapv2$(EXEEXT) \
-	unit/test-eap-sim$(EXEEXT)
+	unit/test-eap-sim$(EXEEXT) unit/test-client$(EXEEXT) \
+	unit/test-ecc$(EXEEXT)
 @MAINTAINER_MODE_TRUE@am__EXEEXT_4 = $(am__EXEEXT_3)
 PROGRAMS = $(bin_PROGRAMS) $(libexec_PROGRAMS) $(noinst_PROGRAMS)
 am__client_iwctl_SOURCES_DIST = client/main.c client/adapter.c \
+	client/agent.h client/agent.c client/agent-manager.h \
 	client/agent-manager.c client/command.h client/command.c \
 	client/dbus-proxy.h client/dbus-proxy.c client/device.h \
 	client/device.c client/display.h client/display.c \
 	client/known-networks.c client/network.h client/network.c \
 	client/wsc.c
 @CLIENT_TRUE@am_client_iwctl_OBJECTS = client/main.$(OBJEXT) \
-@CLIENT_TRUE@	client/adapter.$(OBJEXT) \
+@CLIENT_TRUE@	client/adapter.$(OBJEXT) client/agent.$(OBJEXT) \
 @CLIENT_TRUE@	client/agent-manager.$(OBJEXT) \
 @CLIENT_TRUE@	client/command.$(OBJEXT) \
 @CLIENT_TRUE@	client/dbus-proxy.$(OBJEXT) \
@@ -208,6 +211,7 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/netdev.h \
 	src/ftutil.c src/iwd.h src/eap-sim.c src/eap-aka.c \
 	src/simutil.h src/simutil.c src/ap.h src/ap.c src/simauth.h \
 	src/simauth.c src/plugin.h src/plugin.c src/eap-peap.c \
+	src/eap-gtc.c src/eap-pwd.c src/ecc.h src/ecc.c \
 	plugins/sim_hardcoded.c plugins/ofono.c
 @SIM_HARDCODED_TRUE@am__objects_2 = plugins/sim_hardcoded.$(OBJEXT)
 @OFONO_TRUE@am__objects_3 = plugins/ofono.$(OBJEXT)
@@ -226,7 +230,8 @@ am_src_iwd_OBJECTS = src/main.$(OBJEXT) src/netdev.$(OBJEXT) \
 	src/ftutil.$(OBJEXT) src/eap-sim.$(OBJEXT) \
 	src/eap-aka.$(OBJEXT) src/simutil.$(OBJEXT) src/ap.$(OBJEXT) \
 	src/simauth.$(OBJEXT) src/plugin.$(OBJEXT) \
-	src/eap-peap.$(OBJEXT) $(am__objects_4)
+	src/eap-peap.$(OBJEXT) src/eap-gtc.$(OBJEXT) \
+	src/eap-pwd.$(OBJEXT) src/ecc.$(OBJEXT) $(am__objects_4)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am_tools_hwsim_OBJECTS = tools/hwsim.$(OBJEXT) src/util.$(OBJEXT) \
 	src/storage.$(OBJEXT) src/common.$(OBJEXT)
@@ -239,6 +244,13 @@ am_unit_test_arc4_OBJECTS = unit/test-arc4.$(OBJEXT) \
 	src/crypto.$(OBJEXT)
 unit_test_arc4_OBJECTS = $(am_unit_test_arc4_OBJECTS)
 unit_test_arc4_DEPENDENCIES = ell/libell-internal.la
+am_unit_test_client_OBJECTS = unit/test-client.$(OBJEXT) \
+	client/adapter.$(OBJEXT) client/agent.$(OBJEXT) \
+	client/agent-manager.$(OBJEXT) client/command.$(OBJEXT) \
+	client/dbus-proxy.$(OBJEXT) client/display.$(OBJEXT) \
+	client/network.$(OBJEXT)
+unit_test_client_OBJECTS = $(am_unit_test_client_OBJECTS)
+unit_test_client_DEPENDENCIES = ell/libell-internal.la
 am_unit_test_cmac_aes_OBJECTS = unit/test-cmac-aes.$(OBJEXT) \
 	src/crypto.$(OBJEXT)
 unit_test_cmac_aes_OBJECTS = $(am_unit_test_cmac_aes_OBJECTS)
@@ -265,6 +277,9 @@ am_unit_test_eapol_OBJECTS = unit/test-eapol.$(OBJEXT) \
 	src/eap-md5.$(OBJEXT)
 unit_test_eapol_OBJECTS = $(am_unit_test_eapol_OBJECTS)
 unit_test_eapol_DEPENDENCIES = ell/libell-internal.la
+am_unit_test_ecc_OBJECTS = unit/test-ecc.$(OBJEXT) src/ecc.$(OBJEXT)
+unit_test_ecc_OBJECTS = $(am_unit_test_ecc_OBJECTS)
+unit_test_ecc_DEPENDENCIES = ell/libell-internal.la
 am_unit_test_hmac_md5_OBJECTS = unit/test-hmac-md5.$(OBJEXT) \
 	src/crypto.$(OBJEXT)
 unit_test_hmac_md5_OBJECTS = $(am_unit_test_hmac_md5_OBJECTS)
@@ -346,9 +361,10 @@ am__v_CCLD_1 =
 SOURCES = $(ell_libell_internal_la_SOURCES) $(client_iwctl_SOURCES) \
 	$(monitor_iwmon_SOURCES) $(src_iwd_SOURCES) \
 	$(tools_hwsim_SOURCES) tools/test-runner.c \
-	$(unit_test_arc4_SOURCES) $(unit_test_cmac_aes_SOURCES) \
-	$(unit_test_crypto_SOURCES) $(unit_test_eap_mschapv2_SOURCES) \
-	$(unit_test_eap_sim_SOURCES) $(unit_test_eapol_SOURCES) \
+	$(unit_test_arc4_SOURCES) $(unit_test_client_SOURCES) \
+	$(unit_test_cmac_aes_SOURCES) $(unit_test_crypto_SOURCES) \
+	$(unit_test_eap_mschapv2_SOURCES) $(unit_test_eap_sim_SOURCES) \
+	$(unit_test_eapol_SOURCES) $(unit_test_ecc_SOURCES) \
 	$(unit_test_hmac_md5_SOURCES) $(unit_test_hmac_sha1_SOURCES) \
 	$(unit_test_hmac_sha256_SOURCES) $(unit_test_ie_SOURCES) \
 	$(unit_test_kdf_sha256_SOURCES) $(unit_test_mpdu_SOURCES) \
@@ -359,9 +375,10 @@ DIST_SOURCES = $(ell_libell_internal_la_SOURCES) \
 	$(am__client_iwctl_SOURCES_DIST) \
 	$(am__monitor_iwmon_SOURCES_DIST) $(am__src_iwd_SOURCES_DIST) \
 	$(tools_hwsim_SOURCES) tools/test-runner.c \
-	$(unit_test_arc4_SOURCES) $(unit_test_cmac_aes_SOURCES) \
-	$(unit_test_crypto_SOURCES) $(unit_test_eap_mschapv2_SOURCES) \
-	$(unit_test_eap_sim_SOURCES) $(unit_test_eapol_SOURCES) \
+	$(unit_test_arc4_SOURCES) $(unit_test_client_SOURCES) \
+	$(unit_test_cmac_aes_SOURCES) $(unit_test_crypto_SOURCES) \
+	$(unit_test_eap_mschapv2_SOURCES) $(unit_test_eap_sim_SOURCES) \
+	$(unit_test_eapol_SOURCES) $(unit_test_ecc_SOURCES) \
 	$(unit_test_hmac_md5_SOURCES) $(unit_test_hmac_sha1_SOURCES) \
 	$(unit_test_hmac_sha256_SOURCES) $(unit_test_ie_SOURCES) \
 	$(unit_test_kdf_sha256_SOURCES) $(unit_test_mpdu_SOURCES) \
@@ -743,8 +760,8 @@ top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 AM_MAKEFLAGS = --no-print-directory
 ACLOCAL_AMFLAGS = -I build-aux
-builtin_modules = $(am__append_3) $(am__append_5)
-builtin_sources = $(am__append_4) $(am__append_6)
+builtin_modules = $(am__append_4) $(am__append_6)
+builtin_sources = $(am__append_5) $(am__append_7)
 noinst_LTLIBRARIES = ell/libell-internal.la
 @DBUS_POLICY_TRUE@dbus_datadir = @DBUS_DATADIR@/dbus-1/system.d
 @DBUS_POLICY_TRUE@dist_dbus_data_DATA = src/iwd-dbus.conf
@@ -795,7 +812,10 @@ ell_sources = ell/ell.h ell/private.h ell/missing.h \
 			ell/pkcs5.h ell/pkcs5.c \
 			ell/pkcs5-private.h \
 			ell/file.h ell/file.c \
-			ell/dbus-client.h ell/dbus-client.c
+			ell/dbus-client.h ell/dbus-client.c \
+			ell/net.h ell/net.c \
+			ell/dhcp.h ell/dhcp.c ell/dhcp-transport.c \
+			ell/dhcp-private.h ell/dhcp-lease.c
 
 ell_libell_internal_la_SOURCES = $(ell_sources)
 src_iwd_SOURCES = src/main.c linux/nl80211.h \
@@ -832,15 +852,19 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h \
 					src/simauth.h src/simauth.c \
 					src/plugin.h src/plugin.c \
 					src/eap-peap.c \
+					src/eap-gtc.c \
+					src/eap-pwd.c \
+					src/ecc.h src/ecc.c \
 					$(builtin_sources)
 
 src_iwd_LDADD = ell/libell-internal.la -ldl
-@SYSTEMD_SERVICE_TRUE@src_iwd_DEPENDENCIES = src/iwd.service
+src_iwd_DEPENDENCIES = ell/libell-internal.la $(am__append_1)
 @SYSTEMD_SERVICE_TRUE@systemd_unitdir = @SYSTEMD_UNITDIR@
 @SYSTEMD_SERVICE_TRUE@systemd_unit_DATA = src/iwd.service
 @CLIENT_TRUE@client_iwctl_SOURCES = client/main.c \
 @CLIENT_TRUE@			client/adapter.c \
-@CLIENT_TRUE@			client/agent-manager.c \
+@CLIENT_TRUE@			client/agent.h client/agent.c \
+@CLIENT_TRUE@			client/agent-manager.h client/agent-manager.c \
 @CLIENT_TRUE@			client/command.h client/command.c \
 @CLIENT_TRUE@			client/dbus-proxy.h client/dbus-proxy.c \
 @CLIENT_TRUE@			client/device.h client/device.c \
@@ -879,7 +903,7 @@ unit_tests = unit/test-cmac-aes \
 		unit/test-crypto unit/test-eapol unit/test-mpdu \
 		unit/test-ie unit/test-ssid-to-utf8 unit/test-ssid-security \
 		unit/test-arc4 unit/test-wsc unit/test-eap-mschapv2 \
-		unit/test-eap-sim
+		unit/test-eap-sim unit/test-client unit/test-ecc
 
 ell_pem_files = cert-ca-key.pem cert-client-key.pem cert-client-key-pkcs8.pem \
 		cert-server-key.pem cert-server-key-pkcs8.pem \
@@ -972,6 +996,18 @@ unit_test_eap_mschapv2_SOURCES = src/eap-mschapv2.h src/eap-mschapv2.c \
 				unit/test-eap-mschapv2.c
 
 unit_test_eap_mschapv2_LDADD = ell/libell-internal.la
+unit_test_client_SOURCES = unit/test-client.c \
+				client/adapter.c \
+				client/agent.h client/agent.c \
+				client/agent-manager.h client/agent-manager.c \
+				client/command.h client/command.c \
+				client/dbus-proxy.h client/dbus-proxy.c \
+				client/display.h client/display.c \
+				client/network.h client/network.c
+
+unit_test_client_LDADD = ell/libell-internal.la -lreadline
+unit_test_ecc_SOURCES = unit/test-ecc.c src/ecc.c src/ecc.h
+unit_test_ecc_LDADD = ell/libell-internal.la
 manual_pages = doc/iwmon.1
 @BUILD_DOCS_TRUE@dist_man_MANS = $(manual_pages)
 EXTRA_DIST = src/genbuiltin src/iwd.service.in \
@@ -1098,6 +1134,11 @@ ell/key.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/pkcs5.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/file.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dbus-client.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/net.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/dhcp.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/dhcp-transport.lo: ell/$(am__dirstamp) \
+	ell/$(DEPDIR)/$(am__dirstamp)
+ell/dhcp-lease.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 
 ell/libell-internal.la: $(ell_libell_internal_la_OBJECTS) $(ell_libell_internal_la_DEPENDENCIES) $(EXTRA_ell_libell_internal_la_DEPENDENCIES) ell/$(am__dirstamp)
 	$(AM_V_CCLD)$(LINK)  $(ell_libell_internal_la_OBJECTS) $(ell_libell_internal_la_LIBADD) $(LIBS)
@@ -1218,6 +1259,8 @@ client/main.$(OBJEXT): client/$(am__dirstamp) \
 	client/$(DEPDIR)/$(am__dirstamp)
 client/adapter.$(OBJEXT): client/$(am__dirstamp) \
 	client/$(DEPDIR)/$(am__dirstamp)
+client/agent.$(OBJEXT): client/$(am__dirstamp) \
+	client/$(DEPDIR)/$(am__dirstamp)
 client/agent-manager.$(OBJEXT): client/$(am__dirstamp) \
 	client/$(DEPDIR)/$(am__dirstamp)
 client/command.$(OBJEXT): client/$(am__dirstamp) \
@@ -1322,6 +1365,11 @@ src/plugin.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/eap-peap.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
+src/eap-gtc.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/eap-pwd.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/ecc.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 plugins/$(am__dirstamp):
 	@$(MKDIR_P) plugins
 	@: > plugins/$(am__dirstamp)
@@ -1366,6 +1414,12 @@ unit/test-arc4.$(OBJEXT): unit/$(am__dirstamp) \
 unit/test-arc4$(EXEEXT): $(unit_test_arc4_OBJECTS) $(unit_test_arc4_DEPENDENCIES) $(EXTRA_unit_test_arc4_DEPENDENCIES) unit/$(am__dirstamp)
 	@rm -f unit/test-arc4$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(unit_test_arc4_OBJECTS) $(unit_test_arc4_LDADD) $(LIBS)
+unit/test-client.$(OBJEXT): unit/$(am__dirstamp) \
+	unit/$(DEPDIR)/$(am__dirstamp)
+
+unit/test-client$(EXEEXT): $(unit_test_client_OBJECTS) $(unit_test_client_DEPENDENCIES) $(EXTRA_unit_test_client_DEPENDENCIES) unit/$(am__dirstamp)
+	@rm -f unit/test-client$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(unit_test_client_OBJECTS) $(unit_test_client_LDADD) $(LIBS)
 unit/test-cmac-aes.$(OBJEXT): unit/$(am__dirstamp) \
 	unit/$(DEPDIR)/$(am__dirstamp)
 
@@ -1396,6 +1450,12 @@ unit/test-eapol.$(OBJEXT): unit/$(am__dirstamp) \
 unit/test-eapol$(EXEEXT): $(unit_test_eapol_OBJECTS) $(unit_test_eapol_DEPENDENCIES) $(EXTRA_unit_test_eapol_DEPENDENCIES) unit/$(am__dirstamp)
 	@rm -f unit/test-eapol$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(unit_test_eapol_OBJECTS) $(unit_test_eapol_LDADD) $(LIBS)
+unit/test-ecc.$(OBJEXT): unit/$(am__dirstamp) \
+	unit/$(DEPDIR)/$(am__dirstamp)
+
+unit/test-ecc$(EXEEXT): $(unit_test_ecc_OBJECTS) $(unit_test_ecc_DEPENDENCIES) $(EXTRA_unit_test_ecc_DEPENDENCIES) unit/$(am__dirstamp)
+	@rm -f unit/test-ecc$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(unit_test_ecc_OBJECTS) $(unit_test_ecc_LDADD) $(LIBS)
 unit/test-hmac-md5.$(OBJEXT): unit/$(am__dirstamp) \
 	unit/$(DEPDIR)/$(am__dirstamp)
 
@@ -1473,6 +1533,7 @@ distclean-compile:
 
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/adapter.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/agent-manager.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/agent.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/command.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/dbus-proxy.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/device.Po@am__quote@
@@ -1491,6 +1552,9 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/dbus-service.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/dbus-util.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/dbus.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/dhcp-lease.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/dhcp-transport.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/dhcp.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/file.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/genl.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/gvariant-util.Plo@am__quote@
@@ -1501,6 +1565,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/key.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/log.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/main.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/net.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/netlink.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/pem.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/pkcs5.Plo@am__quote@
@@ -1533,15 +1598,18 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/dbus.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/device.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-aka.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-gtc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-md5.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-mschapv2.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-peap.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-pwd.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-sim.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-tls.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-ttls.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-wsc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eapol.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ecc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ftutil.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/handshake.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ie.Po@am__quote@
@@ -1564,11 +1632,13 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@tools/$(DEPDIR)/hwsim.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@tools/$(DEPDIR)/test-runner.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-arc4.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-client.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-cmac-aes.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-crypto.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-eap-mschapv2.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-eap-sim.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-eapol.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-ecc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-hmac-md5.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-hmac-sha1.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-hmac-sha256.Po@am__quote@
@@ -2012,6 +2082,20 @@ unit/test-eap-mschapv2.log: unit/test-eap-mschapv2$(EXEEXT)
 unit/test-eap-sim.log: unit/test-eap-sim$(EXEEXT)
 	@p='unit/test-eap-sim$(EXEEXT)'; \
 	b='unit/test-eap-sim'; \
+	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
+	--log-file $$b.log --trs-file $$b.trs \
+	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
+	"$$tst" $(AM_TESTS_FD_REDIRECT)
+unit/test-client.log: unit/test-client$(EXEEXT)
+	@p='unit/test-client$(EXEEXT)'; \
+	b='unit/test-client'; \
+	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
+	--log-file $$b.log --trs-file $$b.trs \
+	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
+	"$$tst" $(AM_TESTS_FD_REDIRECT)
+unit/test-ecc.log: unit/test-ecc$(EXEEXT)
+	@p='unit/test-ecc$(EXEEXT)'; \
+	b='unit/test-ecc'; \
 	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
 	--log-file $$b.log --trs-file $$b.trs \
 	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
