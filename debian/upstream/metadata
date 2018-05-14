@@ -2,3 +2,4 @@ Name: iwd
 Repository: https://git.kernel.org/pub/scm/network/wireless/iwd.git
 Repository-Browse: https://git.kernel.org/pub/scm/network/wireless/iwd.git/
 Contact: iwd@lists.01.org
+Documentation: https://iwd.wiki.kernel.org/
