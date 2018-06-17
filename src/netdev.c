@@ -106,6 +106,7 @@ struct netdev {
 	bool rekey_offload_support : 1;
 	bool in_ft : 1;
 	bool cur_rssi_low : 1;
+	bool use_4addr : 1;
 };
 
 struct netdev_preauth_state {
@@ -144,6 +145,11 @@ struct cb_data {
 	netdev_command_func_t callback;
 	void *user_data;
 };
+
+struct wiphy *netdev_get_wiphy(struct netdev *netdev)
+{
+	return netdev->wiphy;
+}
 
 static void netlink_result(int error, uint16_t type, const void *data,
 			uint32_t len, void *user_data)
@@ -250,7 +256,7 @@ static void netdev_set_powered_result(int error, uint16_t type,
 	if (!cb_data)
 		return;
 
-	cb_data->callback(cb_data->netdev, -error, cb_data->user_data);
+	cb_data->callback(cb_data->netdev, error, cb_data->user_data);
 }
 
 static void netdev_set_powered_destroy(void *user_data)
@@ -389,7 +395,7 @@ static void netdev_rssi_poll(struct l_timeout *timeout, void *user_data)
 /* To be called whenever operational or rssi_levels_num are updated */
 static void netdev_rssi_polling_update(struct netdev *netdev)
 {
-	if (wiphy_get_ext_feature(netdev->wiphy,
+	if (wiphy_has_ext_feature(netdev->wiphy,
 					NL80211_EXT_FEATURE_CQM_RSSI_LIST))
 		return;
 
@@ -2146,7 +2152,7 @@ static struct l_genl_msg *netdev_build_cmd_connect(struct netdev *netdev,
 						bss->ssid_len, bss->ssid);
 	l_genl_msg_append_attr(msg, NL80211_ATTR_AUTH_TYPE, 4, &auth_type);
 
-	if (wiphy_get_ext_feature(netdev->wiphy,
+	if (wiphy_has_ext_feature(netdev->wiphy,
 				NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211))
 		l_genl_msg_append_attr(msg,
 				NL80211_ATTR_CONTROL_PORT_OVER_NL80211,
@@ -3258,7 +3264,7 @@ static int netdev_control_port_frame(uint32_t ifindex,
 	frame_size = sizeof(struct eapol_header) +
 			L_BE16_TO_CPU(ef->header.packet_len);
 
-	if (!wiphy_get_ext_feature(netdev->wiphy,
+	if (!wiphy_has_ext_feature(netdev->wiphy,
 			NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211))
 		return netdev_control_port_write_pae(netdev, dest, proto,
 							ef, noencrypt);
@@ -3391,7 +3397,7 @@ int netdev_set_rssi_report_levels(struct netdev *netdev, const int8_t *levels,
 	if (levels_num > L_ARRAY_SIZE(netdev->rssi_levels))
 		return -ENOSPC;
 
-	if (!wiphy_get_ext_feature(netdev->wiphy,
+	if (!wiphy_has_ext_feature(netdev->wiphy,
 					NL80211_EXT_FEATURE_CQM_RSSI_LIST))
 		goto done;
 
@@ -3467,6 +3473,107 @@ int netdev_set_iftype(struct netdev *netdev, enum netdev_iftype type)
 	return 0;
 }
 
+static void netdev_bridge_port_event(const struct ifinfomsg *ifi, int bytes,
+					bool added)
+{
+	struct netdev *netdev;
+	struct rtattr *attr;
+	uint32_t master = 0;
+
+	netdev = netdev_find(ifi->ifi_index);
+	if (!netdev)
+		return;
+
+	for (attr = IFLA_RTA(ifi); RTA_OK(attr, bytes);
+			attr = RTA_NEXT(attr, bytes)) {
+		switch (attr->rta_type) {
+		case IFLA_MASTER:
+			memcpy(&master, RTA_DATA(attr), sizeof(master));
+			break;
+		}
+	}
+
+	l_debug("netdev: %d %s bridge: %d", ifi->ifi_index,
+		(added ? "added to" : "removed from"), master);
+}
+
+struct set_4addr_cb_data {
+	struct netdev *netdev;
+	bool value;
+	netdev_set_4addr_cb_t callback;
+	void *user_data;
+	netdev_destroy_func_t destroy;
+};
+
+static void netdev_set_4addr_cb(struct l_genl_msg *msg, void *user_data)
+{
+	struct set_4addr_cb_data *cb_data = user_data;
+	int error = l_genl_msg_get_error(msg);
+
+	if (!cb_data)
+		return;
+
+	/* cache the value that has just been set */
+	if (!error)
+		cb_data->netdev->use_4addr = cb_data->value;
+
+	cb_data->callback(cb_data->netdev, error, cb_data->user_data);
+}
+
+static void netdev_set_4addr_destroy(void *user_data)
+{
+	struct set_4addr_cb_data *cb_data = user_data;
+
+	if (!cb_data)
+		return;
+
+	if (cb_data->destroy)
+		cb_data->destroy(cb_data->user_data);
+
+	l_free(cb_data);
+}
+
+int netdev_set_4addr(struct netdev *netdev, bool use_4addr,
+			netdev_set_4addr_cb_t cb, void *user_data,
+			netdev_destroy_func_t destroy)
+{
+	struct set_4addr_cb_data *cb_data = NULL;
+	uint8_t attr_4addr = (use_4addr ? 1 : 0);
+	struct l_genl_msg *msg;
+
+	l_debug("netdev: %d use_4addr: %d", netdev->index, use_4addr);
+
+	msg = l_genl_msg_new_sized(NL80211_CMD_SET_INTERFACE, 32);
+	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &netdev->index);
+	l_genl_msg_append_attr(msg, NL80211_ATTR_4ADDR, 1, &attr_4addr);
+
+	if (cb) {
+		cb_data = l_new(struct set_4addr_cb_data, 1);
+		cb_data->netdev = netdev;
+		cb_data->value = use_4addr;
+		cb_data->callback = cb;
+		cb_data->user_data = user_data;
+		cb_data->destroy = destroy;
+	}
+
+	if (!l_genl_family_send(nl80211, msg, netdev_set_4addr_cb, cb_data,
+				netdev_set_4addr_destroy)) {
+		l_error("CMD_SET_INTERFACE (4addr) failed");
+
+		l_genl_msg_unref(msg);
+		l_free(cb_data);
+
+		return -EIO;
+	}
+
+	return 0;
+}
+
+bool netdev_get_4addr(struct netdev *netdev)
+{
+	return netdev->use_4addr;
+}
+
 static void netdev_newlink_notify(const struct ifinfomsg *ifi, int bytes)
 {
 	struct netdev *netdev;
@@ -3474,6 +3581,11 @@ static void netdev_newlink_notify(const struct ifinfomsg *ifi, int bytes)
 	char old_name[IFNAMSIZ];
 	uint8_t old_addr[ETH_ALEN];
 	struct rtattr *attr;
+
+	if (ifi->ifi_family == AF_BRIDGE) {
+		netdev_bridge_port_event(ifi, bytes, true);
+		return;
+	}
 
 	netdev = netdev_find(ifi->ifi_index);
 	if (!netdev)
@@ -3520,6 +3632,11 @@ static void netdev_dellink_notify(const struct ifinfomsg *ifi, int bytes)
 {
 	struct netdev *netdev;
 
+	if (ifi->ifi_family == AF_BRIDGE) {
+		netdev_bridge_port_event(ifi, bytes, false);
+		return;
+	}
+
 	netdev = l_queue_remove_if(netdev_list, netdev_match,
 						L_UINT_TO_PTR(ifi->ifi_index));
 	if (!netdev)
@@ -3543,6 +3660,12 @@ static void netdev_initial_up_cb(struct netdev *netdev, int result,
 						IF_OPER_DOWN,
 						netdev_linkmode_dormant_cb,
 						netdev);
+
+	/*
+	 * we don't know the initial status of the 4addr property on this
+	 * netdev, therefore we set it to zero by default.
+	 */
+	netdev_set_4addr(netdev, netdev->use_4addr, NULL, NULL, NULL);
 
 	l_debug("Interface %i initialized", netdev->index);
 
@@ -3641,6 +3764,13 @@ static const struct watchlist_ops netdev_frame_watch_ops = {
 	.item_free = netdev_frame_watch_free,
 };
 
+static void netdev_frame_cb(struct l_genl_msg *msg, void *user_data)
+{
+	if (l_genl_msg_get_error(msg) < 0)
+		l_error("Could not register frame watch type %04x: %i",
+			L_PTR_TO_UINT(user_data), l_genl_msg_get_error(msg));
+}
+
 uint32_t netdev_frame_watch_add(struct netdev *netdev, uint16_t frame_type,
 				const uint8_t *prefix, size_t prefix_len,
 				netdev_frame_watch_func_t handler,
@@ -3673,7 +3803,8 @@ uint32_t netdev_frame_watch_add(struct netdev *netdev, uint16_t frame_type,
 	l_genl_msg_append_attr(msg, NL80211_ATTR_FRAME_MATCH,
 				prefix_len, prefix);
 
-	l_genl_family_send(nl80211, msg, NULL, NULL, NULL);
+	l_genl_family_send(nl80211, msg, netdev_frame_cb,
+			L_UINT_TO_PTR(frame_type), NULL);
 
 	return id;
 }
@@ -3836,7 +3967,7 @@ static void netdev_create_from_genl(struct l_genl_msg *msg)
 		return;
 	}
 
-	if (!wiphy_get_ext_feature(wiphy,
+	if (!wiphy_has_ext_feature(wiphy,
 			NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211)) {
 		l_debug("No Control Port over NL80211 support for ifindex: %u,"
 				" using PAE socket", *ifindex);

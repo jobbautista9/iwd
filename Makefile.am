@@ -90,7 +90,8 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h \
 					src/wscutil.h src/wscutil.c \
 					src/wsc.h src/wsc.c \
 					src/eap-wsc.h src/eap-wsc.c \
-					src/eap.h src/eap.c src/eap-md5.c \
+					src/eap.h src/eap.c src/eap-private.h \
+					src/eap-md5.c \
 					src/eap-tls.c src/eap-ttls.c \
 					src/eap-mschapv2.c src/eap-mschapv2.h \
 					src/backtrace.h src/backtrace.c \
@@ -153,7 +154,7 @@ monitor_iwmon_SOURCES = monitor/main.c linux/nl80211.h \
 					src/watchlist.h src/watchlist.c \
 					src/eapol.h src/eapol.c \
 					src/handshake.h src/handshake.c \
-					src/eap.h src/eap.c \
+					src/eap.h src/eap.c src/eap-private.h \
 					src/eap-tls.c src/eap-ttls.c
 monitor_iwmon_LDADD = ell/libell-internal.la
 endif
@@ -202,7 +203,7 @@ unit_test_eap_sim_SOURCES = unit/test-eap-sim.c \
 		src/watchlist.h src/watchlist.c \
 		src/eapol.h src/eapol.c \
 		src/handshake.h src/handshake.c \
-		src/eap.h src/eap.c \
+		src/eap.h src/eap.c src/eap-private.h \
 		src/util.h src/util.c \
 		src/simauth.h src/simauth.c \
 		src/eap-sim.c
@@ -256,7 +257,7 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 				src/watchlist.h src/watchlist.c \
 				src/eapol.h src/eapol.c \
 				src/handshake.h src/handshake.c \
-				src/eap.h src/eap.c \
+				src/eap.h src/eap.c src/eap-private.h \
 				src/eap-tls.c src/eap-ttls.c \
 				src/eap-md5.c
 unit_test_eapol_LDADD = ell/libell-internal.la
@@ -266,7 +267,7 @@ unit_test_ssid_to_utf8_SOURCES = src/util.h src/util.c \
 unit_test_ssid_to_utf8_LDADD = ell/libell-internal.la
 
 unit_test_ssid_security_SOURCES = unit/test-ssid-security.c src/ie.h src/ie.c \
-				src/scan.h src/scan.c
+				src/common.h src/common.c
 unit_test_ssid_security_LDADD = ell/libell-internal.la
 
 unit_test_wsc_SOURCES = unit/test-wsc.c src/wscutil.h src/wscutil.c \
@@ -275,13 +276,13 @@ unit_test_wsc_SOURCES = unit/test-wsc.c src/wscutil.h src/wscutil.c \
 				src/watchlist.h src/watchlist.c \
 				src/eapol.h src/eapol.c \
 				src/handshake.h src/handshake.c \
-				src/eap.h src/eap.c \
+				src/eap.h src/eap.c src/eap-private.h \
 				src/util.h src/util.c \
 				src/eap-wsc.h src/eap-wsc.c
 unit_test_wsc_LDADD = ell/libell-internal.la
 
 unit_test_eap_mschapv2_SOURCES = src/eap-mschapv2.h src/eap-mschapv2.c \
-				src/eap.c src/eap.h \
+				src/eap.c src/eap.h src/eap-private.h \
 				unit/test-eap-mschapv2.c
 
 unit_test_eap_mschapv2_LDADD = ell/libell-internal.la

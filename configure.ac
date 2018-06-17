@@ -1,5 +1,5 @@
 AC_PREREQ(2.60)
-AC_INIT(iwd, 0.2)
+AC_INIT(iwd, 0.3)
 
 AC_CONFIG_HEADERS(config.h)
 AC_CONFIG_AUX_DIR(build-aux)
@@ -85,6 +85,9 @@ AC_DEFINE_UNQUOTED(STORAGEDIR, "${storagedir}",
 AC_DEFINE_UNQUOTED(CONFIGDIR, "/etc/iwd", [Configuration directory])
 
 AC_CHECK_HEADERS(linux/types.h linux/if_alg.h)
+
+AC_CHECK_HEADERS_ONCE(execinfo.h)
+AC_CHECK_LIB(execinfo, backtrace)
 
 if (test "${enable_client}" != "no"); then
 	AC_CHECK_HEADERS(readline/readline.h, enable_readline=yes,
