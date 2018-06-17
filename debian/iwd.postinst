@@ -1,0 +1,17 @@
+#!/bin/sh
+set -e
+
+# in <= 0.2 iwd.service used WantedBy=network-pre.target
+# but in 0.3 this was changed to WantedBy=multi-user.target
+# remove the old state so we get the upgraded state
+# (as the debhelper generated enabling code will only
+# act on new installs, we simply purge current state first).
+if [ "$1" = "configure" ] && [ -n "$2" ] && \
+		dpkg --compare-versions "$2" lt 0.3; then
+	if [ -x "/usr/bin/deb-systemd-helper" ]; then
+		deb-systemd-helper purge 'iwd.service' >/dev/null || true
+		deb-systemd-helper unmask 'iwd.service' >/dev/null || true
+	fi
+fi
+
+#DEBHELPER#
