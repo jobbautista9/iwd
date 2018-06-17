@@ -345,8 +345,8 @@ static bool check_virtualization(void)
 
 static void start_qemu(void)
 {
-	char cwd[PATH_MAX], initcmd[PATH_MAX], testargs[PATH_MAX];
-	char cmdline[CMDLINE_MAX];
+	char cwd[PATH_MAX], testargs[PATH_MAX];
+	char *initcmd, *cmdline;
 	char **argv;
 	int i, pos;
 	bool has_virt;
@@ -357,9 +357,9 @@ static void start_qemu(void)
 		strcat(cwd, "/");
 
 	if (own_binary[0] == '/')
-		snprintf(initcmd, sizeof(initcmd), "%s", own_binary);
+		initcmd = l_strdup_printf("%s", own_binary);
 	else
-		snprintf(initcmd, sizeof(initcmd), "%s/%s", cwd, own_binary);
+		initcmd = l_strdup_printf("%s/%s", cwd, own_binary);
 
 	pos = snprintf(testargs, sizeof(testargs), "%s", test_argv[0]);
 
@@ -370,7 +370,7 @@ static void start_qemu(void)
 		pos += snprintf(testargs + pos, len, " %s", test_argv[i]);
 	}
 
-	snprintf(cmdline, sizeof(cmdline),
+	cmdline = l_strdup_printf(
 			"console=ttyS0,115200n8 earlyprintk=serial "
 			"rootfstype=9p "
 			"root=/dev/root "
@@ -408,6 +408,10 @@ static void start_qemu(void)
 	argv[pos] = NULL;
 
 	execve(argv[0], argv, qemu_envp);
+
+	/* Don't expect to reach here */
+	free(initcmd);
+	free(cmdline);
 }
 
 static pid_t execute_program(char *argv[], bool wait, bool verbose)
@@ -704,10 +708,16 @@ static bool destroy_hwsim_radio(int radio_id)
 
 static pid_t register_hwsim_as_trans_medium(void)
 {
-	char *argv[2];
+	char *argv[16];
+	unsigned int idx = 0;
 
-	argv[0] = BIN_HWSIM;
-	argv[1] = NULL;
+	if (strcmp(gdb_opt, "hwsim") == 0) {
+		argv[idx++] = "gdb";
+		argv[idx++] = "--args";
+	}
+
+	argv[idx++] = BIN_HWSIM;
+	argv[idx++] = NULL;
 
 	return execute_program(argv, false, check_verbosity(BIN_HWSIM));
 }
@@ -1237,7 +1247,7 @@ done:
 static pid_t start_iwd(const char *config_dir, struct l_queue *wiphy_list,
 		const char *ext_options)
 {
-	char *argv[11];
+	char *argv[12];
 	char *iwd_phys = NULL;
 	pid_t ret;
 	int idx = 0;
@@ -1255,6 +1265,10 @@ static pid_t start_iwd(const char *config_dir, struct l_queue *wiphy_list,
 	argv[idx++] = BIN_IWD;
 	argv[idx++] = "-c";
 	argv[idx++] = (char *) config_dir;
+
+	if (check_verbosity(BIN_IWD))
+		argv[idx++] = "-d";
+
 	argv[idx] = NULL;
 
 	if (wiphy_list) {
@@ -1900,7 +1914,7 @@ static void print_test_stat(void *data, void *user_data)
 
 static void print_results(struct l_queue *test_stat_queue)
 {
-	struct stat_totals stat_totals;
+	struct stat_totals stat_totals = { 0, 0, 0, 0 };
 	char sep_line[80];
 
 	memset(sep_line, '_', sizeof(sep_line) - 1);
@@ -1942,19 +1956,19 @@ static void test_stat_queue_entry_destroy(void *data)
 
 static void run_auto_tests(void)
 {
-	char test_home_path[PATH_MAX];
-	char env_path[PATH_MAX];
+	L_AUTO_FREE_VAR(char*, test_home_path);
+	L_AUTO_FREE_VAR(char*, env_path);
 	int i;
 	struct l_hashmap *test_config_map;
 	struct l_queue *test_stat_queue;
 	char **test_config_dirs;
 
-	sprintf(env_path, "%s/src:%s/tools:%s", top_level_path, top_level_path,
-								getenv("PATH"));
+	env_path = l_strdup_printf("%s/src:%s/tools:%s", top_level_path,
+					top_level_path, getenv("PATH"));
 
 	setenv("PATH", env_path, true);
 
-	sprintf(test_home_path, "%s/%s", top_level_path,
+	test_home_path = l_strdup_printf("%s/%s", top_level_path,
 						TEST_TOP_DIR_DEFAULT_NAME);
 
 	if (!path_exist(test_home_path)) {
@@ -2086,41 +2100,43 @@ static void run_tests(void)
 	}
 
 	ptr = strstr(cmdline, "GDB=");
-
 	if (ptr) {
+		*ptr = '\0';
 		test_action_str = ptr + 5;
 
 		ptr = strchr(test_action_str, '\'');
-
 		*ptr = '\0';
-
 		gdb_opt = l_strdup(test_action_str);
 	}
 
 	ptr = strstr(cmdline, "VALGRIND=");
-
 	if (ptr) {
-		test_action_str = ptr + 9;
-		ptr += 1;
+		char *end;
+		unsigned long v;
+
 		*ptr = '\0';
-
-		valgrind = (bool) atoi(test_action_str);
-
-		if (valgrind != true && valgrind != false) {
+		test_action_str = ptr + 9;
+		v = strtoul(test_action_str, &end, 10);
+		if ((v != 0 && v != 1) || end != test_action_str + 1) {
 			l_error("malformed valgrind option");
 			return;
 		}
+
+		valgrind = (bool) v;
 	}
 
 	ptr = strstr(cmdline, "PATH=");
-
 	if (!ptr) {
 		l_error("No $PATH section found");
 		return;
 	}
 
-	ptr += 5;
-	setenv("PATH", ptr, true);
+	*ptr = '\0';
+	test_action_str = ptr + 6;
+	ptr = strchr(test_action_str, '\'');
+	*ptr = '\0';
+	l_info("%s", test_action_str);
+	setenv("PATH", test_action_str, true);
 
 	ptr = strstr(cmdline, "TESTARGS=");
 
@@ -2340,9 +2356,10 @@ int main(int argc, char *argv[])
 		case 'g':
 			gdb_opt = optarg;
 			if (!(!strcmp(gdb_opt, "iwd") ||
-					!strcmp(gdb_opt, "hostapd"))) {
+					!strcmp(gdb_opt, "hostapd") ||
+					!strcmp(gdb_opt, "hwsim"))) {
 				l_error("--gdb can only be used with iwd"
-					" or hostapd");
+					", hwsim or hostapd");
 				return EXIT_FAILURE;
 			}
 			break;

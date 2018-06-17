@@ -278,9 +278,9 @@ static void process_bss(struct device *device, struct scan_bss *bss,
 		if (r != -ENOENT)
 			return;
 
-		security = scan_get_security(bss->capability, NULL);
+		security = security_determine(bss->capability, NULL);
 	} else
-		security = scan_get_security(bss->capability, &info);
+		security = security_determine(bss->capability, &info);
 
 	path = iwd_network_get_path(device, ssid, security);
 
@@ -1092,9 +1092,9 @@ static bool device_roam_scan_notify(uint32_t wiphy_id, uint32_t ifindex,
 			if (r != -ENOENT)
 				goto next;
 
-			security = scan_get_security(bss->capability, NULL);
+			security = security_determine(bss->capability, NULL);
 		} else
-			security = scan_get_security(bss->capability, &info);
+			security = security_determine(bss->capability, &info);
 
 		if (security != orig_security)
 			goto next;
@@ -1488,7 +1488,8 @@ static void device_lost_beacon(struct device *device)
 {
 	l_debug("%d", device->index);
 
-	if (device->preparing_roam || device->state == DEVICE_STATE_ROAMING)
+	if (device->state != DEVICE_STATE_ROAMING &&
+			device->state != DEVICE_STATE_CONNECTED)
 		return;
 
 	/*
@@ -1499,6 +1500,9 @@ static void device_lost_beacon(struct device *device)
 	 * and we might wasting our time with those mechanisms.
 	 */
 	device->roam_no_orig_ap = true;
+
+	if (device->preparing_roam || device->state == DEVICE_STATE_ROAMING)
+		return;
 
 	device_roam_trigger_cb(NULL, device);
 }
@@ -2163,7 +2167,7 @@ static bool device_property_get_powered(struct l_dbus *dbus,
 	return true;
 }
 
-struct set_powered_cb_data {
+struct set_generic_cb_data {
 	struct device *device;
 	struct l_dbus *dbus;
 	struct l_dbus_message *message;
@@ -2172,7 +2176,7 @@ struct set_powered_cb_data {
 
 static void set_powered_cb(struct netdev *netdev, int result, void *user_data)
 {
-	struct set_powered_cb_data *cb_data = user_data;
+	struct set_generic_cb_data *cb_data = user_data;
 	struct l_dbus_message *reply = NULL;
 
 	if (result < 0)
@@ -2189,7 +2193,7 @@ static struct l_dbus_message *device_property_set_powered(struct l_dbus *dbus,
 {
 	struct device *device = user_data;
 	bool powered;
-	struct set_powered_cb_data *cb_data;
+	struct set_generic_cb_data *cb_data;
 
 	if (!l_dbus_message_iter_get_variant(new_value, "b", &powered))
 		return dbus_error_invalid_args(message);
@@ -2200,7 +2204,7 @@ static struct l_dbus_message *device_property_set_powered(struct l_dbus *dbus,
 		return NULL;
 	}
 
-	cb_data = l_new(struct set_powered_cb_data, 1);
+	cb_data = l_new(struct set_generic_cb_data, 1);
 	cb_data->device = device;
 	cb_data->dbus = dbus;
 	cb_data->message = message;
@@ -2208,6 +2212,65 @@ static struct l_dbus_message *device_property_set_powered(struct l_dbus *dbus,
 
 	netdev_set_powered(device->netdev, powered, set_powered_cb, cb_data,
 				l_free);
+
+	return NULL;
+}
+
+static bool device_property_get_4addr(struct l_dbus *dbus,
+					struct l_dbus_message *message,
+					struct l_dbus_message_builder *builder,
+					void *user_data)
+{
+	struct device *device = user_data;
+	bool use_4addr = netdev_get_4addr(device->netdev);
+
+	l_dbus_message_builder_append_basic(builder, 'b', &use_4addr);
+
+	return true;
+}
+
+static void set_4addr_cb(struct netdev *netdev, int result, void *user_data)
+{
+	struct set_generic_cb_data *cb_data = user_data;
+	struct l_dbus_message *reply = NULL;
+
+	if (result < 0)
+		reply = dbus_error_failed(cb_data->message);
+
+	cb_data->complete(cb_data->dbus, cb_data->message, reply);
+
+	l_dbus_property_changed(cb_data->dbus, device_get_path(cb_data->device),
+				IWD_DEVICE_INTERFACE, "WDS");
+}
+
+static struct l_dbus_message *device_property_set_4addr(struct l_dbus *dbus,
+					struct l_dbus_message *message,
+					struct l_dbus_message_iter *new_value,
+					l_dbus_property_complete_cb_t complete,
+					void *user_data)
+{
+	struct set_generic_cb_data *cb_data;
+	struct device *device = user_data;
+	bool use_4addr;
+
+	if (!l_dbus_message_iter_get_variant(new_value, "b", &use_4addr))
+		return dbus_error_invalid_args(message);
+
+	if (use_4addr == netdev_get_4addr(device->netdev)) {
+		complete(dbus, message, NULL);
+
+		return NULL;
+	}
+
+	cb_data = l_new(struct set_generic_cb_data, 1);
+	cb_data->device = device;
+	cb_data->dbus = dbus;
+	cb_data->message = message;
+	cb_data->complete = complete;
+
+	if (netdev_set_4addr(device->netdev, use_4addr, set_4addr_cb, cb_data,
+				l_free) < 0)
+		return dbus_error_failed(message);
 
 	return NULL;
 }
@@ -2301,6 +2364,9 @@ static void setup_device_interface(struct l_dbus_interface *interface)
 	l_dbus_interface_property(interface, "ConnectedNetwork", 0, "o",
 					device_property_get_connected_network,
 					NULL);
+	l_dbus_interface_property(interface, "WDS", 0, "b",
+					device_property_get_4addr,
+					device_property_set_4addr);
 	l_dbus_interface_property(interface, "Powered", 0, "b",
 					device_property_get_powered,
 					device_property_set_powered);

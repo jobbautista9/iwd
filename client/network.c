@@ -55,11 +55,8 @@ bool network_is_connected(const char *path)
 	return network->connected;
 }
 
-void network_connect(const char *path)
+void network_connect(const struct proxy_interface *proxy)
 {
-	const struct proxy_interface *proxy =
-			proxy_interface_find(IWD_NETWORK_INTERFACE, path);
-
 	if (!proxy)
 		return;
 
@@ -148,6 +145,13 @@ void network_args_destroy(struct network_args *network_args)
 	l_free(network_args);
 }
 
+static const char *get_name(const void *data)
+{
+	const struct network *network = data;
+
+	return network->name;
+}
+
 static void set_name(void *data, struct l_dbus_message_iter *variant)
 {
 	struct network *network = data;
@@ -209,7 +213,7 @@ static void set_type(void *data, struct l_dbus_message_iter *variant)
 }
 
 static const struct proxy_interface_property network_properties[] = {
-	{ "Name",       "s", set_name},
+	{ "Name",       "s", set_name, get_name },
 	{ "Connected",  "b", set_connected},
 	{ "Device",     "o", set_device},
 	{ "Type",       "s", set_type},
@@ -266,6 +270,78 @@ static struct proxy_interface_type network_interface_type = {
 	.properties = network_properties,
 	.ops = &ops,
 };
+
+struct completion_search_parameters {
+	const char *text;
+	const struct proxy_interface *device;
+};
+
+static bool match_by_partial_name(const void *a, const void *b)
+{
+	const struct network *network = a;
+	const struct completion_search_parameters *params = b;
+	const char *name;
+	const char *text;
+
+	if (!proxy_interface_is_same(network->device, params->device))
+		return false;
+
+	for (text = params->text, name = network->name; *text && *name;
+							name++, text++) {
+		if (*name == *text)
+			continue;
+
+		return false;
+	}
+
+	return true;
+}
+
+char *network_name_completion(const struct proxy_interface *device,
+						const char *text, int state)
+{
+	const struct completion_search_parameters params = {
+		.text = text, .device = device,
+	};
+
+	return proxy_property_str_completion(&network_interface_type,
+						match_by_partial_name, "Name",
+						&params, state);
+}
+
+struct network_search_parameters {
+	const struct network_args *args;
+	const struct proxy_interface *device;
+};
+
+static bool match_by_device_and_args(const void *a, const void *b)
+{
+	const struct network *network = a;
+	const struct network_search_parameters *params = b;
+
+	if (!proxy_interface_is_same(network->device, params->device))
+		return false;
+
+	if (strcmp(network->name, params->args->name))
+		return false;
+
+	if (params->args->type && strcmp(network->type, params->args->type))
+		return false;
+
+	return true;
+}
+
+struct l_queue *network_match_by_device_and_args(
+					const struct proxy_interface *device,
+					const struct network_args *args)
+{
+	struct network_search_parameters params = {
+		.args = args, .device = device
+	};
+
+	return proxy_interface_find_all(network_interface_type.interface,
+					match_by_device_and_args, &params);
+}
 
 static int network_interface_init(void)
 {

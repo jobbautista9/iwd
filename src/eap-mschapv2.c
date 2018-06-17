@@ -26,6 +26,7 @@
 #include <ell/ell.h>
 
 #include "eap.h"
+#include "eap-private.h"
 #include "eap-mschapv2.h"
 
 #define MSCHAPV2_CHAL_LEN 16
@@ -404,9 +405,23 @@ bool mschapv2_generate_authenticator_response(
 	return true;
 }
 
+static bool eap_mschapv2_reset_state(struct eap_state *eap)
+{
+	struct eap_mschapv2_state *state = eap_get_data(eap);
+
+	memset(state->peer_challenge, 0, sizeof(state->peer_challenge));
+	memset(state->server_challenge, 0, sizeof(state->server_challenge));
+
+	return true;
+}
+
 static void eap_mschapv2_state_free(struct eap_mschapv2_state *state)
 {
+	memset(state->password_hash, 0, sizeof(state->password_hash));
+
+	memset(state->user, 0, state->user_len);
 	l_free(state->user);
+	state->user_len = 0;
 
 	l_free(state);
 }
@@ -414,6 +429,8 @@ static void eap_mschapv2_state_free(struct eap_mschapv2_state *state)
 static void eap_mschapv2_free(struct eap_state *eap)
 {
 	struct eap_mschapv2_state *state;
+
+	eap_mschapv2_reset_state(eap);
 
 	state = eap_get_data(eap);
 	eap_set_data(eap, NULL);
@@ -618,9 +635,6 @@ err:
 static bool set_password_from_string(struct eap_mschapv2_state *state,
 						const char *password)
 {
-	if (!l_utf8_validate(password, strlen(password), NULL))
-		return false;
-
 	return mschapv2_nt_password_hash(password, state->password_hash);
 }
 
@@ -646,34 +660,38 @@ static int eap_mschapv2_check_settings(struct l_settings *settings,
 					const char *prefix,
 					struct l_queue **out_missing)
 {
-	const char *identity, *password = NULL, *password_hash;
+	const char *password_hash;
+	L_AUTO_FREE_VAR(char *, password) = NULL;
+	L_AUTO_FREE_VAR(char *, identity);
 	const struct eap_secret_info *secret;
 	char setting[64], setting2[64];
 	uint8_t hash[16];
 
 	snprintf(setting, sizeof(setting), "%sIdentity", prefix);
-	identity = l_settings_get_value(settings, "Security", setting);
+	identity = l_settings_get_string(settings, "Security", setting);
+
+	snprintf(setting2, sizeof(setting2), "%sPassword", prefix);
 
 	if (!identity) {
 		secret = l_queue_find(secrets, eap_secret_info_match, setting);
 		if (secret) {
-			identity = secret->value;
-			password = secret->value + strlen(secret->value) + 1;
+			identity = l_strdup(secret->value);
+			password = l_strdup(secret->value +
+						strlen(secret->value) + 1);
 
 			goto validate;
 		}
 
 		eap_append_secret(out_missing, EAP_SECRET_REMOTE_USER_PASSWORD,
-					setting, NULL);
+					setting, setting2, NULL);
 		return 0;
 	}
+
+	password = l_settings_get_string(settings, "Security", setting2);
 
 	snprintf(setting, sizeof(setting), "%sPassword-Hash", prefix);
 	password_hash = l_settings_get_value(settings, "Security",
 						setting);
-
-	snprintf(setting2, sizeof(setting2), "%sPassword", prefix);
-	password = l_settings_get_value(settings, "Security", setting2);
 
 	if (password && password_hash) {
 		l_error("Exactly one of (%s, %s) must be present",
@@ -685,7 +703,7 @@ static int eap_mschapv2_check_settings(struct l_settings *settings,
 		unsigned char *tmp;
 		size_t len;
 
-		tmp = l_util_from_hexstring(password, &len);
+		tmp = l_util_from_hexstring(password_hash, &len);
 		l_free(tmp);
 
 		if (!tmp || len != 16) {
@@ -701,18 +719,13 @@ static int eap_mschapv2_check_settings(struct l_settings *settings,
 	secret = l_queue_find(secrets, eap_secret_info_match, setting2);
 	if (!secret) {
 		eap_append_secret(out_missing, EAP_SECRET_REMOTE_PASSWORD,
-					setting2, identity);
+					setting2, NULL, identity);
 		return 0;
 	}
 
-	password = secret->value;
+	password = l_strdup(secret->value);
 
 validate:
-	if (!l_utf8_validate(password, strlen(password), NULL)) {
-		l_error("Password is not valid UTF-8");
-		return -EINVAL;
-	}
-
 	if (!mschapv2_nt_password_hash(password, hash))
 		return -EINVAL;
 
@@ -724,53 +737,39 @@ static bool eap_mschapv2_load_settings(struct eap_state *eap,
 					const char *prefix)
 {
 	struct eap_mschapv2_state *state;
-	const char *identity, *password = NULL;
+	L_AUTO_FREE_VAR(char *, identity);
+	L_AUTO_FREE_VAR(char *, password) = NULL;
 	char setting[64];
 
 	state = l_new(struct eap_mschapv2_state, 1);
 
 	snprintf(setting, sizeof(setting), "%sIdentity", prefix);
-	identity = l_settings_get_value(settings, "Security", setting);
-
-	if (!identity) {
-		snprintf(setting, sizeof(setting), "%sIdentity-User", prefix);
-		identity = l_settings_get_value(settings, "Security", setting);
-		if (!identity)
-			goto error;
-
-		snprintf(setting, sizeof(setting), "%sIdentity-Password",
-				prefix);
-		password = l_settings_get_value(settings, "Security", setting);
-		if (!password)
-			goto error;
-
-		set_password_from_string(state, password);
-	}
+	identity = l_settings_get_string(settings, "Security", setting);
+	if (!identity)
+		goto error;
 
 	set_user_name(state, identity);
 	state->user_len = strlen(state->user);
 
 	/* Either read the password-hash from hexdump or password and hash it */
-	if (!password) {
+	snprintf(setting, sizeof(setting), "%sPassword", prefix);
+	password = l_settings_get_string(settings, "Security", setting);
+
+	if (password)
+		set_password_from_string(state, password);
+	else {
+		unsigned char *tmp;
+		size_t len;
+		const char *hash_str;
+
 		snprintf(setting, sizeof(setting), "%sPassword-Hash", prefix);
-		password = l_settings_get_value(settings, "Security", setting);
-		if (password) {
-			unsigned char *tmp;
-			size_t len;
-
-			tmp = l_util_from_hexstring(password, &len);
-			memcpy(state->password_hash, tmp, 16);
-			l_free(tmp);
-		}
-	}
-
-	if (!password) {
-		snprintf(setting, sizeof(setting), "%sPassword", prefix);
-		password = l_settings_get_value(settings, "Security", setting);
-		if (!password)
+		hash_str = l_settings_get_value(settings, "Security", setting);
+		if (!hash_str)
 			goto error;
 
-		set_password_from_string(state, password);
+		tmp = l_util_from_hexstring(hash_str, &len);
+		memcpy(state->password_hash, tmp, 16);
+		l_free(tmp);
 	}
 
 	eap_set_data(eap, state);
@@ -791,6 +790,7 @@ static struct eap_method eap_mschapv2 = {
 	.handle_request = eap_mschapv2_handle_request,
 	.check_settings = eap_mschapv2_check_settings,
 	.load_settings = eap_mschapv2_load_settings,
+	.reset_state = eap_mschapv2_reset_state,
 };
 
 static int eap_mschapv2_init(void)

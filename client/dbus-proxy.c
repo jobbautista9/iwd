@@ -141,7 +141,7 @@ static void interface_update_properties(struct proxy_interface *proxy,
 char *proxy_property_str_completion(const struct proxy_interface_type *type,
 					proxy_property_match_func_t function,
 					const char *property_name,
-					const char *value, int state)
+					const void *value, int state)
 {
 	static struct l_queue *match;
 	static const struct l_queue_entry *entry;
@@ -267,6 +267,12 @@ static struct l_queue *proxy_interface_find_by_path(const char *path)
 	}
 
 	return match;
+}
+
+bool proxy_interface_is_same(const struct proxy_interface *a,
+					const struct proxy_interface *b)
+{
+	return !strcmp(a->path, b->path);
 }
 
 static void properties_changed_callback(struct l_dbus_message *message,

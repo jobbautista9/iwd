@@ -30,9 +30,17 @@
 #include <ell/ell.h>
 
 #include "eap.h"
+#include "eap-private.h"
 
 static uint32_t default_mtu;
 struct l_queue *eap_methods;
+
+static void dump_eap(const char *str, void *user_data)
+{
+	const char *prefix = user_data;
+
+	l_info("%s%s\n", prefix, str);
+}
 
 struct eap_state {
 	eap_tx_packet_func_t tx_packet;
@@ -84,6 +92,20 @@ void eap_set_key_material_func(struct eap_state *eap,
 void eap_set_event_func(struct eap_state *eap, eap_event_func_t func)
 {
 	eap->event_func = func;
+}
+
+bool eap_reset(struct eap_state *eap)
+{
+	if (eap->method_state && eap->method->reset_state) {
+		if (!eap->method->reset_state(eap))
+			return false;
+	}
+
+	eap->method_success = false;
+	l_timeout_remove(eap->complete_timeout);
+	eap->complete_timeout = NULL;
+
+	return true;
 }
 
 void eap_free(struct eap_state *eap)
@@ -181,8 +203,7 @@ void __eap_handle_request(struct eap_state *eap, uint16_t id,
 	enum eap_type type;
 	uint8_t buf[10];
 	int buf_len;
-	void (*op)(struct eap_state *eap,
-				const uint8_t *pkt, size_t len);
+	bool retransmit;
 
 	if (len < 1)
 		/* Invalid packets to be ignored */
@@ -196,15 +217,13 @@ void __eap_handle_request(struct eap_state *eap, uint16_t id,
 		goto unsupported_method;
 	}
 
-	if (id == eap->last_id)
-		op = eap->method->handle_retransmit ? :
-						eap->method->handle_request;
-	else
-		op = eap->method->handle_request;
-
+	retransmit = id == eap->last_id ? true : false;
 	eap->last_id = id;
 
 	if (type >= __EAP_TYPE_MIN_METHOD) {
+		void (*op)(struct eap_state *eap,
+					const uint8_t *pkt, size_t len);
+
 		if (type != eap->method->request_type) {
 			l_warn("EAP server tried method %i while client was "
 					"configured for method %i",
@@ -212,6 +231,10 @@ void __eap_handle_request(struct eap_state *eap, uint16_t id,
 
 			goto unsupported_method;
 		}
+
+		op = retransmit && eap->method->handle_retransmit ?
+						eap->method->handle_retransmit :
+						eap->method->handle_request;
 
 		if (type != EAP_TYPE_EXPANDED) {
 			op(eap, pkt + 1, len - 1);
@@ -233,7 +256,7 @@ void __eap_handle_request(struct eap_state *eap, uint16_t id,
 	case EAP_TYPE_IDENTITY:
 		if (len >= 2)
 			l_warn("EAP identity prompt: \"%.*s\"",
-					(int) len - 1, buf + 1);
+					(int) len - 1, pkt + 1);
 
 		eap_send_identity_response(eap, eap->identity);
 
@@ -244,7 +267,7 @@ void __eap_handle_request(struct eap_state *eap, uint16_t id,
 			/* Invalid packets to be ignored */
 			return;
 
-		l_warn("EAP notification: \"%.*s\"", (int) len - 1, buf + 1);
+		l_warn("EAP notification: \"%.*s\"", (int) len - 1, pkt + 1);
 
 		eap_send_response(eap, EAP_TYPE_NOTIFICATION, buf, 5);
 
@@ -252,6 +275,11 @@ void __eap_handle_request(struct eap_state *eap, uint16_t id,
 
 	default:
 	unsupported_method:
+		if (!eap->method) {
+			l_info("Received an unhandled EAP packet:");
+			l_util_hexdump(true, pkt, len, dump_eap, "[EAP] ");
+		}
+
 		/* Send a legacy NAK response */
 		buf_len = 5;
 
@@ -332,11 +360,6 @@ void eap_rx_packet(struct eap_state *eap, const uint8_t *pkt, size_t len)
 			 */
 			return;
 
-		if (eap->method_state && eap->method->free)
-			eap->method->free(eap);
-
-		eap->method = NULL;
-
 		eap->complete(code == EAP_CODE_SUCCESS ? EAP_RESULT_SUCCESS :
 				EAP_RESULT_FAIL, eap->user_data);
 		return;
@@ -355,7 +378,7 @@ bool eap_secret_info_match(const void *a, const void *b)
 }
 
 void eap_append_secret(struct l_queue **out_missing, enum eap_secret_type type,
-			const char *id, const char *parameter)
+			const char *id, const char *id2, const char *parameter)
 {
 	struct eap_secret_info *info;
 
@@ -364,6 +387,7 @@ void eap_append_secret(struct l_queue **out_missing, enum eap_secret_type type,
 
 	info = l_new(struct eap_secret_info, 1);
 	info->id = l_strdup(id);
+	info->id2 = l_strdup(id2);
 	info->type = type;
 	info->parameter = l_strdup(parameter);
 	l_queue_push_tail(*out_missing, info);
@@ -387,24 +411,42 @@ void eap_secret_info_free(void *data)
 	}
 
 	l_free(info->id);
+	l_free(info->id2);
 	l_free(info);
 }
 
-int eap_check_settings(struct l_settings *settings, struct l_queue *secrets,
-			const char *prefix, bool set_key_material,
-			struct l_queue **out_missing)
+static int eap_setting_exists(struct l_settings *settings,
+				const char *setting,
+				struct l_queue *secrets,
+				struct l_queue *missing)
+{
+	if (l_settings_get_value(settings, "Security", setting))
+		return 0;
+
+	if (l_queue_find(secrets, eap_secret_info_match, setting))
+		return 0;
+
+	if (l_queue_find(missing, eap_secret_info_match, setting))
+		return 0;
+
+	return -ENOENT;
+}
+
+int __eap_check_settings(struct l_settings *settings, struct l_queue *secrets,
+				const char *prefix, bool set_key_material,
+				struct l_queue **missing)
 {
 	char setting[64];
 	const char *method_name;
 	const struct l_queue_entry *entry;
 	struct eap_method *method;
+	int ret = 0;
 
 	snprintf(setting, sizeof(setting), "%sMethod", prefix);
 	method_name = l_settings_get_value(settings, "Security", setting);
 
 	if (!method_name) {
 		l_error("Property %s missing", setting);
-
 		return -ENOENT;
 	}
 
@@ -418,7 +460,6 @@ int eap_check_settings(struct l_settings *settings, struct l_queue *secrets,
 
 	if (!entry) {
 		l_error("EAP method \"%s\" unsupported", method_name);
-
 		return -ENOTSUP;
 	}
 
@@ -426,24 +467,55 @@ int eap_check_settings(struct l_settings *settings, struct l_queue *secrets,
 	if (set_key_material && !method->exports_msk) {
 		l_error("EAP method \"%s\" doesn't export key material",
 				method_name);
-
 		return -ENOTSUP;
 	}
 
-	/* method may not store identity in settings file */
+	if (method->check_settings) {
+		ret = method->check_settings(settings, secrets,
+						prefix, missing);
+
+		if (ret < 0)
+			return ret;
+	}
+
+	/*
+	 * Methods that provide the get_identity callback are responsible
+	 * for ensuring, inside check_settings(), that they have enough data
+	 * to return the identity after load_settings().
+	 */
 	if (!method->get_identity) {
 		snprintf(setting, sizeof(setting), "%sIdentity", prefix);
-		if (!l_settings_get_value(settings, "Security", setting)) {
-			l_error("Property %s is missing", setting);
 
+		ret = eap_setting_exists(settings, setting, secrets, *missing);
+		if (ret < 0) {
+			l_error("Property %s is missing", setting);
 			return -ENOENT;
 		}
 	}
 
-	if (!method->check_settings)
-		return 0;
+	return 0;
+}
 
-	return method->check_settings(settings, secrets, prefix, out_missing);
+int eap_check_settings(struct l_settings *settings, struct l_queue *secrets,
+			const char *prefix, bool set_key_material,
+			struct l_queue **out_missing)
+{
+	struct l_queue *missing = NULL;
+	int ret = __eap_check_settings(settings, secrets, prefix,
+					set_key_material, &missing);
+
+	if (ret < 0) {
+		l_queue_destroy(missing, eap_secret_info_free);
+		return ret;
+	}
+
+	if (missing && l_queue_isempty(missing)) {
+		l_queue_destroy(missing, NULL);
+		missing = NULL;
+	}
+
+	*out_missing = missing;
+	return 0;
 }
 
 bool eap_load_settings(struct eap_state *eap, struct l_settings *settings,
@@ -485,8 +557,8 @@ bool eap_load_settings(struct eap_state *eap, struct l_settings *settings,
 	/* get identity from settings or from EAP method */
 	if (!eap->method->get_identity) {
 		snprintf(setting, sizeof(setting), "%sIdentity", prefix);
-		eap->identity = l_strdup(l_settings_get_value(settings,
-				"Security", setting));
+		eap->identity = l_settings_get_string(settings,
+							"Security", setting);
 	} else {
 		eap->identity = l_strdup(eap->method->get_identity(eap));
 	}

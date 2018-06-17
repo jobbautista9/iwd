@@ -36,6 +36,7 @@
 #include "linux/nl80211.h"
 #include "src/iwd.h"
 #include "src/wiphy.h"
+#include "src/netdev.h"
 #include "src/ie.h"
 #include "src/scan.h"
 
@@ -76,6 +77,7 @@ struct scan_context {
 	struct scan_periodic sp;
 	struct l_queue *requests;
 	unsigned int start_cmd_id;
+	struct wiphy *wiphy;
 };
 
 struct scan_results {
@@ -114,11 +116,21 @@ static void scan_request_free(void *data)
 
 static struct scan_context *scan_context_new(uint32_t ifindex)
 {
+	struct netdev *netdev = netdev_find(ifindex);
+	struct wiphy *wiphy;
 	struct scan_context *sc;
+
+	if (!netdev)
+		return NULL;
+
+	wiphy = netdev_get_wiphy(netdev);
+	if (!wiphy)
+		return NULL;
 
 	sc = l_new(struct scan_context, 1);
 
 	sc->ifindex = ifindex;
+	sc->wiphy = wiphy;
 	sc->state = SCAN_STATE_NOT_RUNNING;
 	sc->requests = l_queue_new();
 
@@ -148,6 +160,9 @@ bool scan_ifindex_add(uint32_t ifindex)
 		return false;
 
 	sc = scan_context_new(ifindex);
+	if (!sc)
+		return false;
+
 	l_queue_push_head(scan_contexts, sc);
 
 	return true;
@@ -186,7 +201,7 @@ static unsigned int scan_send_start(struct l_genl_msg **msg,
 	return id;
 }
 
-static void scan_done(struct l_genl_msg *msg, void *userdata)
+static void scan_triggered(struct l_genl_msg *msg, void *userdata)
 {
 	struct scan_context *sc = userdata;
 	struct scan_request *sr = l_queue_peek_head(sc->requests);
@@ -331,7 +346,7 @@ static uint32_t scan_common(uint32_t ifindex, bool passive,
 	if (sc->state != SCAN_STATE_NOT_RUNNING)
 		goto done;
 
-	sc->start_cmd_id = scan_send_start(&sr->start_cmd, scan_done, sc);
+	sc->start_cmd_id = scan_send_start(&sr->start_cmd, scan_triggered, sc);
 	if (sc->start_cmd_id > 0)
 		goto done;
 
@@ -593,7 +608,7 @@ static bool start_next_scan_request(struct scan_context *sc)
 		sr = l_queue_peek_head(sc->requests);
 
 		sc->start_cmd_id = scan_send_start(&sr->start_cmd,
-							scan_done, sc);
+							scan_triggered, sc);
 
 		if (sc->start_cmd_id)
 			return true;
@@ -616,27 +631,6 @@ static bool start_next_scan_request(struct scan_context *sc)
 	}
 
 	return false;
-}
-
-enum security scan_get_security(enum ie_bss_capability bss_capability,
-					const struct ie_rsn_info *info)
-{
-	if (info && (info->akm_suites & IE_RSN_AKM_SUITE_PSK ||
-			info->akm_suites & IE_RSN_AKM_SUITE_PSK_SHA256 ||
-			info->akm_suites & IE_RSN_AKM_SUITE_FT_USING_PSK ||
-			info->akm_suites & IE_RSN_AKM_SUITE_SAE_SHA256 ||
-			info->akm_suites & IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256))
-		return SECURITY_PSK;
-
-	if (info && (info->akm_suites & IE_RSN_AKM_SUITE_8021X ||
-			info->akm_suites & IE_RSN_AKM_SUITE_8021X_SHA256 ||
-			info->akm_suites & IE_RSN_AKM_SUITE_FT_OVER_8021X))
-		return SECURITY_8021X;
-
-	if (bss_capability & IE_BSS_CAP_PRIVACY)
-		return SECURITY_WEP;
-
-	return SECURITY_NONE;
 }
 
 static bool scan_parse_bss_information_elements(struct scan_bss *bss,

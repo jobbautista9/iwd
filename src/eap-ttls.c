@@ -31,6 +31,7 @@
 #include <ell/tls-private.h>
 
 #include "eap.h"
+#include "eap-private.h"
 
 struct eap_ttls_state {
 	char *ca_cert;
@@ -51,45 +52,67 @@ struct eap_ttls_state {
 	uint8_t negotiated_version;
 };
 
+static void __eap_ttls_reset_state(struct eap_ttls_state *ttls)
+{
+	ttls->phase1_completed = false;
+	ttls->completed = false;
+
+	l_free(ttls->rx_pkt_buf);
+	ttls->rx_pkt_buf = NULL;
+	ttls->rx_pkt_received = 0;
+	ttls->rx_pkt_len = 0;
+
+	l_free(ttls->tx_pkt_buf);
+	ttls->tx_pkt_buf = NULL;
+	ttls->tx_pkt_capacity = 0;
+	ttls->tx_pkt_len = 0;
+	ttls->tx_pkt_offset = 0;
+
+	l_free(ttls->avp_buf);
+	ttls->avp_buf = NULL;
+	ttls->avp_received = 0;
+	ttls->avp_capacity = 0;
+
+	if (ttls->tls) {
+		l_tls_free(ttls->tls);
+		ttls->tls = NULL;
+	}
+}
+
+static bool eap_ttls_reset_state(struct eap_state *eap)
+{
+	struct eap_ttls_state *ttls = eap_get_data(eap);
+
+	if (!ttls->eap)
+		return false;
+
+	if (!eap_reset(ttls->eap))
+		return false;
+
+	__eap_ttls_reset_state(ttls);
+	return true;
+}
+
 static void eap_ttls_free(struct eap_state *eap)
 {
 	struct eap_ttls_state *ttls = eap_get_data(eap);
+
+	__eap_ttls_reset_state(ttls);
 
 	eap_set_data(eap, NULL);
 
 	l_free(ttls->ca_cert);
 	l_free(ttls->client_cert);
 	l_free(ttls->client_key);
-	if (ttls->passphrase)
+
+	if (ttls->passphrase) {
 		memset(ttls->passphrase, 0, strlen(ttls->passphrase));
-	l_free(ttls->passphrase);
-
-	if (ttls->rx_pkt_buf) {
-		l_free(ttls->rx_pkt_buf);
-		ttls->rx_pkt_buf = NULL;
-	}
-
-	if (ttls->tx_pkt_buf) {
-		l_free(ttls->tx_pkt_buf);
-		ttls->tx_pkt_buf = NULL;
-		ttls->tx_pkt_capacity = 0;
-		ttls->tx_pkt_len = 0;
-	}
-
-	if (ttls->avp_buf) {
-		l_free(ttls->avp_buf);
-		ttls->avp_buf = NULL;
-		ttls->avp_received = 0;
+		l_free(ttls->passphrase);
 	}
 
 	if (ttls->eap) {
 		eap_free(ttls->eap);
 		ttls->eap = NULL;
-	}
-
-	if (ttls->tls) {
-		l_tls_free(ttls->tls);
-		ttls->tls = NULL;
 	}
 
 	l_free(ttls);
@@ -638,12 +661,14 @@ static int eap_ttls_check_settings(struct l_settings *settings,
 					struct l_queue **out_missing)
 {
 	char setting[64], client_cert_setting[64], passphrase_setting[64];
-	const char *path, *client_cert, *passphrase;
+	L_AUTO_FREE_VAR(char *, path) = NULL;
+	L_AUTO_FREE_VAR(char *, client_cert) = NULL;
+	L_AUTO_FREE_VAR(char *, passphrase) = NULL;
 	uint8_t *cert;
 	size_t size;
 
 	snprintf(setting, sizeof(setting), "%sTTLS-CACert", prefix);
-	path = l_settings_get_value(settings, "Security", setting);
+	path = l_settings_get_string(settings, "Security", setting);
 	if (path) {
 		cert = l_pem_load_certificate(path, &size);
 		if (!cert) {
@@ -656,7 +681,7 @@ static int eap_ttls_check_settings(struct l_settings *settings,
 
 	snprintf(client_cert_setting, sizeof(client_cert_setting),
 			"%sTTLS-ClientCert", prefix);
-	client_cert = l_settings_get_value(settings, "Security",
+	client_cert = l_settings_get_string(settings, "Security",
 						client_cert_setting);
 	if (client_cert) {
 		cert = l_pem_load_certificate(client_cert, &size);
@@ -668,8 +693,10 @@ static int eap_ttls_check_settings(struct l_settings *settings,
 		l_free(cert);
 	}
 
+	l_free(path);
+
 	snprintf(setting, sizeof(setting), "%sTTLS-ClientKey", prefix);
-	path = l_settings_get_value(settings, "Security", setting);
+	path = l_settings_get_string(settings, "Security", setting);
 
 	if (path && !client_cert) {
 		l_error("%s present but no client certificate (%s)",
@@ -679,7 +706,7 @@ static int eap_ttls_check_settings(struct l_settings *settings,
 
 	snprintf(passphrase_setting, sizeof(passphrase_setting),
 			"%sTTLS-ClientKeyPassphrase", prefix);
-	passphrase = l_settings_get_value(settings, "Security",
+	passphrase = l_settings_get_string(settings, "Security",
 						passphrase_setting);
 
 	if (!passphrase) {
@@ -688,7 +715,7 @@ static int eap_ttls_check_settings(struct l_settings *settings,
 		secret = l_queue_find(secrets, eap_secret_info_match,
 					passphrase_setting);
 		if (secret)
-			passphrase = secret->value;
+			passphrase = l_strdup(secret->value);
 	}
 
 	if (path) {
@@ -718,7 +745,7 @@ static int eap_ttls_check_settings(struct l_settings *settings,
 			 */
 			eap_append_secret(out_missing,
 					EAP_SECRET_LOCAL_PKEY_PASSPHRASE,
-					passphrase_setting, path);
+					passphrase_setting, NULL, path);
 		} else {
 			memset(priv_key, 0, size);
 			l_free(priv_key);
@@ -738,7 +765,7 @@ static int eap_ttls_check_settings(struct l_settings *settings,
 
 	snprintf(setting, sizeof(setting), "%sTTLS-Phase2-", prefix);
 
-	return eap_check_settings(settings, secrets, setting, false,
+	return __eap_check_settings(settings, secrets, setting, false,
 					out_missing);
 }
 
@@ -752,21 +779,18 @@ static bool eap_ttls_load_settings(struct eap_state *eap,
 	ttls = l_new(struct eap_ttls_state, 1);
 
 	snprintf(setting, sizeof(setting), "%sTTLS-CACert", prefix);
-	ttls->ca_cert = l_strdup(l_settings_get_value(settings,
-						"Security", setting));
+	ttls->ca_cert = l_settings_get_string(settings, "Security", setting);
 
 	snprintf(setting, sizeof(setting), "%sTTLS-ClientCert", prefix);
-	ttls->client_cert = l_strdup(l_settings_get_value(settings,
-						"Security", setting));
+	ttls->client_cert = l_settings_get_string(settings,
+							"Security", setting);
 
 	snprintf(setting, sizeof(setting), "%sTTLS-ClientKey", prefix);
-	ttls->client_key = l_strdup(l_settings_get_value(settings,
-						"Security", setting));
+	ttls->client_key = l_settings_get_string(settings, "Security", setting);
 
 	snprintf(setting, sizeof(setting), "%sTTLS-ClientKeyPassphrase",
 			prefix);
-	ttls->passphrase = l_strdup(l_settings_get_value(settings,
-						"Security", setting));
+	ttls->passphrase = l_settings_get_string(settings, "Security", setting);
 
 	ttls->eap = eap_new(eap_ttls_eap_tx_packet,
 				eap_ttls_eap_complete, eap);
@@ -807,6 +831,7 @@ static struct eap_method eap_ttls = {
 	.handle_request = eap_ttls_handle_request,
 	.check_settings = eap_ttls_check_settings,
 	.load_settings = eap_ttls_load_settings,
+	.reset_state = eap_ttls_reset_state,
 };
 
 static int eap_ttls_init(void)

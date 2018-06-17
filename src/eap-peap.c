@@ -31,6 +31,7 @@
 #include <ell/tls-private.h>
 
 #include "eap.h"
+#include "eap-private.h"
 
 /*
  * Protected EAP Protocol (PEAP): EAP type 25 as described in:
@@ -136,10 +137,8 @@ static void databuf_free(struct databuf *databuf)
 	l_free(databuf);
 }
 
-static void eap_peap_free_rx_buffer(struct eap_state *eap)
+static void eap_peap_free_rx_buffer(struct eap_peap_state *peap)
 {
-	struct eap_peap_state *peap = eap_get_data(eap);
-
 	if (!peap->rx_pdu_buf)
 		return;
 
@@ -149,19 +148,20 @@ static void eap_peap_free_rx_buffer(struct eap_state *eap)
 	peap->rx_pdu_buf_offset = 0;
 }
 
-static void eap_peap_free(struct eap_state *eap)
+static void __eap_peap_reset_state(struct eap_peap_state *peap)
 {
-	struct eap_peap_state *peap = eap_get_data(eap);
+	peap->version = PEAP_VERSION_NOT_NEGOTIATED;
+	peap->completed = false;
+	peap->phase2_failed = false;
+	peap->expecting_frag_ack = false;
 
 	if (peap->tunnel) {
 		l_tls_free(peap->tunnel);
 		peap->tunnel = NULL;
 	}
 
-	if (peap->phase2_eap) {
-		eap_free(peap->phase2_eap);
-		peap->phase2_eap = NULL;
-	}
+	peap->tx_frag_offset = 0;
+	peap->tx_frag_last_len = 0;
 
 	if (peap->tx_pdu_buf) {
 		databuf_free(peap->tx_pdu_buf);
@@ -173,16 +173,43 @@ static void eap_peap_free(struct eap_state *eap)
 		peap->plain_buf = NULL;
 	}
 
-	eap_peap_free_rx_buffer(eap);
+	eap_peap_free_rx_buffer(peap);
+}
 
+static bool eap_peap_reset_state(struct eap_state *eap)
+{
+	struct eap_peap_state *peap = eap_get_data(eap);
+
+	if (!peap->phase2_eap)
+		return false;
+
+	if (!eap_reset(peap->phase2_eap))
+		return false;
+
+	__eap_peap_reset_state(peap);
+	return true;
+}
+
+static void eap_peap_free(struct eap_state *eap)
+{
+	struct eap_peap_state *peap = eap_get_data(eap);
+
+	__eap_peap_reset_state(peap);
 	eap_set_data(eap, NULL);
+
+	if (peap->phase2_eap) {
+		eap_free(peap->phase2_eap);
+		peap->phase2_eap = NULL;
+	}
 
 	l_free(peap->ca_cert);
 	l_free(peap->client_cert);
 	l_free(peap->client_key);
-	if (peap->passphrase)
+
+	if (peap->passphrase) {
 		memset(peap->passphrase, 0, strlen(peap->passphrase));
-	l_free(peap->passphrase);
+		l_free(peap->passphrase);
+	}
 
 	l_free(peap);
 }
@@ -751,7 +778,7 @@ static void eap_peap_handle_request(struct eap_state *eap,
 
 	eap_peap_handle_payload(eap, pkt, len);
 
-	eap_peap_free_rx_buffer(eap);
+	eap_peap_free_rx_buffer(peap);
 
 send_response:
 	if (!peap->tx_pdu_buf) {
@@ -822,12 +849,14 @@ static int eap_peap_check_settings(struct l_settings *settings,
 					struct l_queue **out_missing)
 {
 	char entry[64], client_cert_entry[64], passphrase_entry[64];
-	const char *path, *client_cert, *passphrase;
+	L_AUTO_FREE_VAR(char *, path) = NULL;
+	L_AUTO_FREE_VAR(char *, client_cert) = NULL;
+	L_AUTO_FREE_VAR(char *, passphrase) = NULL;
 	uint8_t *cert;
 	size_t size;
 
 	snprintf(entry, sizeof(entry), "%sPEAP-CACert", prefix);
-	path = l_settings_get_value(settings, "Security", entry);
+	path = l_settings_get_string(settings, "Security", entry);
 	if (path) {
 		cert = l_pem_load_certificate(path, &size);
 		if (!cert) {
@@ -840,7 +869,7 @@ static int eap_peap_check_settings(struct l_settings *settings,
 
 	snprintf(client_cert_entry, sizeof(client_cert_entry),
 			"%sPEAP-ClientCert", prefix);
-	client_cert = l_settings_get_value(settings, "Security",
+	client_cert = l_settings_get_string(settings, "Security",
 						client_cert_entry);
 	if (client_cert) {
 		cert = l_pem_load_certificate(client_cert, &size);
@@ -852,8 +881,10 @@ static int eap_peap_check_settings(struct l_settings *settings,
 		l_free(cert);
 	}
 
+	l_free(path);
+
 	snprintf(entry, sizeof(entry), "%sPEAP-ClientKey", prefix);
-	path = l_settings_get_value(settings, "Security", entry);
+	path = l_settings_get_string(settings, "Security", entry);
 
 	if (path && !client_cert) {
 		l_error("%s present but no client certificate (%s)",
@@ -863,7 +894,7 @@ static int eap_peap_check_settings(struct l_settings *settings,
 
 	snprintf(passphrase_entry, sizeof(passphrase_entry),
 			"%sPEAP-ClientKeyPassphrase", prefix);
-	passphrase = l_settings_get_value(settings, "Security",
+	passphrase = l_settings_get_string(settings, "Security",
 						passphrase_entry);
 
 	if (!passphrase) {
@@ -872,7 +903,7 @@ static int eap_peap_check_settings(struct l_settings *settings,
 		secret = l_queue_find(secrets, eap_secret_info_match,
 					passphrase_entry);
 		if (secret)
-			passphrase = secret->value;
+			passphrase = l_strdup(secret->value);
 	}
 
 	if (path) {
@@ -902,7 +933,7 @@ static int eap_peap_check_settings(struct l_settings *settings,
 			 */
 			eap_append_secret(out_missing,
 					EAP_SECRET_LOCAL_PKEY_PASSPHRASE,
-					passphrase_entry, path);
+					passphrase_entry, NULL, path);
 		} else {
 			memset(priv_key, 0, size);
 			l_free(priv_key);
@@ -922,7 +953,8 @@ static int eap_peap_check_settings(struct l_settings *settings,
 
 	snprintf(entry, sizeof(entry), "%sPEAP-Phase2-", prefix);
 
-	return eap_check_settings(settings, secrets, entry, false, out_missing);
+	return __eap_check_settings(settings, secrets, entry, false,
+					out_missing);
 }
 
 static bool eap_peap_load_settings(struct eap_state *eap,
@@ -937,20 +969,16 @@ static bool eap_peap_load_settings(struct eap_state *eap,
 	peap->version = PEAP_VERSION_NOT_NEGOTIATED;
 
 	snprintf(entry, sizeof(entry), "%sPEAP-CACert", prefix);
-	peap->ca_cert = l_strdup(l_settings_get_value(settings, "Security",
-									entry));
+	peap->ca_cert = l_settings_get_string(settings, "Security", entry);
 
 	snprintf(entry, sizeof(entry), "%sPEAP-ClientCert", prefix);
-	peap->client_cert = l_strdup(l_settings_get_value(settings, "Security",
-									entry));
+	peap->client_cert = l_settings_get_string(settings, "Security", entry);
 
 	snprintf(entry, sizeof(entry), "%sPEAP-ClientKey", prefix);
-	peap->client_key = l_strdup(l_settings_get_value(settings, "Security",
-									entry));
+	peap->client_key = l_settings_get_string(settings, "Security", entry);
 
 	snprintf(entry, sizeof(entry), "%sPEAP-ClientKeyPassphrase", prefix);
-	peap->passphrase = l_strdup(l_settings_get_value(settings, "Security",
-									entry));
+	peap->passphrase = l_settings_get_string(settings, "Security", entry);
 
 	peap->phase2_eap = eap_new(eap_peap_phase2_send_response,
 					eap_peap_phase2_complete, eap);
@@ -994,6 +1022,7 @@ static struct eap_method eap_peap = {
 	.check_settings = eap_peap_check_settings,
 	.load_settings = eap_peap_load_settings,
 	.free = eap_peap_free,
+	.reset_state = eap_peap_reset_state,
 };
 
 static int eap_peap_init(void)

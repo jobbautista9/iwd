@@ -27,6 +27,7 @@
 #include <ell/ell.h>
 
 #include "eap.h"
+#include "eap-private.h"
 #include "util.h"
 #include "ecc.h"
 
@@ -154,14 +155,41 @@ static bool kdf(uint8_t *key, size_t key_len, const char *label,
 	return true;
 }
 
+static bool eap_pwd_reset_state(struct eap_state *eap)
+{
+	struct eap_pwd_handle *pwd = eap_get_data(eap);
+
+	pwd->state = EAP_PWD_STATE_INIT;
+
+	l_free(pwd->tx_frag_buf);
+	pwd->tx_frag_buf = NULL;
+	pwd->tx_frag_pos = NULL;
+	pwd->tx_frag_remaining = 0;
+
+	l_free(pwd->rx_frag_buf);
+	pwd->rx_frag_buf = NULL;
+	pwd->rx_frag_count = 0;
+	pwd->rx_frag_total = 0;
+
+	pwd->prep = EAP_PWD_PREP_NONE;
+	memset(&pwd->pwe, 0, sizeof(struct ecc_point));
+	memset(&pwd->element_s, 0, sizeof(struct ecc_point));
+	memset(&pwd->element_p, 0, sizeof(struct ecc_point));
+	pwd->ciphersuite = 0;
+	memset(pwd->scalar_s, 0, sizeof(pwd->scalar_s));
+	memset(pwd->scalar_p, 0, sizeof(pwd->scalar_p));
+	memset(pwd->p_rand, 0, sizeof(pwd->p_rand));
+
+	return true;
+}
+
 static void eap_pwd_free(struct eap_state *eap)
 {
 	struct eap_pwd_handle *pwd = eap_get_data(eap);
 
+	eap_pwd_reset_state(eap);
 	l_free(pwd->identity);
 	l_free(pwd->password);
-	l_free(pwd->tx_frag_buf);
-	l_free(pwd->rx_frag_buf);
 	l_free(pwd);
 
 	eap_set_data(eap, NULL);
@@ -694,33 +722,34 @@ static int eap_pwd_check_settings(struct l_settings *settings,
 					const char *prefix,
 					struct l_queue **out_missing)
 {
-	const char *identity, *password = NULL;
+	const char *password;
+	L_AUTO_FREE_VAR(char *, identity);
 	const struct eap_secret_info *secret;
-	char setting[64];
+	char setting[64], setting2[64];
 
 	snprintf(setting, sizeof(setting), "%sIdentity", prefix);
-	identity = l_settings_get_value(settings, "Security", setting);
+	identity = l_settings_get_string(settings, "Security", setting);
+
+	snprintf(setting2, sizeof(setting2), "%sPWD-Password", prefix);
+	password = l_settings_get_value(settings, "Security", setting2);
 
 	if (!identity) {
 		secret = l_queue_find(secrets, eap_secret_info_match, setting);
 		if (!secret) {
 			eap_append_secret(out_missing,
 					EAP_SECRET_REMOTE_USER_PASSWORD,
-					setting, NULL);
+					setting, setting2, NULL);
 		}
 
 		return 0;
 	}
 
-	snprintf(setting, sizeof(setting), "%sPWD-Password", prefix);
-	password = l_settings_get_value(settings, "Security", setting);
-
 	if (!password) {
-		secret = l_queue_find(secrets, eap_secret_info_match, setting);
+		secret = l_queue_find(secrets, eap_secret_info_match, setting2);
 		if (!secret) {
 			eap_append_secret(out_missing,
 					EAP_SECRET_REMOTE_PASSWORD,
-					setting, identity);
+					setting2, NULL, identity);
 		}
 	}
 
@@ -739,8 +768,7 @@ static bool eap_pwd_load_settings(struct eap_state *eap,
 	pwd->state = EAP_PWD_STATE_INIT;
 
 	snprintf(setting, sizeof(setting), "%sIdentity", prefix);
-	pwd->identity = l_strdup(l_settings_get_value(settings, "Security",
-			setting));
+	pwd->identity = l_settings_get_string(settings, "Security", setting);
 
 	if (!pwd->identity) {
 		l_error("EAP-Identity is missing");
@@ -748,8 +776,7 @@ static bool eap_pwd_load_settings(struct eap_state *eap,
 	}
 
 	snprintf(setting, sizeof(setting), "%sPWD-Password", prefix);
-	pwd->password = l_strdup(l_settings_get_value(settings, "Security",
-			setting));
+	pwd->password = l_settings_get_string(settings, "Security", setting);
 
 	if (!pwd->password) {
 		l_error("EAP-PWD password is missing");
@@ -775,6 +802,7 @@ static struct eap_method eap_pwd = {
 	.handle_request = eap_pwd_handle_request,
 	.check_settings = eap_pwd_check_settings,
 	.load_settings = eap_pwd_load_settings,
+	.reset_state = eap_pwd_reset_state,
 };
 
 static int eap_pwd_init(void)

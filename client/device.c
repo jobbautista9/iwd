@@ -35,6 +35,7 @@
 struct device {
 	bool powered;
 	bool scanning;
+	bool wds;
 	char *address;
 	char *name;
 	char *state;
@@ -43,6 +44,8 @@ struct device {
 	const struct proxy_interface *connected_network;
 	const struct proxy_interface *wsc;
 };
+
+static struct proxy_interface *default_device;
 
 static void display_device(const struct proxy_interface *proxy)
 {
@@ -178,6 +181,27 @@ static void set_powered(void *data, struct l_dbus_message_iter *variant)
 	device->powered = value;
 }
 
+static const char *get_wds_tostr(const void *data)
+{
+	const struct device *device = data;
+
+	return device->wds ? "on" : "off";
+}
+
+static void set_wds(void *data, struct l_dbus_message_iter *variant)
+{
+	struct device *device = data;
+	bool value;
+
+	if (!l_dbus_message_iter_get_variant(variant, "b", &value)) {
+		device->wds = false;
+
+		return;
+	}
+
+	device->wds = value;
+}
+
 static const char *get_scanning_tostr(const void *data)
 {
 	const struct device *device = data;
@@ -218,6 +242,7 @@ static const struct proxy_interface_property device_properties[] = {
 	{ "Powered",  "b", set_powered,  get_powered_tostr, true },
 	{ "Adapter",  "o", set_adapter },
 	{ "Address",  "s", set_address,  get_address },
+	{ "WDS",      "b", set_wds,      get_wds_tostr,     true },
 	{ "Scanning", "b", set_scanning, get_scanning_tostr },
 	{ "State",    "s", set_state,    get_state },
 	{ "ConnectedNetwork",
@@ -477,6 +502,47 @@ static bool match_by_partial_name_and_wsc(const void *a, const void *b)
 	return match_by_partial_name(a, b) && device->wsc ? true : false;
 }
 
+static bool match_all(const void *a, const void *b)
+{
+	return true;
+}
+
+static void device_set_default(const char *device_name)
+{
+	struct l_queue *match;
+
+	if (!device_name)
+		return;
+
+	match = proxy_interface_find_all(device_interface_type.interface,
+						match_by_name, device_name);
+
+	if (!match)
+		return;
+
+	default_device = l_queue_pop_head(match);
+	l_queue_destroy(match, NULL);
+}
+
+static const struct proxy_interface *device_get_default(void)
+{
+	struct l_queue *match;
+
+	if (default_device)
+		return default_device;
+
+	match = proxy_interface_find_all(device_interface_type.interface,
+							match_all, NULL);
+
+	if (!match)
+		return NULL;
+
+	default_device = l_queue_pop_head(match);
+	l_queue_destroy(match, NULL);
+
+	return default_device;
+}
+
 static const struct proxy_interface *get_device_proxy_by_name(
 							const char *device_name)
 {
@@ -590,13 +656,11 @@ static enum cmd_status cmd_connect(const char *device_name, char *args)
 {
 	struct network_args *network_args;
 	struct l_queue *match;
-	const struct device *device;
-	const struct l_queue_entry *entry;
-	struct ordered_network *ordered_network;
-	const struct proxy_interface *proxy =
+	const struct proxy_interface *network_proxy;
+	const struct proxy_interface *device_proxy =
 					get_device_proxy_by_name(device_name);
 
-	if (!proxy)
+	if (!device_proxy)
 		return CMD_STATUS_INVALID_VALUE;
 
 	network_args = network_parse_args(args);
@@ -607,30 +671,7 @@ static enum cmd_status cmd_connect(const char *device_name, char *args)
 		return CMD_STATUS_INVALID_ARGS;
 	}
 
-	device = proxy_interface_get_data(proxy);
-
-	if (!device->ordered_networks) {
-		display("Use 'get-networks' command to obtain a list of "
-						"available networks first\n");
-		network_args_destroy(network_args);
-
-		return CMD_STATUS_OK;
-	}
-
-	match = NULL;
-
-	for (entry = l_queue_get_entries(device->ordered_networks); entry;
-							entry = entry->next) {
-		ordered_network = entry->data;
-
-		if (strcmp(ordered_network->name, network_args->name))
-			continue;
-
-		if (!match)
-			match = l_queue_new();
-
-		l_queue_push_tail(match, ordered_network);
-	}
+	match = network_match_by_device_and_args(device_proxy, network_args);
 
 	if (!match) {
 		display("Invalid network name '%s'\n", network_args->name);
@@ -643,36 +684,20 @@ static enum cmd_status cmd_connect(const char *device_name, char *args)
 		if (!network_args->type) {
 			display("Provided network name is ambiguous. "
 				"Please specify security type.\n");
-
-			l_queue_destroy(match, NULL);
-			network_args_destroy(network_args);
-
-			return CMD_STATUS_INVALID_VALUE;
 		}
 
-		ordered_network = NULL;
-
-		for (entry = l_queue_get_entries(match); entry;
-							entry = entry->next) {
-			ordered_network = entry->data;
-
-			if (!strcmp(ordered_network->type, network_args->type))
-				break;
-		}
-	} else {
-		ordered_network = l_queue_pop_head(match);
-	}
-
-	l_queue_destroy(match, NULL);
-	network_args_destroy(network_args);
-
-	if (!ordered_network) {
-		display("No network with specified parameters was found\n");
+		l_queue_destroy(match, NULL);
+		network_args_destroy(network_args);
 
 		return CMD_STATUS_INVALID_VALUE;
 	}
 
-	network_connect(ordered_network->network_path);
+	network_proxy = l_queue_pop_head(match);
+
+	l_queue_destroy(match, NULL);
+	network_args_destroy(network_args);
+
+	network_connect(network_proxy);
 
 	return CMD_STATUS_OK;
 }
@@ -696,6 +721,16 @@ static char *get_networks_cmd_arg_completion(const char *text, int state)
 	return NULL;
 }
 
+static char *connect_cmd_arg_completion(const char *text, int state)
+{
+	const struct proxy_interface *device = device_get_default();
+
+	if (!device)
+		return NULL;
+
+	return network_name_completion(device, text, state);
+}
+
 static const struct command device_commands[] = {
 	{ NULL,     "list",     NULL,   cmd_list, "List devices",     true },
 	{ "<wlan>", "show",     NULL,   cmd_show, "Show device info", true },
@@ -712,7 +747,8 @@ static const struct command device_commands[] = {
 	{ "<wlan>", "connect",
 				"<\"network name\"> [security]",
 					cmd_connect,
-						"Connect to network", false },
+						"Connect to network", false,
+		connect_cmd_arg_completion },
 	{ "<wlan>", "disconnect",
 				NULL,   cmd_disconnect, "Disconnect" },
 	{ }
@@ -781,6 +817,7 @@ static struct command_family device_command_family = {
 	.command_list = device_commands,
 	.family_arg_completion = family_arg_completion,
 	.entity_arg_completion = entity_arg_completion,
+	.set_default_entity = device_set_default,
 };
 
 static int device_command_family_init(void)

@@ -183,8 +183,8 @@ am__monitor_iwmon_SOURCES_DIST = monitor/main.c linux/nl80211.h \
 	src/wscutil.h src/wscutil.c src/mpdu.h src/mpdu.c src/util.h \
 	src/util.c src/crypto.h src/crypto.c src/watchlist.h \
 	src/watchlist.c src/eapol.h src/eapol.c src/handshake.h \
-	src/handshake.c src/eap.h src/eap.c src/eap-tls.c \
-	src/eap-ttls.c
+	src/handshake.c src/eap.h src/eap.c src/eap-private.h \
+	src/eap-tls.c src/eap-ttls.c
 @MONITOR_TRUE@am_monitor_iwmon_OBJECTS = monitor/main.$(OBJEXT) \
 @MONITOR_TRUE@	monitor/nlmon.$(OBJEXT) monitor/pcap.$(OBJEXT) \
 @MONITOR_TRUE@	monitor/display.$(OBJEXT) src/ie.$(OBJEXT) \
@@ -203,15 +203,15 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/netdev.h \
 	src/util.h src/util.c src/common.h src/common.c src/agent.h \
 	src/agent.c src/storage.h src/storage.c src/network.h \
 	src/network.c src/wscutil.h src/wscutil.c src/wsc.h src/wsc.c \
-	src/eap-wsc.h src/eap-wsc.c src/eap.h src/eap.c src/eap-md5.c \
-	src/eap-tls.c src/eap-ttls.c src/eap-mschapv2.c \
-	src/eap-mschapv2.h src/backtrace.h src/backtrace.c \
-	src/knownnetworks.h src/knownnetworks.c src/rfkill.h \
-	src/rfkill.c src/watchlist.h src/watchlist.c src/ftutil.h \
-	src/ftutil.c src/iwd.h src/eap-sim.c src/eap-aka.c \
-	src/simutil.h src/simutil.c src/ap.h src/ap.c src/simauth.h \
-	src/simauth.c src/plugin.h src/plugin.c src/eap-peap.c \
-	src/eap-gtc.c src/eap-pwd.c src/ecc.h src/ecc.c \
+	src/eap-wsc.h src/eap-wsc.c src/eap.h src/eap.c \
+	src/eap-private.h src/eap-md5.c src/eap-tls.c src/eap-ttls.c \
+	src/eap-mschapv2.c src/eap-mschapv2.h src/backtrace.h \
+	src/backtrace.c src/knownnetworks.h src/knownnetworks.c \
+	src/rfkill.h src/rfkill.c src/watchlist.h src/watchlist.c \
+	src/ftutil.h src/ftutil.c src/iwd.h src/eap-sim.c \
+	src/eap-aka.c src/simutil.h src/simutil.c src/ap.h src/ap.c \
+	src/simauth.h src/simauth.c src/plugin.h src/plugin.c \
+	src/eap-peap.c src/eap-gtc.c src/eap-pwd.c src/ecc.h src/ecc.c \
 	plugins/sim_hardcoded.c plugins/ofono.c
 @SIM_HARDCODED_TRUE@am__objects_2 = plugins/sim_hardcoded.$(OBJEXT)
 @OFONO_TRUE@am__objects_3 = plugins/ofono.$(OBJEXT)
@@ -309,7 +309,7 @@ unit_test_prf_sha1_OBJECTS = $(am_unit_test_prf_sha1_OBJECTS)
 unit_test_prf_sha1_DEPENDENCIES = ell/libell-internal.la
 am_unit_test_ssid_security_OBJECTS =  \
 	unit/test-ssid-security.$(OBJEXT) src/ie.$(OBJEXT) \
-	src/scan.$(OBJEXT)
+	src/common.$(OBJEXT)
 unit_test_ssid_security_OBJECTS =  \
 	$(am_unit_test_ssid_security_OBJECTS)
 unit_test_ssid_security_DEPENDENCIES = ell/libell-internal.la
@@ -837,7 +837,8 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h \
 					src/wscutil.h src/wscutil.c \
 					src/wsc.h src/wsc.c \
 					src/eap-wsc.h src/eap-wsc.c \
-					src/eap.h src/eap.c src/eap-md5.c \
+					src/eap.h src/eap.c src/eap-private.h \
+					src/eap-md5.c \
 					src/eap-tls.c src/eap-ttls.c \
 					src/eap-mschapv2.c src/eap-mschapv2.h \
 					src/backtrace.h src/backtrace.c \
@@ -886,7 +887,7 @@ src_iwd_DEPENDENCIES = ell/libell-internal.la $(am__append_1)
 @MONITOR_TRUE@					src/watchlist.h src/watchlist.c \
 @MONITOR_TRUE@					src/eapol.h src/eapol.c \
 @MONITOR_TRUE@					src/handshake.h src/handshake.c \
-@MONITOR_TRUE@					src/eap.h src/eap.c \
+@MONITOR_TRUE@					src/eap.h src/eap.c src/eap-private.h \
 @MONITOR_TRUE@					src/eap-tls.c src/eap-ttls.c
 
 @MONITOR_TRUE@monitor_iwmon_LDADD = ell/libell-internal.la
@@ -916,7 +917,7 @@ unit_test_eap_sim_SOURCES = unit/test-eap-sim.c \
 		src/watchlist.h src/watchlist.c \
 		src/eapol.h src/eapol.c \
 		src/handshake.h src/handshake.c \
-		src/eap.h src/eap.c \
+		src/eap.h src/eap.c src/eap-private.h \
 		src/util.h src/util.c \
 		src/simauth.h src/simauth.c \
 		src/eap-sim.c
@@ -967,7 +968,7 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 				src/watchlist.h src/watchlist.c \
 				src/eapol.h src/eapol.c \
 				src/handshake.h src/handshake.c \
-				src/eap.h src/eap.c \
+				src/eap.h src/eap.c src/eap-private.h \
 				src/eap-tls.c src/eap-ttls.c \
 				src/eap-md5.c
 
@@ -977,7 +978,7 @@ unit_test_ssid_to_utf8_SOURCES = src/util.h src/util.c \
 
 unit_test_ssid_to_utf8_LDADD = ell/libell-internal.la
 unit_test_ssid_security_SOURCES = unit/test-ssid-security.c src/ie.h src/ie.c \
-				src/scan.h src/scan.c
+				src/common.h src/common.c
 
 unit_test_ssid_security_LDADD = ell/libell-internal.la
 unit_test_wsc_SOURCES = unit/test-wsc.c src/wscutil.h src/wscutil.c \
@@ -986,13 +987,13 @@ unit_test_wsc_SOURCES = unit/test-wsc.c src/wscutil.h src/wscutil.c \
 				src/watchlist.h src/watchlist.c \
 				src/eapol.h src/eapol.c \
 				src/handshake.h src/handshake.c \
-				src/eap.h src/eap.c \
+				src/eap.h src/eap.c src/eap-private.h \
 				src/util.h src/util.c \
 				src/eap-wsc.h src/eap-wsc.c
 
 unit_test_wsc_LDADD = ell/libell-internal.la
 unit_test_eap_mschapv2_SOURCES = src/eap-mschapv2.h src/eap-mschapv2.c \
-				src/eap.c src/eap.h \
+				src/eap.c src/eap.h src/eap-private.h \
 				unit/test-eap-mschapv2.c
 
 unit_test_eap_mschapv2_LDADD = ell/libell-internal.la
