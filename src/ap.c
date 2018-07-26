@@ -43,12 +43,11 @@
 #include "src/eapol.h"
 #include "src/handshake.h"
 #include "src/ap.h"
+#include "src/dbus.h"
 
 struct ap_state {
 	struct device *device;
 	char *ssid;
-	char *psk;
-	ap_event_cb_t event_cb;
 	int channel;
 	unsigned int ciphers;
 	uint32_t beacon_interval;
@@ -56,11 +55,13 @@ struct ap_state {
 	uint8_t pmk[32];
 	struct l_queue *frame_watch_ids;
 	uint32_t start_stop_cmd_id;
-	uint32_t eapol_watch_id;
 	uint32_t netdev_watch_id;
 
 	uint16_t last_aid;
 	struct l_queue *sta_states;
+
+	struct l_dbus_message *pending;
+	bool started : 1;
 };
 
 struct sta_state {
@@ -75,19 +76,12 @@ struct sta_state {
 	struct ap_state *ap;
 	uint8_t *assoc_rsne;
 	size_t assoc_rsne_len;
-	uint64_t key_replay_counter;
-	uint8_t anonce[32];
-	uint8_t snonce[32];
-	uint8_t ptk[64];
-	unsigned int frame_retry;
-	struct l_timeout *frame_timeout;
-	bool have_anonce : 1;
-	bool ptk_complete : 1;
+	struct eapol_sm *sm;
+	struct handshake_state *hs;
 };
 
 static struct l_genl_family *nl80211 = NULL;
-
-static struct l_queue *ap_list = NULL;
+static uint32_t device_watch;
 
 static void ap_sta_free(void *data)
 {
@@ -99,8 +93,8 @@ static void ap_sta_free(void *data)
 	if (sta->assoc_resp_cmd_id)
 		l_genl_family_cancel(nl80211, sta->assoc_resp_cmd_id);
 
-	if (sta->frame_timeout)
-		l_timeout_remove(sta->frame_timeout);
+	eapol_sm_free(sta->sm);
+	handshake_state_free(sta->hs);
 
 	l_free(sta);
 }
@@ -113,22 +107,23 @@ static void ap_frame_watch_remove(void *data, void *user_data)
 		netdev_frame_watch_remove(netdev, L_PTR_TO_UINT(data));
 }
 
-static void ap_free(void *data)
+static void ap_reset(struct ap_state *ap)
 {
-	struct ap_state *ap = data;
 	struct netdev *netdev = device_get_netdev(ap->device);
 
+	if (ap->pending)
+		dbus_pending_reply(&ap->pending,
+				dbus_error_aborted(ap->pending));
+
 	l_free(ap->ssid);
-	memset(ap->psk, 0, strlen(ap->psk));
-	l_free(ap->psk);
+
+	memset(ap->pmk, 0, sizeof(ap->pmk));
 
 	l_queue_foreach(ap->frame_watch_ids, ap_frame_watch_remove, netdev);
 	l_queue_destroy(ap->frame_watch_ids, NULL);
 
 	if (ap->start_stop_cmd_id)
 		l_genl_family_cancel(nl80211, ap->start_stop_cmd_id);
-
-	eapol_frame_watch_remove(ap->eapol_watch_id);
 
 	netdev_watch_remove(netdev, ap->netdev_watch_id);
 
@@ -137,7 +132,25 @@ static void ap_free(void *data)
 	if (ap->rates)
 		l_uintset_free(ap->rates);
 
+	ap->started = false;
+}
+
+static void ap_free(void *data)
+{
+	struct ap_state *ap = data;
+
+	ap_reset(ap);
+
 	l_free(ap);
+}
+
+static void ap_del_station(struct sta_state *sta, uint16_t reason,
+				bool disassociate)
+{
+	netdev_del_station(device_get_netdev(sta->ap->device), sta->addr,
+				reason, disassociate);
+	sta->associated = false;
+	sta->rsna = false;
 }
 
 static bool ap_sta_match_addr(const void *a, const void *b)
@@ -147,22 +160,20 @@ static bool ap_sta_match_addr(const void *a, const void *b)
 	return !memcmp(sta->addr, b, 6);
 }
 
+static void ap_remove_sta(struct sta_state *sta)
+{
+	if (!l_queue_remove(sta->ap->sta_states, sta)) {
+		l_error("tried to remove station that doesnt exist");
+		return;
+	}
+
+	ap_sta_free(sta);
+}
+
 static void ap_set_sta_cb(struct l_genl_msg *msg, void *user_data)
 {
 	if (l_genl_msg_get_error(msg) < 0)
 		l_error("SET_STATION failed: %i", l_genl_msg_get_error(msg));
-}
-
-static void ap_del_sta_cb(struct l_genl_msg *msg, void *user_data)
-{
-	if (l_genl_msg_get_error(msg) < 0)
-		l_error("DEL_STATION failed: %i", l_genl_msg_get_error(msg));
-}
-
-static void ap_new_key_cb(struct l_genl_msg *msg, void *user_data)
-{
-	if (l_genl_msg_get_error(msg) < 0)
-		l_error("NEW_KEY failed: %i", l_genl_msg_get_error(msg));
 }
 
 static void ap_del_key_cb(struct l_genl_msg *msg, void *user_data)
@@ -171,88 +182,21 @@ static void ap_del_key_cb(struct l_genl_msg *msg, void *user_data)
 		l_debug("DEL_KEY failed: %i", l_genl_msg_get_error(msg));
 }
 
-static void ap_new_rsna(struct ap_state *ap, struct sta_state *sta)
+static void ap_new_rsna(struct sta_state *sta)
 {
-	struct l_genl_msg *msg;
-	uint32_t ifindex = device_get_ifindex(ap->device);
-	struct nl80211_sta_flag_update flags = {
-		.mask = (1 << NL80211_STA_FLAG_AUTHORIZED) |
-			(1 << NL80211_STA_FLAG_MFP),
-		.set = (1 << NL80211_STA_FLAG_AUTHORIZED),
-	};
-	uint8_t key_id = 0;
-	const struct crypto_ptk *ptk = (struct crypto_ptk *) sta->ptk;
-	uint32_t cipher = ie_rsn_cipher_suite_to_cipher(ap->ciphers);
-	uint32_t key_type = NL80211_KEYTYPE_PAIRWISE;
-	uint8_t tk_buf[32];
-
-	msg = l_genl_msg_new_sized(NL80211_CMD_SET_STATION, 128);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &ifindex);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_MAC, 6, sta->addr);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_STA_FLAGS2, 8, &flags);
-
-	if (!l_genl_family_send(nl80211, msg, ap_set_sta_cb, NULL, NULL)) {
-		l_genl_msg_unref(msg);
-		l_error("Issuing SET_STATION failed");
-		return;
-	}
+	l_debug("STA "MAC" authenticated", MAC_STR(sta->addr));
 
 	sta->rsna = true;
-
-	switch (cipher) {
-	case CRYPTO_CIPHER_CCMP:
-		/*
-		 * 802.11-2016 12.8.3 Mapping PTK to CCMP keys:
-		 * "A STA shall use the temporal key as the CCMP key
-		 * for MPDUs between the two communicating STAs."
-		 */
-		memcpy(tk_buf, ptk->tk, 16);
-		break;
-	case CRYPTO_CIPHER_TKIP:
-		/*
-		 * 802.11-2016 12.8.1 Mapping PTK to TKIP keys:
-		 * "A STA shall use bits 0-127 of the temporal key as its
-		 * input to the TKIP Phase 1 and Phase 2 mixing functions.
-		 *
-		 * A STA shall use bits 128-191 of the temporal key as
-		 * the michael key for MSDUs from the Authenticator's STA
-		 * to the Supplicant's STA.
-		 *
-		 * A STA shall use bits 192-255 of the temporal key as
-		 * the michael key for MSDUs from the Supplicant's STA
-		 * to the Authenticator's STA."
-		 */
-		memcpy(tk_buf + NL80211_TKIP_DATA_OFFSET_ENCR_KEY, ptk->tk, 16);
-		memcpy(tk_buf + NL80211_TKIP_DATA_OFFSET_TX_MIC_KEY,
-			ptk->tk + 16, 8);
-		memcpy(tk_buf + NL80211_TKIP_DATA_OFFSET_RX_MIC_KEY,
-			ptk->tk + 24, 8);
-		break;
-	default:
-		l_error("Unexpected cipher: %x", cipher);
-		return;
-	}
-
-	msg = l_genl_msg_new_sized(NL80211_CMD_NEW_KEY, 128);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &ifindex);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_MAC, 6, sta->addr);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_KEY_IDX, 1, &key_id);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_KEY_DATA,
-				crypto_cipher_key_len(cipher), tk_buf);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_KEY_TYPE, 4, &key_type);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_KEY_CIPHER, 4, &cipher);
-
-	if (!l_genl_family_send(nl80211, msg, ap_new_key_cb, NULL, NULL)) {
-		l_genl_msg_unref(msg);
-		l_error("Issuing NEW_KEY failed");
-		return;
-	}
+	/*
+	 * TODO: Once new AP interface is implemented this is where a
+	 * new "ConnectedPeer" property will be added.
+	 */
 }
 
-static void ap_drop_rsna(struct ap_state *ap, struct sta_state *sta)
+static void ap_drop_rsna(struct sta_state *sta)
 {
 	struct l_genl_msg *msg;
-	uint32_t ifindex = device_get_ifindex(ap->device);
+	uint32_t ifindex = device_get_ifindex(sta->ap->device);
 	struct nl80211_sta_flag_update flags = {
 		.mask = (1 << NL80211_STA_FLAG_AUTHORIZED) |
 			(1 << NL80211_STA_FLAG_MFP),
@@ -261,11 +205,6 @@ static void ap_drop_rsna(struct ap_state *ap, struct sta_state *sta)
 	uint8_t key_id = 0;
 
 	sta->rsna = false;
-
-	if (sta->frame_timeout) {
-		l_timeout_remove(sta->frame_timeout);
-		sta->frame_timeout = NULL;
-	}
 
 	msg = l_genl_msg_new_sized(NL80211_CMD_SET_STATION, 128);
 	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &ifindex);
@@ -287,9 +226,11 @@ static void ap_drop_rsna(struct ap_state *ap, struct sta_state *sta)
 		l_genl_msg_unref(msg);
 		l_error("Issuing DEL_KEY failed");
 	}
-}
 
-#define CIPHER_SUITE_GROUP_NOT_ALLOWED 0x000fac07
+	handshake_state_free(sta->hs);
+	sta->hs = NULL;
+	sta->sm = NULL;
+}
 
 static void ap_set_rsn_info(struct ap_state *ap, struct ie_rsn_info *rsn)
 {
@@ -297,304 +238,6 @@ static void ap_set_rsn_info(struct ap_state *ap, struct ie_rsn_info *rsn)
 	rsn->akm_suites = IE_RSN_AKM_SUITE_PSK;
 	rsn->pairwise_ciphers = ap->ciphers;
 	rsn->group_cipher = IE_RSN_CIPHER_SUITE_NO_GROUP_TRAFFIC;
-}
-
-static void ap_error_deauth_sta(struct sta_state *sta,
-				enum mmpdu_reason_code reason);
-
-/* Default dot11RSNAConfigPairwiseUpdateCount value */
-#define AP_PAIRWISE_UPDATE_COUNT 3
-
-static void ap_set_eapol_key_timeout(struct sta_state *sta,
-					l_timeout_notify_cb_t cb)
-{
-	/*
-	 * 802.11-2016 12.7.6.6: "The retransmit timeout value shall be
-	 * 100 ms for the first timeout, half the listen interval for the
-	 * second timeout, and the listen interval for subsequent timeouts.
-	 * If there is no listen interval or the listen interval is zero,
-	 * then 100 ms shall be used for all timeout values."
-	 */
-	unsigned int timeout_ms = 100;
-	unsigned int beacon_us = sta->ap->beacon_interval * 1024;
-
-	sta->frame_retry++;
-
-	if (sta->frame_retry == 2 && sta->listen_interval != 0)
-		timeout_ms = sta->listen_interval * beacon_us / 2000;
-	else if (sta->frame_retry > 2 && sta->listen_interval != 0)
-		timeout_ms = sta->listen_interval * beacon_us / 1000;
-
-	if (sta->frame_retry > 1)
-		l_timeout_modify_ms(sta->frame_timeout, timeout_ms);
-	else {
-		if (sta->frame_timeout)
-			l_timeout_remove(sta->frame_timeout);
-
-		sta->frame_timeout = l_timeout_create_ms(timeout_ms, cb, sta,
-								NULL);
-	}
-}
-
-/* 802.11-2016 Section 12.7.6.2 */
-static void ap_send_ptk_1_of_4(struct ap_state *ap, struct sta_state *sta)
-{
-	uint32_t ifindex = device_get_ifindex(ap->device);
-	const uint8_t *aa = device_get_address(ap->device);
-	uint8_t frame_buf[512];
-	struct eapol_key *ek = (struct eapol_key *) frame_buf;
-	enum crypto_cipher cipher = ie_rsn_cipher_suite_to_cipher(ap->ciphers);
-	uint8_t pmkid[16];
-
-	if (!l_getrandom(sta->anonce, 32)) {
-		l_error("l_getrandom failed");
-		return;
-	}
-
-	sta->have_anonce = true;
-	sta->ptk_complete = false;
-
-	sta->key_replay_counter++;
-
-	memset(ek, 0, sizeof(struct eapol_key));
-	ek->header.protocol_version = EAPOL_PROTOCOL_VERSION_2004;
-	ek->header.packet_type = 0x3;
-	ek->descriptor_type = EAPOL_DESCRIPTOR_TYPE_80211;
-	/* Must be HMAC-SHA1-128 + AES when using CCMP with PSK or 8021X */
-	ek->key_descriptor_version = EAPOL_KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES;
-	ek->key_type = true;
-	ek->key_ack = true;
-	ek->key_length = L_CPU_TO_BE16(crypto_cipher_key_len(cipher));
-	ek->key_replay_counter = L_CPU_TO_BE64(sta->key_replay_counter);
-	memcpy(ek->key_nonce, sta->anonce, sizeof(ek->key_nonce));
-
-	/* Write the PMKID KDE into Key Data field unencrypted */
-	crypto_derive_pmkid(ap->pmk, sta->addr, aa, pmkid, false);
-	eapol_key_data_append(ek, HANDSHAKE_KDE_PMKID, pmkid, 16);
-
-	ek->header.packet_len = L_CPU_TO_BE16(sizeof(struct eapol_key) +
-					L_BE16_TO_CPU(ek->key_data_len) - 4);
-
-	__eapol_tx_packet(ifindex, sta->addr, ETH_P_PAE,
-				(struct eapol_frame *) ek, false);
-}
-
-static void ap_ptk_1_of_4_retry(struct l_timeout *timeout, void *user_data)
-{
-	struct sta_state *sta = user_data;
-
-	if (sta->frame_retry >= AP_PAIRWISE_UPDATE_COUNT) {
-		ap_error_deauth_sta(sta,
-				MMPDU_REASON_CODE_4WAY_HANDSHAKE_TIMEOUT);
-		return;
-	}
-
-	ap_send_ptk_1_of_4(sta->ap, sta);
-
-	ap_set_eapol_key_timeout(sta, ap_ptk_1_of_4_retry);
-
-	l_debug("attempt %i", sta->frame_retry);
-}
-
-/* 802.11-2016 Section 12.7.6.4 */
-static void ap_send_ptk_3_of_4(struct ap_state *ap, struct sta_state *sta)
-{
-	uint32_t ifindex = device_get_ifindex(ap->device);
-	uint8_t frame_buf[512];
-	uint8_t key_data_buf[128];
-	struct eapol_key *ek = (struct eapol_key *) frame_buf;
-	size_t key_data_len;
-	enum crypto_cipher cipher = ie_rsn_cipher_suite_to_cipher(ap->ciphers);
-	const struct crypto_ptk *ptk = (struct crypto_ptk *) sta->ptk;
-	struct ie_rsn_info rsn;
-
-	sta->key_replay_counter++;
-
-	memset(ek, 0, sizeof(struct eapol_key));
-	ek->header.protocol_version = EAPOL_PROTOCOL_VERSION_2004;
-	ek->header.packet_type = 0x3;
-	ek->descriptor_type = EAPOL_DESCRIPTOR_TYPE_80211;
-	/* Must be HMAC-SHA1-128 + AES when using CCMP with PSK or 8021X */
-	ek->key_descriptor_version = EAPOL_KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES;
-	ek->key_type = true;
-	ek->install = true;
-	ek->key_ack = true;
-	ek->key_mic = true;
-	ek->secure = true;
-	ek->encrypted_key_data = true;
-	ek->key_length = L_CPU_TO_BE16(crypto_cipher_key_len(cipher));
-	ek->key_replay_counter = L_CPU_TO_BE64(sta->key_replay_counter);
-	memcpy(ek->key_nonce, sta->anonce, sizeof(ek->key_nonce));
-	/*
-	 * We don't currently handle group traffic, to support that we'd need
-	 * to provide the NL80211_ATTR_KEY_SEQ value from NL80211_CMD_GET_KEY
-	 * here.
-	 */
-	l_put_be64(1, ek->key_rsc);
-
-	/*
-	 * Just one RSNE in Key Data as we only set one cipher in ap->ciphers
-	 * currently.
-	 */
-	ap_set_rsn_info(ap, &rsn);
-	if (!ie_build_rsne(&rsn, key_data_buf))
-		return;
-
-	if (!eapol_encrypt_key_data(ptk->kek, key_data_buf,
-					2 + key_data_buf[1], ek))
-		return;
-
-	key_data_len = L_BE16_TO_CPU(ek->key_data_len);
-	ek->header.packet_len = L_CPU_TO_BE16(sizeof(struct eapol_key) +
-						key_data_len - 4);
-
-	if (!eapol_calculate_mic(ptk->kck, ek, ek->key_mic_data))
-		return;
-
-	__eapol_tx_packet(ifindex, sta->addr, ETH_P_PAE,
-				(struct eapol_frame *) ek, false);
-}
-
-static void ap_ptk_3_of_4_retry(struct l_timeout *timeout, void *user_data)
-{
-	struct sta_state *sta = user_data;
-
-	if (sta->frame_retry >= AP_PAIRWISE_UPDATE_COUNT) {
-		ap_error_deauth_sta(sta,
-				MMPDU_REASON_CODE_4WAY_HANDSHAKE_TIMEOUT);
-		return;
-	}
-
-	ap_send_ptk_3_of_4(sta->ap, sta);
-
-	ap_set_eapol_key_timeout(sta, ap_ptk_3_of_4_retry);
-
-	l_debug("attempt %i", sta->frame_retry);
-}
-
-/* 802.11-2016 Section 12.7.6.3 */
-static void ap_handle_ptk_2_of_4(struct sta_state *sta,
-					const struct eapol_key *ek)
-{
-	const uint8_t *rsne;
-	enum crypto_cipher cipher;
-	size_t ptk_size;
-	uint8_t ptk_buf[64];
-	struct crypto_ptk *ptk = (struct crypto_ptk *) ptk_buf;
-	const uint8_t *aa = device_get_address(sta->ap->device);
-
-	l_debug("");
-
-	if (!eapol_verify_ptk_2_of_4(ek))
-		return;
-
-	if (L_BE64_TO_CPU(ek->key_replay_counter) != sta->key_replay_counter)
-		return;
-
-	cipher = ie_rsn_cipher_suite_to_cipher(sta->ap->ciphers);
-	ptk_size = sizeof(struct crypto_ptk) + crypto_cipher_key_len(cipher);
-
-	if (!crypto_derive_pairwise_ptk(sta->ap->pmk, sta->addr, aa,
-					sta->anonce, ek->key_nonce,
-					ptk, ptk_size, false))
-		return;
-
-	if (!eapol_verify_mic(ptk->kck, ek))
-		return;
-
-	/* Bitwise identical RSNE required */
-	rsne = eapol_find_rsne(ek->key_data,
-				L_BE16_TO_CPU(ek->key_data_len), NULL);
-	if (!rsne || rsne[1] != sta->assoc_rsne_len ||
-			memcmp(rsne + 2, sta->assoc_rsne, rsne[1])) {
-		ap_error_deauth_sta(sta, MMPDU_REASON_CODE_IE_DIFFERENT);
-		return;
-	}
-
-	memcpy(sta->ptk, ptk_buf, ptk_size);
-	memcpy(sta->snonce, ek->key_nonce, sizeof(sta->snonce));
-	sta->ptk_complete = true;
-
-	sta->frame_retry = 0;
-	ap_ptk_3_of_4_retry(NULL, sta);
-}
-
-/* 802.11-2016 Section 12.7.6.5 */
-static void ap_handle_ptk_4_of_4(struct sta_state *sta,
-					const struct eapol_key *ek)
-{
-	const struct crypto_ptk *ptk = (struct crypto_ptk *) sta->ptk;
-
-	l_debug("");
-
-	if (!eapol_verify_ptk_4_of_4(ek, false))
-		return;
-
-	if (L_BE64_TO_CPU(ek->key_replay_counter) != sta->key_replay_counter)
-		return;
-
-	if (!eapol_verify_mic(ptk->kck, ek))
-		return;
-
-	l_timeout_remove(sta->frame_timeout);
-	sta->frame_timeout = NULL;
-
-	ap_new_rsna(sta->ap, sta);
-}
-
-static void ap_eapol_key_handle(struct sta_state *sta,
-				const struct eapol_frame *frame)
-{
-	size_t frame_len = 4 + L_BE16_TO_CPU(frame->header.packet_len);
-	const struct eapol_key *ek = eapol_key_validate((const void *) frame,
-							frame_len);
-
-	if (!ek)
-		return;
-
-	if (ek->request)
-		return; /* Not supported */
-
-	if (!sta->have_anonce)
-		return; /* Not expecting an EAPoL-Key yet */
-
-	if (!sta->ptk_complete)
-		ap_handle_ptk_2_of_4(sta, ek);
-	else if (!sta->rsna)
-		ap_handle_ptk_4_of_4(sta, ek);
-}
-
-static void ap_eapol_rx(uint16_t proto, const uint8_t *from,
-			const struct eapol_frame *frame, void *user_data)
-{
-	struct ap_state *ap = user_data;
-	struct sta_state *sta;
-
-	l_debug("");
-
-	if (proto != ETH_P_PAE) {
-		l_error("AP data frame of unknown protocol %04x from %s",
-			proto, util_address_to_string(from));
-		return;
-	}
-
-	sta = l_queue_find(ap->sta_states, ap_sta_match_addr, from);
-	if (!sta || !sta->associated) {
-		l_error("AP EAPoL from disassociated STA %s",
-			util_address_to_string(from));
-		return;
-	}
-
-	switch (frame->header.packet_type) {
-	case 3: /* EAPoL-Key */
-		ap_eapol_key_handle(sta, frame);
-		break;
-	default:
-		l_error("AP received unknown packet type %i from %s",
-			frame->header.packet_type,
-			util_address_to_string(from));
-		break;
-	}
 }
 
 /*
@@ -712,9 +355,34 @@ static uint32_t ap_send_mgmt_frame(struct ap_state *ap,
 	return id;
 }
 
+static void ap_handshake_event(struct handshake_state *hs,
+		enum handshake_event event, void *event_data, void *user_data)
+{
+	struct sta_state *sta = user_data;
+
+	switch (event) {
+	case HANDSHAKE_EVENT_COMPLETE:
+		ap_new_rsna(sta);
+		break;
+	case HANDSHAKE_EVENT_FAILED:
+		netdev_handshake_failed(hs, l_get_u16(event_data));
+		/* fall through */
+	case HANDSHAKE_EVENT_SETTING_KEYS_FAILED:
+		ap_remove_sta(sta);
+	default:
+		break;
+	}
+}
+
 static void ap_associate_sta_cb(struct l_genl_msg *msg, void *user_data)
 {
 	struct sta_state *sta = user_data;
+	struct ap_state *ap = sta->ap;
+	struct netdev *netdev = device_get_netdev(sta->ap->device);
+	const uint8_t *own_addr = netdev_get_address(netdev);
+	struct scan_bss bss;
+	struct ie_rsn_info rsn;
+	uint8_t bss_rsne[24];
 
 	if (l_genl_msg_get_error(msg) < 0) {
 		l_error("NEW_STATION/SET_STATION failed: %i",
@@ -722,8 +390,51 @@ static void ap_associate_sta_cb(struct l_genl_msg *msg, void *user_data)
 		return;
 	}
 
-	sta->frame_retry = 0;
-	ap_ptk_1_of_4_retry(NULL, sta);
+	memset(&bss, 0, sizeof(bss));
+
+	ap_set_rsn_info(ap, &rsn);
+	/*
+	 * TODO: This assumes the length that ap_set_rsn_info() requires. If
+	 * ap_set_rsn_info() changes then this will need to be updated.
+	 * Alternatively, sta->assoc_rsne could be used instead, but not
+	 * how it sits currently. sta->assoc_rsne only includes the actual RSN
+	 * data, not the IE type or length in the header.
+	 */
+	ie_build_rsne(&rsn, bss_rsne);
+
+	if (memcmp(bss_rsne + 2, sta->assoc_rsne, sta->assoc_rsne_len)) {
+		l_error("RSNE from association does not match");
+		goto error;
+	}
+
+	/* this handshake setup assumes PSK network */
+	sta->hs = netdev_handshake_state_new(netdev);
+
+	handshake_state_set_event_func(sta->hs, ap_handshake_event, sta);
+	handshake_state_set_ssid(sta->hs, (void *)ap->ssid, strlen(ap->ssid));
+	/* ap_rsn/own_rsn can be set equal since the check above matched */
+	handshake_state_set_ap_rsn(sta->hs, bss_rsne);
+	handshake_state_set_own_rsn(sta->hs, bss_rsne);
+	handshake_state_set_pmk(sta->hs, ap->pmk, 32);
+	handshake_state_set_authenticator_address(sta->hs, own_addr);
+	handshake_state_set_supplicant_address(sta->hs, sta->addr);
+
+	sta->sm = eapol_sm_new(sta->hs);
+	if (!sta->sm) {
+		handshake_state_free(sta->hs);
+		l_error("could not create sm object");
+		goto error;
+	}
+
+	eapol_sm_set_listen_interval(sta->sm, sta->listen_interval);
+	eapol_sm_set_protocol_version(sta->sm, EAPOL_PROTOCOL_VERSION_2004);
+
+	eapol_register_authenticator(sta->sm);
+
+	return;
+
+error:
+	ap_del_station(sta, MMPDU_REASON_CODE_UNSPECIFIED, true);
 }
 
 static void ap_associate_sta(struct ap_state *ap, struct sta_state *sta)
@@ -752,7 +463,6 @@ static void ap_associate_sta(struct ap_state *ap, struct sta_state *sta)
 
 	sta->associated = true;
 	sta->rsna = false;
-	sta->key_replay_counter = 0;
 
 	minr = l_uintset_find_min(sta->rates);
 	maxr = l_uintset_find_max(sta->rates);
@@ -782,60 +492,6 @@ static void ap_associate_sta(struct ap_state *ap, struct sta_state *sta)
 	}
 }
 
-static void ap_disassociate_sta(struct ap_state *ap, struct sta_state *sta)
-{
-	struct l_genl_msg *msg;
-	uint32_t ifindex = device_get_ifindex(ap->device);
-
-	sta->associated = false;
-	sta->rsna = false;
-
-	if (sta->frame_timeout) {
-		l_timeout_remove(sta->frame_timeout);
-		sta->frame_timeout = NULL;
-	}
-
-	msg = l_genl_msg_new_sized(NL80211_CMD_DEL_STATION, 64);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &ifindex);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_MAC, 6, sta->addr);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_STA_AID, 2, &sta->aid);
-
-	if (!l_genl_family_send(nl80211, msg, ap_del_sta_cb, NULL, NULL)) {
-		l_genl_msg_unref(msg);
-		l_error("Issuing DEL_STATION failed");
-	}
-}
-
-static void ap_error_deauth_sta(struct sta_state *sta,
-				enum mmpdu_reason_code reason)
-{
-	struct ap_state *ap = sta->ap;
-	const uint8_t *bssid = device_get_address(ap->device);
-	uint8_t mpdu_buf[128];
-	struct mmpdu_header *mpdu = (void *) mpdu_buf;
-	struct mmpdu_deauthentication *deauth;
-
-	memset(mpdu, 0, sizeof(*mpdu));
-	mpdu->fc.protocol_version = 0;
-	mpdu->fc.type = MPDU_TYPE_MANAGEMENT;
-	mpdu->fc.subtype = MPDU_MANAGEMENT_SUBTYPE_DEAUTHENTICATION;
-	memcpy(mpdu->address_1, sta->addr, 6);	/* DA */
-	memcpy(mpdu->address_2, bssid, 6);	/* SA */
-	memcpy(mpdu->address_3, bssid, 6);	/* BSSID */
-
-	deauth = (void *) mmpdu_body(mpdu);
-	deauth->reason_code = L_CPU_TO_LE16(reason);
-
-	ap_send_mgmt_frame(ap, mpdu, deauth->ies - mpdu_buf, false, NULL, NULL);
-
-	if (sta->associated)
-		ap_disassociate_sta(ap, sta);
-
-	l_queue_remove(ap->sta_states, sta);
-
-	ap_sta_free(sta);
-}
-
 static bool ap_common_rates(struct l_uintset *ap_rates,
 				struct l_uintset *sta_rates)
 {
@@ -861,7 +517,8 @@ static void ap_success_assoc_resp_cb(struct l_genl_msg *msg, void *user_data)
 
 		/* If we were in State 3 or 4 go to back to State 2 */
 		if (sta->associated)
-			ap_disassociate_sta(ap, sta);
+			ap_del_station(sta, MMPDU_REASON_CODE_UNSPECIFIED,
+					true);
 
 		return;
 	}
@@ -1078,7 +735,7 @@ static void ap_assoc_reassoc(struct sta_state *sta, bool reassoc,
 
 	/* 802.11-2016 11.3.5.3 j) */
 	if (sta->rsna)
-		ap_drop_rsna(ap, sta);
+		ap_drop_rsna(sta);
 
 	sta->assoc_resp_cmd_id = ap_assoc_resp(ap, sta, sta->addr, sta->aid, 0,
 						reassoc,
@@ -1103,7 +760,7 @@ bad_frame:
 	 * For now, we need to drop the RSNA.
 	 */
 	if (sta && sta->associated && sta->rsna)
-		ap_drop_rsna(ap, sta);
+		ap_drop_rsna(sta);
 
 	if (rates)
 		l_uintset_free(rates);
@@ -1323,7 +980,7 @@ static void ap_disassoc_cb(struct netdev *netdev,
 	if (!sta || !sta->associated)
 		return;
 
-	ap_disassociate_sta(ap, sta);
+	ap_del_station(sta, L_LE16_TO_CPU(disassoc->reason_code), true);
 }
 
 static void ap_auth_reply_cb(struct l_genl_msg *msg, void *user_data)
@@ -1457,19 +1114,9 @@ static void ap_deauth_cb(struct netdev *netdev, const struct mmpdu_header *hdr,
 	if (!sta)
 		return;
 
-	if (sta->associated)
-		ap_disassociate_sta(ap, sta);
+	ap_del_station(sta, L_LE16_TO_CPU(deauth->reason_code), false);
 
 	ap_sta_free(sta);
-}
-
-static void ap_stopped(struct ap_state *ap)
-{
-	ap->event_cb(ap->device, AP_EVENT_STOPPED);
-
-	ap_free(ap);
-
-	l_queue_remove(ap_list, ap);
 }
 
 static void ap_netdev_notify(struct netdev *netdev,
@@ -1479,7 +1126,7 @@ static void ap_netdev_notify(struct netdev *netdev,
 
 	switch (event) {
 	case NETDEV_WATCH_EVENT_DOWN:
-		ap_stopped(ap);
+		ap_reset(ap);
 		break;
 	default:
 		break;
@@ -1492,22 +1139,23 @@ static void ap_start_cb(struct l_genl_msg *msg, void *user_data)
 
 	ap->start_stop_cmd_id = 0;
 
+	if (!ap->pending)
+		return;
+
 	if (l_genl_msg_get_error(msg) < 0) {
 		l_error("START_AP failed: %i", l_genl_msg_get_error(msg));
 
-		ap_stopped(ap);
-	} else {
-		l_info("START_AP ok");
+		dbus_pending_reply(&ap->pending,
+				dbus_error_invalid_args(ap->pending));
+		ap_reset(ap);
 
-		ap->event_cb(ap->device, AP_EVENT_STARTED);
+		return;
 	}
-}
 
-static bool ap_match_device(const void *a, const void *b)
-{
-	const struct ap_state *ap = a;
+	dbus_pending_reply(&ap->pending,
+			l_dbus_message_new_method_return(ap->pending));
 
-	return ap->device == b;
+	ap->started = true;
 }
 
 static struct l_genl_msg *ap_build_cmd_start_ap(struct ap_state *ap)
@@ -1577,25 +1225,16 @@ static struct l_genl_msg *ap_build_cmd_start_ap(struct ap_state *ap)
 	return cmd;
 }
 
-int ap_start(struct device *device, const char *ssid, const char *psk,
-		ap_event_cb_t event_cb)
+static int ap_start(struct ap_state *ap, const char *ssid, const char *psk,
+		struct l_dbus_message *message)
 {
-	struct netdev *netdev = device_get_netdev(device);
-	struct wiphy *wiphy = device_get_wiphy(device);
-	uint32_t ifindex = device_get_ifindex(device);
-	struct ap_state *ap;
+	struct netdev *netdev = device_get_netdev(ap->device);
+	struct wiphy *wiphy = device_get_wiphy(ap->device);
 	struct l_genl_msg *cmd;
 	const struct l_queue_entry *entry;
 	uint32_t id;
 
-	if (l_queue_find(ap_list, ap_match_device, device))
-		return -EEXIST;
-
-	ap = l_new(struct ap_state, 1);
-	ap->device = device;
 	ap->ssid = l_strdup(ssid);
-	ap->psk = l_strdup(psk);
-	ap->event_cb = event_cb;
 	/* TODO: Start a Get Survey to decide the channel */
 	ap->channel = 6;
 	/* TODO: Add all ciphers supported by wiphy */
@@ -1659,19 +1298,14 @@ int ap_start(struct device *device, const char *ssid, const char *psk,
 		goto error;
 	}
 
-	ap->eapol_watch_id = eapol_frame_watch_add(ifindex, ap_eapol_rx, ap);
-
 	ap->netdev_watch_id = netdev_watch_add(netdev, ap_netdev_notify, ap);
 
-	if (!ap_list)
-		ap_list = l_queue_new();
-
-	l_queue_push_tail(ap_list, ap);
+	ap->pending = l_dbus_message_ref(message);
 
 	return 0;
 
 error:
-	ap_free(ap);
+	ap_reset(ap);
 
 	return -EIO;
 }
@@ -1682,12 +1316,21 @@ static void ap_stop_cb(struct l_genl_msg *msg, void *user_data)
 
 	ap->start_stop_cmd_id = 0;
 
-	if (l_genl_msg_get_error(msg) < 0)
-		l_error("STOP_AP failed: %i", l_genl_msg_get_error(msg));
-	else
-		l_info("STOP_AP ok");
+	if (!ap->pending)
+		goto end;
 
-	ap_stopped(ap);
+	if (l_genl_msg_get_error(msg) < 0) {
+		l_error("STOP_AP failed: %i", l_genl_msg_get_error(msg));
+		dbus_pending_reply(&ap->pending,
+				dbus_error_failed(ap->pending));
+		goto end;
+	}
+
+	dbus_pending_reply(&ap->pending,
+			l_dbus_message_new_method_return(ap->pending));
+
+end:
+	ap_reset(ap);
 }
 
 static struct l_genl_msg *ap_build_cmd_stop_ap(struct ap_state *ap)
@@ -1701,13 +1344,9 @@ static struct l_genl_msg *ap_build_cmd_stop_ap(struct ap_state *ap)
 	return cmd;
 }
 
-int ap_stop(struct device *device)
+static int ap_stop(struct ap_state *ap, struct l_dbus_message *message)
 {
 	struct l_genl_msg *cmd;
-	struct ap_state *ap = l_queue_find(ap_list, ap_match_device, device);
-
-	if (!ap)
-		return -ENODEV;
 
 	cmd = ap_build_cmd_stop_ap(ap);
 	if (!cmd)
@@ -1723,13 +1362,107 @@ int ap_stop(struct device *device)
 		return -EIO;
 	}
 
+	ap->pending = l_dbus_message_ref(message);
+
 	return 0;
 }
 
-void ap_init(struct l_genl_family *in)
+static struct l_dbus_message *ap_dbus_start(struct l_dbus *dbus,
+		struct l_dbus_message *message, void *user_data)
 {
+	struct ap_state *ap = user_data;
+	const char *ssid, *wpa2_psk;
+
+	if (ap->pending)
+		return dbus_error_busy(message);
+
+	if (ap->started)
+		return dbus_error_already_exists(message);
+
+	if (!l_dbus_message_get_arguments(message, "ss", &ssid, &wpa2_psk))
+		return dbus_error_invalid_args(message);
+
+	if (ap_start(ap, ssid, wpa2_psk, message) < 0)
+		return dbus_error_invalid_args(message);
+
+	return NULL;
+}
+
+static struct l_dbus_message *ap_dbus_stop(struct l_dbus *dbus,
+		struct l_dbus_message *message, void *user_data)
+{
+	struct ap_state *ap = user_data;
+
+	if (ap->pending)
+		return dbus_error_busy(message);
+
+	/* already stopped, no-op */
+	if (!ap->started)
+		return l_dbus_message_new_method_return(message);
+
+	if (ap_stop(ap, message) < 0)
+		return dbus_error_failed(message);
+
+	return NULL;
+}
+
+static void ap_setup_interface(struct l_dbus_interface *interface)
+{
+	l_dbus_interface_method(interface, "Start", 0, ap_dbus_start, "",
+			"ss", "ssid", "wpa2_psk");
+	l_dbus_interface_method(interface, "Stop", 0, ap_dbus_stop, "", "");
+}
+
+static void ap_destroy_interface(void *user_data)
+{
+	struct ap_state *ap = user_data;
+
+	ap_free(ap);
+}
+
+static void ap_add_interface(struct device *device)
+{
+	struct ap_state *ap;
+
+	/* just allocate/set device, Start method will complete setup */
+	ap = l_new(struct ap_state, 1);
+	ap->device = device;
+
+	/* setup ap dbus interface */
+	l_dbus_object_add_interface(dbus_get_bus(),
+			device_get_path(device), IWD_AP_INTERFACE, ap);
+}
+
+static void ap_remove_interface(struct device *device)
+{
+	l_dbus_object_remove_interface(dbus_get_bus(),
+			device_get_path(device), IWD_AP_INTERFACE);
+}
+
+static void ap_device_event(struct device *device, enum device_event event,
+								void *userdata)
+{
+	switch (event) {
+	case DEVICE_EVENT_MODE_CHANGED:
+		if (device_get_mode(device) == DEVICE_MODE_AP)
+			ap_add_interface(device);
+		else
+			ap_remove_interface(device);
+	default:
+		break;
+	}
+}
+
+bool ap_init(struct l_genl_family *in)
+{
+	device_watch = device_watch_add(ap_device_event, NULL, NULL);
+	if (!device_watch)
+		return false;
+
 	nl80211 = in;
 
+	return l_dbus_register_interface(dbus_get_bus(), IWD_AP_INTERFACE,
+			ap_setup_interface, ap_destroy_interface, false);
 	/*
 	 * TODO: Check wiphy supports AP mode, supported channels,
 	 * check wiphy's NL80211_ATTR_TX_FRAME_TYPES.
@@ -1738,5 +1471,7 @@ void ap_init(struct l_genl_family *in)
 
 void ap_exit(void)
 {
-	l_queue_destroy(ap_list, ap_free);
+	device_watch_remove(device_watch);
+
+	l_dbus_unregister_interface(dbus_get_bus(), IWD_AP_INTERFACE);
 }

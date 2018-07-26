@@ -120,10 +120,6 @@ typedef void (*eapol_rekey_offload_func_t)(uint32_t ifindex,
 typedef void (*eapol_sm_event_func_t)(unsigned int event,
 							const void *event_data,
 							void *user_data);
-typedef void (*eapol_deauthenticate_func_t)(uint32_t ifindex, const uint8_t *aa,
-						const uint8_t *spa,
-						uint16_t reason_code,
-						void *user_data);
 typedef void (*eapol_preauth_cb_t)(const uint8_t *pmk, void *user_data);
 typedef void (*eapol_preauth_destroy_func_t)(void *user_data);
 typedef void (*eapol_frame_watch_func_t)(uint16_t proto, const uint8_t *from,
@@ -183,7 +179,6 @@ void __eapol_tx_packet(uint32_t ifindex, const uint8_t *dst, uint16_t proto,
 void __eapol_set_tx_packet_func(eapol_tx_packet_func_t func);
 void __eapol_set_tx_user_data(void *user_data);
 
-void __eapol_set_deauthenticate_func(eapol_deauthenticate_func_t func);
 void __eapol_set_rekey_offload_func(eapol_rekey_offload_func_t func);
 void __eapol_update_replay_counter(uint32_t ifindex, const uint8_t *spa,
 				const uint8_t *aa, uint64_t replay_counter);
@@ -197,10 +192,12 @@ void eapol_sm_set_protocol_version(struct eapol_sm *sm,
 
 void eapol_sm_set_use_eapol_start(struct eapol_sm *sm, bool enabled);
 void eapol_sm_set_require_handshake(struct eapol_sm *sm, bool enabled);
+void eapol_sm_set_listen_interval(struct eapol_sm *sm, uint16_t interval);
 void eapol_sm_set_user_data(struct eapol_sm *sm, void *user_data);
 void eapol_sm_set_event_func(struct eapol_sm *sm, eapol_sm_event_func_t func);
 
 void eapol_register(struct eapol_sm *sm);
+void eapol_register_authenticator(struct eapol_sm *sm);
 bool eapol_start(struct eapol_sm *sm);
 
 uint32_t eapol_frame_watch_add(uint32_t ifindex,

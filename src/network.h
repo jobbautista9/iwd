@@ -28,7 +28,7 @@ struct network;
 struct scan_bss;
 
 bool network_seen(struct network *network, struct timespec *when);
-bool network_connected(struct network *network);
+void network_connected(struct network *network);
 void network_disconnected(struct network *network);
 bool network_rankmod(const struct network *network, double *rankmod);
 
@@ -63,6 +63,9 @@ void network_remove(struct network *network, int reason);
 int network_rank_compare(const void *a, const void *b, void *user);
 void network_rank_update(struct network *network);
 
+void network_connect_new_hidden_network(struct network *network,
+						struct l_dbus_message *message);
+
 struct network_info {
 	char ssid[33];
 	enum security type;
@@ -70,6 +73,7 @@ struct network_info {
 	struct timespec seen_time;	/* Time last seen */
 	int seen_count;			/* Ref count for network.info */
 	bool is_known:1;
+	bool is_hidden:1;
 };
 
 typedef void (*network_info_foreach_func_t)(const struct network_info *info,
@@ -79,3 +83,9 @@ bool network_info_add_known(const char *ssid, enum security security);
 bool network_info_forget_known(const char *ssid, enum security security);
 void network_info_foreach(network_info_foreach_func_t function,
 				void *user_data);
+const struct l_queue *network_info_get_known();
+bool network_info_has_hidden(void);
+void network_info_set_hidden(struct network *network);
+bool network_info_is_hidden(struct network *network);
+const struct network_info *network_info_find(const char *ssid,
+						enum security security);

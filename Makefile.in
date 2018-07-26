@@ -136,7 +136,8 @@ am__objects_1 = ell/util.lo ell/test.lo ell/queue.lo ell/hashmap.lo \
 	ell/random.lo ell/uintset.lo ell/base64.lo ell/pem.lo \
 	ell/tls.lo ell/tls-record.lo ell/uuid.lo ell/key.lo \
 	ell/pkcs5.lo ell/file.lo ell/dbus-client.lo ell/net.lo \
-	ell/dhcp.lo ell/dhcp-transport.lo ell/dhcp-lease.lo
+	ell/dhcp.lo ell/dhcp-transport.lo ell/dhcp-lease.lo \
+	ell/fswatch.lo
 am_ell_libell_internal_la_OBJECTS = $(am__objects_1)
 ell_libell_internal_la_OBJECTS = $(am_ell_libell_internal_la_OBJECTS)
 AM_V_lt = $(am__v_lt_@AM_V@)
@@ -202,7 +203,7 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/netdev.h \
 	src/handshake.h src/handshake.c src/scan.h src/scan.c \
 	src/util.h src/util.c src/common.h src/common.c src/agent.h \
 	src/agent.c src/storage.h src/storage.c src/network.h \
-	src/network.c src/wscutil.h src/wscutil.c src/wsc.h src/wsc.c \
+	src/network.c src/wscutil.h src/wscutil.c src/wsc.c \
 	src/eap-wsc.h src/eap-wsc.c src/eap.h src/eap.c \
 	src/eap-private.h src/eap-md5.c src/eap-tls.c src/eap-ttls.c \
 	src/eap-mschapv2.c src/eap-mschapv2.h src/backtrace.h \
@@ -212,7 +213,8 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/netdev.h \
 	src/eap-aka.c src/simutil.h src/simutil.c src/ap.h src/ap.c \
 	src/simauth.h src/simauth.c src/plugin.h src/plugin.c \
 	src/eap-peap.c src/eap-gtc.c src/eap-pwd.c src/ecc.h src/ecc.c \
-	plugins/sim_hardcoded.c plugins/ofono.c
+	src/adhoc.h src/adhoc.c plugins/sim_hardcoded.c \
+	plugins/ofono.c
 @SIM_HARDCODED_TRUE@am__objects_2 = plugins/sim_hardcoded.$(OBJEXT)
 @OFONO_TRUE@am__objects_3 = plugins/ofono.$(OBJEXT)
 am__objects_4 = $(am__objects_2) $(am__objects_3)
@@ -231,7 +233,8 @@ am_src_iwd_OBJECTS = src/main.$(OBJEXT) src/netdev.$(OBJEXT) \
 	src/eap-aka.$(OBJEXT) src/simutil.$(OBJEXT) src/ap.$(OBJEXT) \
 	src/simauth.$(OBJEXT) src/plugin.$(OBJEXT) \
 	src/eap-peap.$(OBJEXT) src/eap-gtc.$(OBJEXT) \
-	src/eap-pwd.$(OBJEXT) src/ecc.$(OBJEXT) $(am__objects_4)
+	src/eap-pwd.$(OBJEXT) src/ecc.$(OBJEXT) src/adhoc.$(OBJEXT) \
+	$(am__objects_4)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am_tools_hwsim_OBJECTS = tools/hwsim.$(OBJEXT) src/util.$(OBJEXT) \
 	src/storage.$(OBJEXT) src/common.$(OBJEXT)
@@ -274,7 +277,7 @@ am_unit_test_eapol_OBJECTS = unit/test-eapol.$(OBJEXT) \
 	src/crypto.$(OBJEXT) src/ie.$(OBJEXT) src/watchlist.$(OBJEXT) \
 	src/eapol.$(OBJEXT) src/handshake.$(OBJEXT) src/eap.$(OBJEXT) \
 	src/eap-tls.$(OBJEXT) src/eap-ttls.$(OBJEXT) \
-	src/eap-md5.$(OBJEXT)
+	src/eap-md5.$(OBJEXT) src/util.$(OBJEXT)
 unit_test_eapol_OBJECTS = $(am_unit_test_eapol_OBJECTS)
 unit_test_eapol_DEPENDENCIES = ell/libell-internal.la
 am_unit_test_ecc_OBJECTS = unit/test-ecc.$(OBJEXT) src/ecc.$(OBJEXT)
@@ -815,7 +818,8 @@ ell_sources = ell/ell.h ell/private.h ell/missing.h \
 			ell/dbus-client.h ell/dbus-client.c \
 			ell/net.h ell/net.c \
 			ell/dhcp.h ell/dhcp.c ell/dhcp-transport.c \
-			ell/dhcp-private.h ell/dhcp-lease.c
+			ell/dhcp-private.h ell/dhcp-lease.c \
+			ell/fswatch.h ell/fswatch.c
 
 ell_libell_internal_la_SOURCES = $(ell_sources)
 src_iwd_SOURCES = src/main.c linux/nl80211.h \
@@ -835,7 +839,7 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h \
 					src/storage.h src/storage.c \
 					src/network.h src/network.c \
 					src/wscutil.h src/wscutil.c \
-					src/wsc.h src/wsc.c \
+					src/wsc.c \
 					src/eap-wsc.h src/eap-wsc.c \
 					src/eap.h src/eap.c src/eap-private.h \
 					src/eap-md5.c \
@@ -856,6 +860,7 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h \
 					src/eap-gtc.c \
 					src/eap-pwd.c \
 					src/ecc.h src/ecc.c \
+					src/adhoc.h src/adhoc.c \
 					$(builtin_sources)
 
 src_iwd_LDADD = ell/libell-internal.la -ldl
@@ -970,7 +975,7 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 				src/handshake.h src/handshake.c \
 				src/eap.h src/eap.c src/eap-private.h \
 				src/eap-tls.c src/eap-ttls.c \
-				src/eap-md5.c
+				src/eap-md5.c src/util.c
 
 unit_test_eapol_LDADD = ell/libell-internal.la
 unit_test_ssid_to_utf8_SOURCES = src/util.h src/util.c \
@@ -1140,6 +1145,7 @@ ell/dhcp.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dhcp-transport.lo: ell/$(am__dirstamp) \
 	ell/$(DEPDIR)/$(am__dirstamp)
 ell/dhcp-lease.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/fswatch.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 
 ell/libell-internal.la: $(ell_libell_internal_la_OBJECTS) $(ell_libell_internal_la_DEPENDENCIES) $(EXTRA_ell_libell_internal_la_DEPENDENCIES) ell/$(am__dirstamp)
 	$(AM_V_CCLD)$(LINK)  $(ell_libell_internal_la_OBJECTS) $(ell_libell_internal_la_LIBADD) $(LIBS)
@@ -1371,6 +1377,7 @@ src/eap-gtc.$(OBJEXT): src/$(am__dirstamp) \
 src/eap-pwd.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/ecc.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/adhoc.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 plugins/$(am__dirstamp):
 	@$(MKDIR_P) plugins
 	@: > plugins/$(am__dirstamp)
@@ -1557,6 +1564,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/dhcp-transport.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/dhcp.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/file.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/fswatch.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/genl.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/gvariant-util.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/hashmap.Plo@am__quote@
@@ -1591,6 +1599,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@monitor/$(DEPDIR)/pcap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@plugins/$(DEPDIR)/ofono.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@plugins/$(DEPDIR)/sim_hardcoded.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/adhoc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/agent.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/backtrace.Po@am__quote@

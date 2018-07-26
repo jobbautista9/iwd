@@ -38,6 +38,9 @@
 #include "src/wiphy.h"
 #include "src/netdev.h"
 #include "src/ie.h"
+#include "src/common.h"
+#include "src/network.h"
+#include "src/util.h"
 #include "src/scan.h"
 
 #define SCAN_MAX_INTERVAL 320
@@ -58,6 +61,9 @@ struct scan_periodic {
 	bool rearm:1;
 	bool retry:1;
 	bool triggered:1;
+	bool needs_active_scan:1;
+	bool passive:1; /* Active or Passive scan? */
+	struct l_queue *cmds;
 };
 
 struct scan_request {
@@ -68,7 +74,7 @@ struct scan_request {
 	scan_destroy_func_t destroy;
 	bool passive:1; /* Active or Passive scan? */
 	bool triggered:1;
-	struct l_genl_msg *start_cmd;
+	struct l_queue *cmds;
 };
 
 struct scan_context {
@@ -110,8 +116,20 @@ static void scan_request_free(void *data)
 {
 	struct scan_request *sr = data;
 
-	l_genl_msg_unref(sr->start_cmd);
-	free(sr);
+	l_queue_destroy(sr->cmds, (l_queue_destroy_func_t) l_genl_msg_unref);
+
+	l_free(sr);
+}
+
+static void scan_request_trigger_failed(struct scan_request *sr, int err)
+{
+	if (sr->trigger)
+		sr->trigger(err, sr->userdata);
+
+	if (sr->destroy)
+		sr->destroy(sr->userdata);
+
+	scan_request_free(sr);
 }
 
 static struct scan_context *scan_context_new(uint32_t ifindex)
@@ -140,6 +158,8 @@ static struct scan_context *scan_context_new(uint32_t ifindex)
 static void scan_context_free(struct scan_context *sc)
 {
 	l_debug("sc: %p", sc);
+
+	l_queue_destroy(sc->sp.cmds, (l_queue_destroy_func_t) l_genl_msg_unref);
 
 	l_queue_destroy(sc->requests, scan_request_free);
 
@@ -217,14 +237,8 @@ static void scan_triggered(struct l_genl_msg *msg, void *userdata)
 		if (err == -EBUSY)
 			return;
 
-		if (sr->trigger)
-			sr->trigger(err, sr->userdata);
-
-		if (sr->destroy)
-			sr->destroy(sr->userdata);
-
 		l_queue_pop_head(sc->requests);
-		scan_request_free(sr);
+		scan_request_trigger_failed(sr, err);
 
 		l_error("Received error during CMD_TRIGGER_SCAN: %s (%d)",
 			strerror(-err), -err);
@@ -274,7 +288,8 @@ static void scan_freq_count(uint32_t freq, void *user_data)
 	*count += 1;
 }
 
-static struct l_genl_msg *scan_build_cmd(uint32_t ifindex, bool passive,
+static struct l_genl_msg *scan_build_cmd(struct scan_context *sc,
+					bool ignore_flush_flag,
 					const struct scan_parameters *params)
 {
 	struct l_genl_msg *msg;
@@ -288,13 +303,8 @@ static struct l_genl_msg *scan_build_cmd(uint32_t ifindex, bool passive,
 	msg = l_genl_msg_new_sized(NL80211_CMD_TRIGGER_SCAN,
 						64 + params->extra_ie_size +
 						4 * n_channels);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &ifindex);
 
-	if (!passive) {
-		l_genl_msg_enter_nested(msg, NL80211_ATTR_SCAN_SSIDS);
-		l_genl_msg_append_attr(msg, NL80211_ATTR_SSID, 0, NULL);
-		l_genl_msg_leave_nested(msg);
-	}
+	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &sc->ifindex);
 
 	if (params->extra_ie && params->extra_ie_size)
 		l_genl_msg_append_attr(msg, NL80211_ATTR_IE,
@@ -304,13 +314,112 @@ static struct l_genl_msg *scan_build_cmd(uint32_t ifindex, bool passive,
 	if (params->freqs)
 		scan_build_attr_scan_frequencies(msg, params->freqs);
 
-	if (params->flush)
+	if (params->flush && !ignore_flush_flag)
 		flags |= NL80211_SCAN_FLAG_FLUSH;
+
+	/*
+	 * TODO: Discovery of the hidden networks with randomization flag set
+	 * works with real hardware, but fails when used in simulated
+	 * environment with mac80211_hwsim. This needs to be investigated.
+	 *
+	 * if (params->randomize_mac_addr_hint &&
+	 *		wiphy_has_feature(sc->wiphy,
+	 *				  NL80211_FEATURE_SCAN_RANDOM_MAC_ADDR))
+	 *
+	 *	Randomizing 46 bits (locally administered 1 and multicast 0
+	 *	is assumed).
+	 *
+	 *	flags |= NL80211_SCAN_FLAG_RANDOM_ADDR;
+	*/
 
 	if (flags)
 		l_genl_msg_append_attr(msg, NL80211_ATTR_SCAN_FLAGS, 4, &flags);
 
 	return msg;
+}
+
+static void scan_cmds_add(struct l_queue *cmds, struct scan_context *sc,
+				bool passive,
+				const struct scan_parameters *params)
+{
+	const struct l_queue *networks;
+	struct l_genl_msg *cmd;
+	uint8_t max_ssids_per_scan;
+	uint8_t num_ssids_can_append;
+	const struct l_queue_entry *entry;
+
+	cmd = scan_build_cmd(sc, false, params);
+
+	if (passive) {
+		/* passive scan */
+		l_queue_push_tail(cmds, cmd);
+		return;
+	}
+
+	l_genl_msg_enter_nested(cmd, NL80211_ATTR_SCAN_SSIDS);
+
+	if (params->ssid) {
+		/* direct probe request scan */
+		l_genl_msg_append_attr(cmd, NL80211_ATTR_SSID,
+					strlen(params->ssid), params->ssid);
+		l_genl_msg_leave_nested(cmd);
+
+		l_queue_push_tail(cmds, cmd);
+		return;
+	}
+
+	num_ssids_can_append = max_ssids_per_scan =
+				wiphy_get_max_num_ssids_per_scan(sc->wiphy);
+	networks = network_info_get_known();
+
+	for (entry = l_queue_get_entries((void *) networks); entry;
+							entry = entry->next) {
+		const struct network_info *network = entry->data;
+
+		if (!network->is_hidden)
+			continue;
+
+		l_genl_msg_append_attr(cmd, NL80211_ATTR_SSID,
+					strlen(network->ssid), network->ssid);
+		num_ssids_can_append--;
+
+		if (!num_ssids_can_append) {
+			l_genl_msg_leave_nested(cmd);
+			l_queue_push_tail(cmds, cmd);
+
+			num_ssids_can_append = max_ssids_per_scan;
+
+			/*
+			 * Create a consecutive scan trigger in the batch of
+			 * scans. The 'flush' flag is ignored, this allows to
+			 * get the results of all scans in the batch after the
+			 * last scan is finished.
+			 */
+			cmd = scan_build_cmd(sc, true, params);
+			l_genl_msg_enter_nested(cmd, NL80211_ATTR_SCAN_SSIDS);
+		}
+	}
+
+	l_genl_msg_append_attr(cmd, NL80211_ATTR_SSID, 0, NULL);
+	l_genl_msg_leave_nested(cmd);
+	l_queue_push_tail(cmds, cmd);
+}
+
+static int scan_request_send_next(struct scan_context *sc,
+					struct scan_request *sr)
+{
+	struct l_genl_msg *cmd = l_queue_pop_head(sr->cmds);
+	if (!cmd)
+		return -ENOMSG;
+
+	sc->start_cmd_id = scan_send_start(&cmd, scan_triggered, sc);
+	if (sc->start_cmd_id) {
+		sr->triggered = false;
+		return 0;
+	}
+
+	l_genl_msg_unref(cmd);
+	return -EIO;
 }
 
 static uint32_t scan_common(uint32_t ifindex, bool passive,
@@ -335,24 +444,20 @@ static uint32_t scan_common(uint32_t ifindex, bool passive,
 	sr->destroy = destroy;
 	sr->passive = passive;
 	sr->id = ++next_scan_request_id;
+	sr->cmds = l_queue_new();
 
-	sr->start_cmd = scan_build_cmd(ifindex, passive, params);
-	if (!sr->start_cmd)
-		goto error;
+	scan_cmds_add(sr->cmds, sc, passive, params);
 
 	if (l_queue_length(sc->requests) > 0)
 		goto done;
 
-	if (sc->state != SCAN_STATE_NOT_RUNNING)
+	if (sc->state != SCAN_STATE_NOT_RUNNING || sc->start_cmd_id)
 		goto done;
 
-	sc->start_cmd_id = scan_send_start(&sr->start_cmd, scan_triggered, sc);
-	if (sc->start_cmd_id > 0)
+	if (!scan_request_send_next(sc, sr))
 		goto done;
 
-error:
-	scan_request_free(sr);
-
+	scan_request_trigger_failed(sr, -EIO);
 	return 0;
 done:
 	l_queue_push_tail(sc->requests, sr);
@@ -408,8 +513,8 @@ bool scan_cancel(uint32_t ifindex, uint32_t id)
 	if (!sr)
 		return false;
 
-	/* If we already sent the trigger command, cancel the scan */
-	if (sr->id == id && !sr->start_cmd) {
+	if (sr->id == id) {
+		/* If we already sent the trigger command, cancel the scan */
 		if (!sr->triggered && sc->start_cmd_id) {
 			l_genl_family_cancel(nl80211, sc->start_cmd_id);
 			sc->start_cmd_id = 0;
@@ -464,7 +569,7 @@ void scan_sched_start(struct l_genl_family *nl80211, uint32_t ifindex,
 		l_error("Starting scheduled scan failed");
 }
 
-static void scan_periodic_done(struct l_genl_msg *msg, void *user_data)
+static void scan_periodic_triggered(struct l_genl_msg *msg, void *user_data)
 {
 	struct scan_context *sc = user_data;
 	int err;
@@ -487,8 +592,9 @@ static void scan_periodic_done(struct l_genl_msg *msg, void *user_data)
 		return;
 	}
 
-	sc->state = SCAN_STATE_PASSIVE;
-	l_debug("Periodic scan triggered for ifindex: %u", sc->ifindex);
+	sc->state = sc->sp.passive ? SCAN_STATE_PASSIVE : SCAN_STATE_ACTIVE;
+	l_debug("Periodic %s scan triggered for ifindex: %u", sc->sp.passive ?
+				"passive" : "active", sc->ifindex);
 
 	sc->sp.triggered = true;
 
@@ -498,16 +604,27 @@ static void scan_periodic_done(struct l_genl_msg *msg, void *user_data)
 
 static bool scan_periodic_send_start(struct scan_context *sc)
 {
+	struct l_genl_msg *cmd;
 	struct scan_parameters params = {};
-	struct l_genl_msg *msg;
 
-	msg = scan_build_cmd(sc->ifindex, true, &params);
-	if (!msg)
+	if (sc->sp.needs_active_scan && network_info_has_hidden()) {
+		sc->sp.needs_active_scan = false;
+		sc->sp.passive = false;
+
+		params.randomize_mac_addr_hint = true;
+	} else {
+		sc->sp.passive = true;
+	}
+
+	scan_cmds_add(sc->sp.cmds, sc, sc->sp.passive, &params);
+
+	cmd = l_queue_pop_head(sc->sp.cmds);
+	if (!cmd)
 		return false;
 
-	sc->start_cmd_id = scan_send_start(&msg, scan_periodic_done, sc);
+	sc->start_cmd_id = scan_send_start(&cmd, scan_periodic_triggered, sc);
 	if (!sc->start_cmd_id) {
-		l_genl_msg_unref(msg);
+		l_genl_msg_unref(cmd);
 		return false;
 	}
 
@@ -538,6 +655,7 @@ void scan_periodic_start(uint32_t ifindex, scan_trigger_func_t trigger,
 	sc->sp.userdata = userdata;
 	sc->sp.retry = true;
 	sc->sp.rearm = false;
+	sc->sp.cmds = l_queue_new();
 
 	start_next_scan_request(sc);
 }
@@ -568,6 +686,10 @@ bool scan_periodic_stop(uint32_t ifindex)
 	sc->sp.userdata = NULL;
 	sc->sp.rearm = false;
 	sc->sp.retry = false;
+	sc->sp.needs_active_scan = false;
+
+	l_queue_destroy(sc->sp.cmds, (l_queue_destroy_func_t) l_genl_msg_unref);
+	sc->sp.cmds = NULL;
 
 	return true;
 }
@@ -607,20 +729,11 @@ static bool start_next_scan_request(struct scan_context *sc)
 	while (!l_queue_isempty(sc->requests)) {
 		sr = l_queue_peek_head(sc->requests);
 
-		sc->start_cmd_id = scan_send_start(&sr->start_cmd,
-							scan_triggered, sc);
-
-		if (sc->start_cmd_id)
+		if (!scan_request_send_next(sc, sr))
 			return true;
 
-		if (sr->trigger)
-			sr->trigger(-EIO, sr->userdata);
-
-		if (sr->destroy)
-			sr->destroy(sr->userdata);
-
-		sr = l_queue_pop_head(sc->requests);
-		scan_request_free(sr);
+		l_queue_pop_head(sc->requests);
+		scan_request_trigger_failed(sr, -EIO);
 	}
 
 	if (sc->sp.retry) {
@@ -975,6 +1088,22 @@ static void get_scan_callback(struct l_genl_msg *msg, void *user_data)
 	l_queue_insert(results->bss_list, bss, scan_bss_rank_compare, NULL);
 }
 
+static void discover_hidden_network_bsses(struct scan_context *sc,
+						struct l_queue *bss_list)
+{
+	const struct l_queue_entry *bss_entry;
+
+	for (bss_entry = l_queue_get_entries(bss_list); bss_entry;
+						bss_entry = bss_entry->next) {
+		struct scan_bss *bss = bss_entry->data;
+
+		if (!util_ssid_is_hidden(bss->ssid_len, bss->ssid))
+			continue;
+
+		sc->sp.needs_active_scan = true;
+	}
+}
+
 static void scan_finished(struct scan_context *sc, uint32_t wiphy,
 				int err, struct l_queue *bss_list)
 {
@@ -992,7 +1121,7 @@ static void scan_finished(struct scan_context *sc, uint32_t wiphy,
 
 		scan_request_free(sr);
 		l_queue_pop_head(sc->requests);
-	} else if (sc->state == SCAN_STATE_PASSIVE && sc->sp.interval != 0) {
+	} else if (sc->sp.interval) {
 		/*
 		 * If we'd called sc.sp->trigger, we must call back now
 		 * independent of whether the scan was succesful or was
@@ -1006,6 +1135,9 @@ static void scan_finished(struct scan_context *sc, uint32_t wiphy,
 		}
 
 		sc->sp.triggered = false;
+
+		if (bss_list)
+			discover_hidden_network_bsses(sc, bss_list);
 	}
 
 	if (callback)
@@ -1069,6 +1201,50 @@ static void scan_parse_new_scan_results(struct l_genl_msg *msg,
 			break;
 		}
 	}
+}
+
+static bool scan_send_next_cmd(struct scan_context *sc)
+{
+	struct scan_request *sr = l_queue_peek_head(sc->requests);
+	int err;
+
+	if (sr && sr->triggered) {
+		err = scan_request_send_next(sc, sr);
+		if (!err)
+			return true;
+
+		/* Nothing left in the scan_request queue, we're done */
+		if (err < 0 && err == -ENOMSG)
+			return false;
+
+		sr = l_queue_pop_head(sc->requests);
+		scan_request_trigger_failed(sr, -EIO);
+
+		/*
+		 * The request is destroyed, return 'true' to stop further
+		 * processing.
+		 */
+		return true;
+	} else if (sc->sp.triggered) {
+		struct l_genl_msg *cmd = l_queue_pop_head(sc->sp.cmds);
+		if (!cmd)
+			return false;
+
+		sc->sp.triggered = false;
+
+		sc->start_cmd_id = scan_send_start(&cmd,
+						scan_periodic_triggered, sc);
+
+		if (!sc->start_cmd_id) {
+			l_genl_msg_unref(cmd);
+			l_queue_clear(sc->sp.cmds,
+				(l_queue_destroy_func_t) l_genl_msg_unref);
+		}
+
+		return true;
+	}
+
+	return false;
 }
 
 static void scan_notify(struct l_genl_msg *msg, void *user_data)
@@ -1138,6 +1314,9 @@ static void scan_notify(struct l_genl_msg *msg, void *user_data)
 	{
 		struct l_genl_msg *scan_msg;
 		struct scan_results *results;
+
+		if (scan_send_next_cmd(sc))
+			return;
 
 		results = l_new(struct scan_results, 1);
 		results->wiphy = attr_wiphy;

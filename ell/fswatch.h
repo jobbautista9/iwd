@@ -1,8 +1,8 @@
 /*
  *
- *  Wireless daemon for Linux
+ *  Embedded Linux library
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2018  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,7 +20,25 @@
  *
  */
 
-struct device;
+#ifndef __ELL_FSWATCH_H
+#define __ELL_FSWATCH_H
 
-bool ap_init(struct l_genl_family *in);
-void ap_exit(void);
+struct l_fswatch;
+
+enum l_fswatch_event {
+	L_FSWATCH_EVENT_CREATE,
+	L_FSWATCH_EVENT_MOVE,
+	L_FSWATCH_EVENT_MODIFY,
+	L_FSWATCH_EVENT_DELETE,
+};
+
+typedef void (*l_fswatch_cb_t) (struct l_fswatch *watch, const char *filename,
+				enum l_fswatch_event event, void *user_data);
+typedef void (*l_fswatch_destroy_cb_t) (void *user_data);
+
+struct l_fswatch *l_fswatch_new(const char *path, l_fswatch_cb_t cb,
+				void *user_data,
+				l_fswatch_destroy_cb_t destroy);
+void l_fswatch_destroy(struct l_fswatch *watch);
+
+#endif /* __ELL_FSWATCH_H */

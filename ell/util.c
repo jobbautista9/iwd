@@ -414,6 +414,49 @@ LIB_EXPORT char *l_strjoinv(char **str_array, const char delim)
 }
 
 /**
+ * l_strv_length:
+ * @str_array: a %NULL terminated array of strings
+ *
+ * Returns: the number of strings in @str_array
+ */
+LIB_EXPORT unsigned int l_strv_length(char **str_array)
+{
+	unsigned int i = 0;
+
+	if (unlikely(!str_array))
+		return 0;
+
+	while (str_array[i])
+		i += 1;
+
+	return i;
+}
+
+/**
+ * l_strv_contains:
+ * @str_array: a %NULL terminated array of strings
+ * @item: An item to search for, must be not %NULL
+ *
+ * Returns: #true if @str_array contains item
+ */
+LIB_EXPORT bool l_strv_contains(char **str_array, const char *item)
+{
+	unsigned int i = 0;
+
+	if (unlikely(!str_array || !item))
+		return false;
+
+	while (str_array[i]) {
+		if (!strcmp(str_array[i], item))
+			return true;
+
+		i += 1;
+	}
+
+	return false;
+}
+
+/**
  * l_str_has_prefix:
  * @str: A string to be examined
  * @delim: Prefix string

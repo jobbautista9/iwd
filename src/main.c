@@ -41,12 +41,12 @@
 #include "src/eap.h"
 #include "src/eapol.h"
 #include "src/scan.h"
-#include "src/wsc.h"
 #include "src/knownnetworks.h"
 #include "src/rfkill.h"
 #include "src/ap.h"
 #include "src/plugin.h"
 #include "src/simauth.h"
+#include "src/adhoc.h"
 
 #include "src/backtrace.h"
 
@@ -154,9 +154,6 @@ static void nl80211_appeared(void *user_data)
 
 	if (!scan_init(nl80211))
 		l_error("Unable to init scan functionality");
-
-	if (!wsc_init(nl80211))
-		l_error("Unable to init WSC functionality");
 
 	ap_init(nl80211);
 }
@@ -408,12 +405,6 @@ int main(int argc, char *argv[])
 		goto done;
 	}
 
-	if (!sim_auth_init()) {
-		l_error("Failed to start sim auth module");
-		exit_status = EXIT_FAILURE;
-		goto done;
-	}
-
 	plugin_init(plugins, noplugins);
 
 	genl = l_genl_new_default();
@@ -448,22 +439,26 @@ int main(int argc, char *argv[])
 
 	__eapol_set_config(iwd_config);
 
+	adhoc_init();
+	wsc_init();
 	eap_init(eap_mtu);
 	eapol_init();
 	network_init();
 	known_networks_init();
 	rfkill_init();
+	sim_auth_init();
 
 	exit_status = EXIT_SUCCESS;
 	l_main_run();
 
+	sim_auth_exit();
 	rfkill_exit();
 	known_networks_exit();
 	network_exit();
 	eapol_exit();
 	eap_exit();
-	plugin_exit();
-	sim_auth_exit();
+	wsc_exit();
+	adhoc_exit();
 
 	l_genl_family_unref(nl80211);
 
@@ -474,6 +469,7 @@ fail_device:
 	l_genl_unref(genl);
 
 fail_genl:
+	plugin_exit();
 	dbus_exit();
 
 done:

@@ -408,7 +408,7 @@ static bool ie_parse_cipher_suite(const uint8_t *data,
 }
 
 /* 802.11, Section 8.4.2.27.2 */
-static bool ie_parse_akm_suite(const uint8_t *data,
+static int ie_parse_akm_suite(const uint8_t *data,
 					enum ie_rsn_akm_suite *out)
 {
 	/*
@@ -418,39 +418,53 @@ static bool ie_parse_akm_suite(const uint8_t *data,
 	if (!memcmp(data, ieee_oui, 3)) {
 		/* Suite type from Table 8-101 */
 		switch (data[3]) {
+		case 0:
+			return -EINVAL;
 		case 1:
 			*out = IE_RSN_AKM_SUITE_8021X;
-			return true;
+			return 0;
 		case 2:
 			*out = IE_RSN_AKM_SUITE_PSK;
-			return true;
+			return 0;
 		case 3:
 			*out = IE_RSN_AKM_SUITE_FT_OVER_8021X;
-			return true;
+			return 0;
 		case 4:
 			*out = IE_RSN_AKM_SUITE_FT_USING_PSK;
-			return true;
+			return 0;
 		case 5:
 			*out = IE_RSN_AKM_SUITE_8021X_SHA256;
-			return true;
+			return 0;
 		case 6:
 			*out = IE_RSN_AKM_SUITE_PSK_SHA256;
-			return true;
+			return 0;
 		case 7:
 			*out = IE_RSN_AKM_SUITE_TDLS;
-			return true;
+			return 0;
 		case 8:
 			*out = IE_RSN_AKM_SUITE_SAE_SHA256;
-			return true;
+			return 0;
 		case 9:
 			*out = IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256;
-			return true;
+			return 0;
+		case 10:
+			*out = IE_RSN_AKM_SUITE_AP_PEER_KEY_SHA256;
+			return 0;
+		case 11:
+			*out = IE_RSN_AKM_SUITE_8021X_SUITE_B_SHA256;
+			return 0;
+		case 12:
+			*out = IE_RSN_AKM_SUITE_8021X_SUITE_B_SHA384;
+			return 0;
+		case 13:
+			*out = IE_RSN_AKM_SUITE_FT_OVER_8021X_SHA384;
+			return 0;
 		default:
-			return false;
+			return -ENOENT;
 		}
 	}
 
-	return false;
+	return -ENOENT;
 }
 
 static bool ie_parse_group_cipher(const uint8_t *data,
@@ -612,11 +626,19 @@ int ie_parse_rsne(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info)
 	/* Parse AKM Suite List field */
 	for (i = 0, info.akm_suites = 0; i < count; i++) {
 		enum ie_rsn_akm_suite suite;
+		int ret;
 
-		if (!ie_parse_akm_suite(data + i * 4, &suite))
-			return -ERANGE;
-
-		info.akm_suites |= suite;
+		ret = ie_parse_akm_suite(data + i * 4, &suite);
+		switch (ret) {
+		case 0:
+			info.akm_suites |= suite;
+			break;
+		case -ENOENT:
+			/* Skip unknown or vendor specific AKMs */
+			break;
+		default:
+			return -EBADMSG;
+		}
 	}
 
 	RSNE_ADVANCE(data, len, count * 4);
@@ -742,50 +764,56 @@ static bool ie_build_cipher_suite(uint8_t *data, const uint8_t *oui,
 	return false;
 }
 
-/*
- * 802.11, Section 8.4.2.27.2
- * 802.11i, Section 7.3.2.25.2 and WPA_80211_v3_1 Section 2.1
- */
-static bool ie_build_akm_suite(uint8_t *data, const uint8_t *oui,
-					enum ie_rsn_akm_suite suite)
+#define RETURN_AKM(data, oui, id)	\
+	memcpy((data), (oui), 3);	\
+	(data)[3] = (id);		\
+	return true;
+
+/* 802.11-2016, Section 9.4.2.25.3 */
+static bool ie_build_rsn_akm_suite(uint8_t *data, enum ie_rsn_akm_suite suite)
 {
 	switch (suite) {
 	case IE_RSN_AKM_SUITE_8021X:
-		memcpy(data, oui, 3);
-		data[3] = 1;
-		return true;
+		RETURN_AKM(data, ieee_oui, 1);
 	case IE_RSN_AKM_SUITE_PSK:
-		memcpy(data, oui, 3);
-		data[3] = 2;
-		return true;
+		RETURN_AKM(data, ieee_oui, 2);
 	case IE_RSN_AKM_SUITE_FT_OVER_8021X:
-		memcpy(data, oui, 3);
-		data[3] = 3;
-		return true;
+		RETURN_AKM(data, ieee_oui, 3);
 	case IE_RSN_AKM_SUITE_FT_USING_PSK:
-		memcpy(data, oui, 3);
-		data[3] = 4;
-		return true;
+		RETURN_AKM(data, ieee_oui, 4);
 	case IE_RSN_AKM_SUITE_8021X_SHA256:
-		memcpy(data, oui, 3);
-		data[3] = 5;
-		return true;
+		RETURN_AKM(data, ieee_oui, 5);
 	case IE_RSN_AKM_SUITE_PSK_SHA256:
-		memcpy(data, oui, 3);
-		data[3] = 6;
-		return true;
+		RETURN_AKM(data, ieee_oui, 6);
 	case IE_RSN_AKM_SUITE_TDLS:
-		memcpy(data, oui, 3);
-		data[3] = 7;
-		return true;
+		RETURN_AKM(data, ieee_oui, 7);
 	case IE_RSN_AKM_SUITE_SAE_SHA256:
-		memcpy(data, oui, 3);
-		data[3] = 8;
-		return true;
+		RETURN_AKM(data, ieee_oui, 8);
 	case IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256:
-		memcpy(data, oui, 3);
-		data[3] = 9;
-		return true;
+		RETURN_AKM(data, ieee_oui, 9);
+	case IE_RSN_AKM_SUITE_AP_PEER_KEY_SHA256:
+		RETURN_AKM(data, ieee_oui, 10);
+	case IE_RSN_AKM_SUITE_8021X_SUITE_B_SHA256:
+		RETURN_AKM(data, ieee_oui, 11);
+	case IE_RSN_AKM_SUITE_8021X_SUITE_B_SHA384:
+		RETURN_AKM(data, ieee_oui, 12);
+	case IE_RSN_AKM_SUITE_FT_OVER_8021X_SHA384:
+		RETURN_AKM(data, ieee_oui, 13);
+	}
+
+	return false;
+}
+
+/* 802.11i, Section 7.3.2.25.2 and WPA_80211_v3_1 Section 2.1 */
+static bool ie_build_wpa_akm_suite(uint8_t *data, enum ie_rsn_akm_suite suite)
+{
+	switch (suite) {
+	case IE_RSN_AKM_SUITE_8021X:
+		RETURN_AKM(data, microsoft_oui, 1);
+	case IE_RSN_AKM_SUITE_PSK:
+		RETURN_AKM(data, microsoft_oui, 2);
+	default:
+		break;
 	}
 
 	return false;
@@ -866,7 +894,7 @@ bool ie_build_rsne(const struct ie_rsn_info *info, uint8_t *to)
 		if (pos + 4 > 248)
 			return false;
 
-		if (!ie_build_akm_suite(to + pos, ieee_oui, akm_suite))
+		if (!ie_build_rsn_akm_suite(to + pos, akm_suite))
 			return false;
 
 		pos += 4;
@@ -1277,7 +1305,7 @@ bool ie_build_wpa(const struct ie_rsn_info *info, uint8_t *to)
 		if (!(info->akm_suites & suite))
 			continue;
 
-		if (!ie_build_akm_suite(to + pos, microsoft_oui, suite))
+		if (!ie_build_wpa_akm_suite(to + pos, suite))
 			return false;
 
 		pos += 4;

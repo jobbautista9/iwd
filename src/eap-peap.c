@@ -532,7 +532,7 @@ static void eap_peap_tunnel_ready(const char *peer_identity, void *user_data)
 static void eap_peap_tunnel_disconnected(enum l_tls_alert_desc reason,
 						bool remote, void *user_data)
 {
-	l_info("PEAP TLS tunnel has disconnected");
+	l_info("PEAP TLS tunnel has disconnected with alert: %d", reason);
 }
 
 static bool eap_peap_tunnel_init(struct eap_state *eap)
@@ -589,8 +589,18 @@ static bool eap_peap_init_request_assembly(struct eap_state *eap,
 						uint8_t flags) {
 	struct eap_peap_state *peap = eap_get_data(eap);
 
-	if (peap->rx_pdu_buf || !(flags & PEAP_FLAG_M) || len < 4)
+	if (peap->rx_pdu_buf || len < 4)
 		return false;
+
+	/*
+	 * Some of the PEAP server implementations brake the protocol and do not
+	 * set the M flag for the first packet during the fragmented
+	 * transmission. To stay compatible with such devices, we have relaxed
+	 * this requirement in iwd.
+	 */
+	if (!(flags & PEAP_FLAG_M))
+		l_warn("Server has failed to set the M flag in the first packet"
+					" of the fragmented transmission.");
 
 	peap->rx_pdu_buf_len = l_get_be32(pkt);
 
