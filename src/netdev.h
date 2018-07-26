@@ -40,8 +40,6 @@ enum netdev_result {
 enum netdev_event {
 	NETDEV_EVENT_AUTHENTICATING,
 	NETDEV_EVENT_ASSOCIATING,
-	NETDEV_EVENT_4WAY_HANDSHAKE,
-	NETDEV_EVENT_SETTING_KEYS,
 	NETDEV_EVENT_LOST_BEACON,
 	NETDEV_EVENT_DISCONNECT_BY_AP,
 	NETDEV_EVENT_DISCONNECT_BY_SME,
@@ -60,6 +58,7 @@ enum netdev_watch_event {
 enum netdev_iftype {
 	NETDEV_IFTYPE_STATION,
 	NETDEV_IFTYPE_AP,
+	NETDEV_IFTYPE_ADHOC
 };
 
 typedef void (*netdev_command_func_t) (bool result, void *user_data);
@@ -70,6 +69,8 @@ typedef void (*netdev_event_func_t)(struct netdev *netdev,
 					enum netdev_event event,
 					void *user_data);
 typedef void (*netdev_disconnect_cb_t)(struct netdev *netdev, bool result,
+					void *user_data);
+typedef void (*netdev_adhoc_cb_t)(struct netdev *netdev, int result,
 					void *user_data);
 typedef void (*netdev_watch_func_t)(struct netdev *netdev,
 					enum netdev_watch_event event,
@@ -92,6 +93,9 @@ typedef void (*netdev_frame_watch_func_t)(struct netdev *netdev,
 					const struct mmpdu_header *frame,
 					const void *body, size_t body_len,
 					void *user_data);
+typedef void (*netdev_station_watch_func_t)(struct netdev *netdev,
+					const uint8_t *mac, bool added,
+					void *user_data);
 
 struct wiphy *netdev_get_wiphy(struct netdev *netdev);
 const uint8_t *netdev_get_address(struct netdev *netdev);
@@ -104,6 +108,8 @@ int netdev_set_4addr(struct netdev *netdev, bool use_4addr,
 bool netdev_get_4addr(struct netdev *netdev);
 const char *netdev_get_name(struct netdev *netdev);
 bool netdev_get_is_up(struct netdev *netdev);
+
+struct handshake_state *netdev_handshake_state_new(struct netdev *netdev);
 struct handshake_state *netdev_get_handshake(struct netdev *netdev);
 
 int netdev_connect(struct netdev *netdev, struct scan_bss *bss,
@@ -128,6 +134,16 @@ int netdev_preauthenticate(struct netdev *netdev, struct scan_bss *target_bss,
 				netdev_preauthenticate_cb_t cb,
 				void *user_data);
 
+int netdev_del_station(struct netdev *netdev, const uint8_t *sta,
+		uint16_t reason_code, bool disassociate);
+
+int netdev_join_adhoc(struct netdev *netdev, const char *ssid,
+			struct iovec *extra_ie, size_t extra_ie_elems,
+			bool control_port, netdev_adhoc_cb_t cb,
+			void *user_data);
+int netdev_leave_adhoc(struct netdev *netdev, netdev_adhoc_cb_t cb,
+			void *user_data);
+
 int netdev_set_powered(struct netdev *netdev, bool powered,
 				netdev_set_powered_cb_t cb, void *user_data,
 				netdev_destroy_func_t destroy);
@@ -145,11 +161,18 @@ uint32_t netdev_frame_watch_add(struct netdev *netdev, uint16_t frame_type,
 				void *user_data);
 bool netdev_frame_watch_remove(struct netdev *netdev, uint32_t id);
 
+void netdev_handshake_failed(struct handshake_state *hs, uint16_t reason_code);
+
 struct netdev *netdev_find(int ifindex);
 
 uint32_t netdev_watch_add(struct netdev *netdev, netdev_watch_func_t func,
 				void *user_data);
 bool netdev_watch_remove(struct netdev *netdev, uint32_t id);
+
+uint32_t netdev_station_watch_add(struct netdev *netdev,
+		netdev_station_watch_func_t func, void *user_data);
+
+bool netdev_station_watch_remove(struct netdev *netdev, uint32_t id);
 
 bool netdev_init(struct l_genl_family *in,
 				const char *whitelist, const char *blacklist);

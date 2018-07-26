@@ -63,7 +63,8 @@ ell_sources = ell/ell.h ell/private.h ell/missing.h \
 			ell/dbus-client.h ell/dbus-client.c \
 			ell/net.h ell/net.c \
 			ell/dhcp.h ell/dhcp.c ell/dhcp-transport.c \
-			ell/dhcp-private.h ell/dhcp-lease.c
+			ell/dhcp-private.h ell/dhcp-lease.c \
+			ell/fswatch.h ell/fswatch.c
 
 ell_libell_internal_la_SOURCES = $(ell_sources)
 
@@ -88,7 +89,7 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h \
 					src/storage.h src/storage.c \
 					src/network.h src/network.c \
 					src/wscutil.h src/wscutil.c \
-					src/wsc.h src/wsc.c \
+					src/wsc.c \
 					src/eap-wsc.h src/eap-wsc.c \
 					src/eap.h src/eap.c src/eap-private.h \
 					src/eap-md5.c \
@@ -109,6 +110,7 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h \
 					src/eap-gtc.c \
 					src/eap-pwd.c \
 					src/ecc.h src/ecc.c \
+					src/adhoc.h src/adhoc.c \
 					$(builtin_sources)
 
 src_iwd_LDADD = ell/libell-internal.la -ldl
@@ -259,7 +261,7 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 				src/handshake.h src/handshake.c \
 				src/eap.h src/eap.c src/eap-private.h \
 				src/eap-tls.c src/eap-ttls.c \
-				src/eap-md5.c
+				src/eap-md5.c src/util.c
 unit_test_eapol_LDADD = ell/libell-internal.la
 
 unit_test_ssid_to_utf8_SOURCES = src/util.h src/util.c \

@@ -36,7 +36,6 @@
 #include "src/ie.h"
 #include "src/wscutil.h"
 #include "src/util.h"
-#include "src/wsc.h"
 #include "src/handshake.h"
 #include "src/eap-wsc.h"
 #include "src/crypto.h"
@@ -47,7 +46,6 @@
 
 #define WALK_TIME 120
 
-static struct l_genl_family *nl80211 = NULL;
 static uint32_t device_watch = 0;
 
 struct wsc {
@@ -367,9 +365,6 @@ static void wsc_netdev_event(struct netdev *netdev, enum netdev_event event,
 	case NETDEV_EVENT_AUTHENTICATING:
 	case NETDEV_EVENT_ASSOCIATING:
 		break;
-	case NETDEV_EVENT_4WAY_HANDSHAKE:
-		l_info("Running EAP-WSC");
-		break;
 	case NETDEV_EVENT_LOST_BEACON:
 		l_debug("Lost beacon");
 		break;
@@ -385,6 +380,18 @@ static void wsc_netdev_event(struct netdev *netdev, enum netdev_event event,
 		l_debug("Unexpected event: %d", event);
 		break;
 	};
+}
+
+static void wsc_handshake_event(struct handshake_state *hs,
+		enum handshake_event event, void *event_data, void *user_data)
+{
+	switch (event) {
+	case HANDSHAKE_EVENT_FAILED:
+		netdev_handshake_failed(hs, l_get_u16(event_data));
+		break;
+	default:
+		break;
+	}
 }
 
 static inline enum wsc_rf_band freq_to_rf_band(uint32_t freq)
@@ -408,11 +415,10 @@ static void wsc_connect(struct wsc *wsc)
 	struct handshake_state *hs;
 	struct l_settings *settings = l_settings_new();
 	struct scan_bss *bss = wsc->target;
-	uint32_t ifindex = netdev_get_ifindex(device_get_netdev(wsc->device));
 
 	wsc->target = NULL;
 
-	hs = handshake_state_new(ifindex);
+	hs = netdev_handshake_state_new(device_get_netdev(wsc->device));
 
 	l_settings_set_string(settings, "Security", "EAP-Identity",
 					"WFA-SimpleConfig-Enrollee-1-0");
@@ -447,6 +453,7 @@ static void wsc_connect(struct wsc *wsc)
 		}
 	}
 
+	handshake_state_set_event_func(hs, wsc_handshake_event, wsc);
 	handshake_state_set_8021x_config(hs, settings);
 	wsc->eap_settings = settings;
 
@@ -480,8 +487,10 @@ static void wsc_check_can_connect(struct wsc *wsc, struct scan_bss *target)
 {
 	l_debug("%p", wsc);
 
+	if (device_get_mode(wsc->device) != DEVICE_MODE_STATION)
+		goto error;
 	/*
-	 * For now we assign the targe pointer directly, since we should not
+	 * For now we assign the target pointer directly, since we should not
 	 * be triggering any more scans while disconnecting / connecting
 	 */
 	wsc->target = target;
@@ -505,7 +514,6 @@ static void wsc_check_can_connect(struct wsc *wsc, struct scan_bss *target)
 	case DEVICE_STATE_AUTOCONNECT:
 	case DEVICE_STATE_OFF:
 	case DEVICE_STATE_ROAMING:
-	case DEVICE_STATE_AP:
 		l_warn("wsc_check_can_connect: invalid device state");
 		break;
 	}
@@ -1059,6 +1067,20 @@ static void device_disappeared(struct device *device, void *userdata)
 					IWD_WSC_INTERFACE);
 }
 
+static void device_mode_changed(struct device *device, void *userdata)
+{
+	enum device_mode mode = device_get_mode(device);
+
+	switch (mode) {
+	case DEVICE_MODE_STATION:
+		device_appeared(device, userdata);
+		break;
+	default:
+		device_disappeared(device, userdata);
+		break;
+	}
+}
+
 static void device_event(struct device *device, enum device_event event,
 								void *userdata)
 {
@@ -1067,10 +1089,12 @@ static void device_event(struct device *device, enum device_event event,
 		return device_appeared(device, userdata);
 	case DEVICE_EVENT_REMOVED:
 		return device_disappeared(device, userdata);
+	case DEVICE_EVENT_MODE_CHANGED:
+		return device_mode_changed(device, userdata);
 	}
 }
 
-bool wsc_init(struct l_genl_family *in)
+bool wsc_init(void)
 {
 	if (!l_dbus_register_interface(dbus_get_bus(), IWD_WSC_INTERFACE,
 					setup_wsc_interface,
@@ -1078,10 +1102,11 @@ bool wsc_init(struct l_genl_family *in)
 		return false;
 
 	device_watch = device_watch_add(device_event, NULL, NULL);
-	if (!device_watch)
+	if (!device_watch) {
+		l_dbus_unregister_interface(dbus_get_bus(), IWD_WSC_INTERFACE);
 		return false;
+	}
 
-	nl80211 = in;
 	return true;
 }
 
@@ -1089,13 +1114,8 @@ bool wsc_exit()
 {
 	l_debug("");
 
-	if (!nl80211)
-		return false;
-
 	l_dbus_unregister_interface(dbus_get_bus(), IWD_WSC_INTERFACE);
-
 	device_watch_remove(device_watch);
-	nl80211 = 0;
 
 	return true;
 }

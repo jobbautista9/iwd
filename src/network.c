@@ -60,6 +60,7 @@ struct network {
 };
 
 static struct l_queue *networks = NULL;
+static size_t num_known_hidden_networks;
 
 static bool network_settings_load(struct network *network)
 {
@@ -138,7 +139,7 @@ bool network_seen(struct network *network, struct timespec *when)
 	return true;
 }
 
-bool network_connected(struct network *network)
+void network_connected(struct network *network)
 {
 	int err;
 	const char *strtype;
@@ -147,8 +148,6 @@ bool network_connected(struct network *network)
 	l_queue_push_head(networks, network->info);
 
 	strtype = security_to_str(network_get_security(network));
-	if (!strtype)
-		return false;
 
 	err = storage_network_touch(strtype, network->info->ssid);
 	switch (err) {
@@ -168,17 +167,16 @@ bool network_connected(struct network *network)
 					network->settings);
 		break;
 	default:
-		return false;
+		l_error("Error %i touching network config", err);
+		break;
 	}
 
 	err = storage_network_get_mtime(strtype, network->info->ssid,
 					&network->info->connected_time);
 	if (err < 0)
-		return false;
+		l_error("Error %i reading network timestamp", err);
 
 	network->info->is_known = true;
-
-	return true;
 }
 
 void network_disconnected(struct network *network)
@@ -255,6 +253,9 @@ bool network_rankmod(const struct network *network, double *rankmod)
 static void network_info_free(void *data)
 {
 	struct network_info *network = data;
+
+	if (network->is_hidden)
+		num_known_hidden_networks--;
 
 	l_free(network);
 }
@@ -344,6 +345,9 @@ struct l_queue *network_get_secrets(const struct network *network)
 bool network_set_psk(struct network *network, const uint8_t *psk)
 {
 	if (network->info->type != SECURITY_PSK)
+		return false;
+
+	if (!network_settings_load(network))
 		return false;
 
 	l_free(network->psk);
@@ -518,8 +522,7 @@ int network_autoconnect(struct network *network, struct scan_bss *bss)
 			goto close_settings;
 	}
 
-	device_connect_network(network->device, network, bss, NULL);
-	return 0;
+	return __device_connect_network(network->device, network, bss);
 
 close_settings:
 	network_settings_close(network);
@@ -985,6 +988,48 @@ static struct l_dbus_message *network_connect(struct l_dbus *dbus,
 	}
 }
 
+void network_connect_new_hidden_network(struct network *network,
+						struct l_dbus_message *message)
+{
+	struct device *device = network->device;
+	struct scan_bss *bss;
+	struct l_dbus_message *error;
+
+	l_debug("");
+
+	network_info_set_hidden(network);
+
+	bss = network_bss_select(network);
+	if (!bss) {
+		/* This should never happened for the hidden networks. */
+		error = dbus_error_not_supported(message);
+		goto reply_error;
+	}
+
+	network->settings = l_settings_new();
+	l_settings_set_bool(network->settings, "Settings", "Hidden", true);
+
+	switch (network_get_security(network)) {
+	case SECURITY_PSK:
+		error = network_connect_psk(network, bss, message);
+		break;
+	case SECURITY_NONE:
+		device_connect_network(device, network, bss, message);
+		return;
+	default:
+		error = dbus_error_not_supported(message);
+		break;
+	}
+
+	if (error)
+		goto reply_error;
+
+	return;
+
+reply_error:
+	dbus_pending_reply(&message, error);
+}
+
 static bool network_property_get_name(struct l_dbus *dbus,
 					struct l_dbus_message *message,
 					struct l_dbus_message_builder *builder,
@@ -1174,6 +1219,8 @@ void network_rank_update(struct network *network)
 bool network_info_add_known(const char *ssid, enum security security)
 {
 	struct network_info *network;
+	struct l_settings *settings;
+	bool is_hidden;
 	int err;
 
 	network = l_new(struct network_info, 1);
@@ -1188,6 +1235,16 @@ bool network_info_add_known(const char *ssid, enum security security)
 	}
 
 	network->is_known = true;
+
+	settings = storage_network_open(security_to_str(security), ssid);
+
+	if (l_settings_get_bool(settings, "Settings", "Hidden", &is_hidden))
+		network->is_hidden = is_hidden;
+
+	if (network->is_hidden)
+		num_known_hidden_networks++;
+
+	l_settings_free(settings);
 
 	l_queue_insert(networks, network, timespec_compare, NULL);
 
@@ -1240,4 +1297,39 @@ void network_info_foreach(network_info_foreach_func_t function,
 
 	for (entry = l_queue_get_entries(networks); entry; entry = entry->next)
 		function(entry->data, user_data);
+}
+
+const struct l_queue *network_info_get_known()
+{
+	return networks;
+}
+
+bool network_info_has_hidden(void)
+{
+	return num_known_hidden_networks ? true : false;
+}
+
+void network_info_set_hidden(struct network *network)
+{
+	if (network->info->is_hidden)
+		return;
+
+	network->info->is_hidden = true;
+	num_known_hidden_networks += 1;
+}
+
+bool network_info_is_hidden(struct network *network)
+{
+	return network->info->is_hidden;
+}
+
+const struct network_info *network_info_find(const char *ssid,
+						enum security security)
+{
+	struct network_info query;
+
+	query.type = security;
+	strcpy(query.ssid, ssid);
+
+	return l_queue_find(networks, network_info_match, &query);
 }

@@ -70,25 +70,19 @@ void __handshake_set_install_igtk_func(handshake_install_igtk_func_t func)
 	install_igtk = func;
 }
 
-struct handshake_state *handshake_state_new(uint32_t ifindex)
-{
-	struct handshake_state *s;
-
-	s = l_new(struct handshake_state, 1);
-
-	s->ifindex = ifindex;
-
-	return s;
-}
-
 void handshake_state_free(struct handshake_state *s)
 {
+	typeof(s->free) destroy = s->free;
+
 	l_free(s->ap_ie);
 	l_free(s->own_ie);
 	l_free(s->mde);
 	l_free(s->fte);
 
-	l_free(s);
+	memset(s, 0, sizeof(*s));
+
+	if (destroy)
+		destroy(s);
 }
 
 void handshake_state_set_supplicant_address(struct handshake_state *s,
@@ -193,11 +187,6 @@ bool handshake_state_set_own_wpa(struct handshake_state *s,
 	return handshake_state_setup_own_ciphers(s, &info);
 }
 
-void handshake_state_set_user_data(struct handshake_state *s, void *user_data)
-{
-	s->user_data = user_data;
-}
-
 void handshake_state_set_ssid(struct handshake_state *s, const uint8_t *ssid,
 				size_t ssid_len)
 {
@@ -231,11 +220,26 @@ void handshake_state_set_kh_ids(struct handshake_state *s,
 	memcpy(s->r1khid, r1khid, 6);
 }
 
+void handshake_state_set_event_func(struct handshake_state *s,
+					handshake_event_func_t func,
+					void *user_data)
+{
+	s->event_func = func;
+	s->user_data = user_data;
+}
+
 void handshake_state_new_snonce(struct handshake_state *s)
 {
 	get_nonce(s->snonce);
 
 	s->have_snonce = true;
+}
+
+void handshake_state_new_anonce(struct handshake_state *s)
+{
+	get_nonce(s->anonce);
+
+	s->have_anonce = true;
 }
 
 void handshake_state_set_anonce(struct handshake_state *s,
@@ -335,7 +339,9 @@ void handshake_state_install_ptk(struct handshake_state *s)
 		uint32_t cipher = ie_rsn_cipher_suite_to_cipher(
 							s->pairwise_cipher);
 
-		install_tk(s->ifindex, s->aa, ptk->tk, cipher, s->user_data);
+		handshake_event(s, HANDSHAKE_EVENT_SETTING_KEYS, NULL);
+
+		install_tk(s, ptk->tk, cipher);
 	}
 }
 
@@ -348,8 +354,8 @@ void handshake_state_install_gtk(struct handshake_state *s,
 		uint32_t cipher =
 			ie_rsn_cipher_suite_to_cipher(s->group_cipher);
 
-		install_gtk(s->ifindex, gtk_key_index, gtk, gtk_len,
-				rsc, rsc_len, cipher, s->user_data);
+		install_gtk(s, gtk_key_index, gtk, gtk_len,
+				rsc, rsc_len, cipher);
 	}
 }
 
@@ -363,8 +369,8 @@ void handshake_state_install_igtk(struct handshake_state *s,
 			ie_rsn_cipher_suite_to_cipher(
 						s->group_management_cipher);
 
-		install_igtk(s->ifindex, igtk_key_index, igtk, igtk_len,
-				ipn, 6, cipher, s->user_data);
+		install_igtk(s, igtk_key_index, igtk, igtk_len,
+				ipn, 6, cipher);
 	}
 }
 
@@ -620,4 +626,11 @@ bool handshake_decode_fte_key(struct handshake_state *s, const uint8_t *wrapped,
 			return false;
 
 	return true;
+}
+
+void handshake_event(struct handshake_state *hs,
+			enum handshake_event event, void *event_data)
+{
+	if (hs->event_func)
+		hs->event_func(hs, event, event_data, hs->user_data);
 }

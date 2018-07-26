@@ -31,6 +31,7 @@ struct device;
 enum device_event {
 	DEVICE_EVENT_INSERTED,
 	DEVICE_EVENT_REMOVED,
+	DEVICE_EVENT_MODE_CHANGED,
 };
 
 enum device_state {
@@ -40,8 +41,13 @@ enum device_state {
 	DEVICE_STATE_CONNECTING,	/* Connecting */
 	DEVICE_STATE_CONNECTED,
 	DEVICE_STATE_DISCONNECTING,
-	DEVICE_STATE_ROAMING,
-	DEVICE_STATE_AP,
+	DEVICE_STATE_ROAMING
+};
+
+enum device_mode {
+	DEVICE_MODE_STATION,
+	DEVICE_MODE_AP,
+	DEVICE_MODE_ADHOC,
 };
 
 typedef void (*device_watch_func_t)(struct device *device,
@@ -62,6 +68,7 @@ struct netdev *device_get_netdev(struct device *device);
 uint32_t device_get_ifindex(struct device *device);
 const uint8_t *device_get_address(struct device *device);
 enum device_state device_get_state(struct device *device);
+enum device_mode device_get_mode(struct device *device);
 
 uint32_t device_add_state_watch(struct device *device,
 					device_state_watch_func_t func,
@@ -74,6 +81,8 @@ struct network *device_network_find(struct device *device, const char *ssid,
 					enum security security);
 
 bool device_set_autoconnect(struct device *device, bool autoconnect);
+int __device_connect_network(struct device *device, struct network *network,
+				struct scan_bss *bss);
 void device_connect_network(struct device *device, struct network *network,
 				struct scan_bss *bss,
 				struct l_dbus_message *message);

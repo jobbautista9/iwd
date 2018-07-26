@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2013-2015  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2017  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,8 +20,7 @@
  *
  */
 
-#include <stdbool.h>
-#include <stddef.h>
+struct device;
 
-bool wsc_init(struct l_genl_family *in);
-bool wsc_exit();
+bool adhoc_init(void);
+void adhoc_exit(void);

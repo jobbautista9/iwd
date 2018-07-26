@@ -26,6 +26,7 @@
 
 #include <unistd.h>
 #include <stdio.h>
+#include <errno.h>
 
 #include <ell/ell.h>
 #include <ell/dbus-private.h>
@@ -172,6 +173,60 @@ struct l_dbus_message *dbus_error_not_implemented(struct l_dbus_message *msg)
 					"Not implemented");
 }
 
+struct l_dbus_message *dbus_error_service_set_overlap(
+						struct l_dbus_message *msg)
+{
+	return l_dbus_message_new_error(msg, IWD_SERVICE ".ServiceSetOverlap",
+					"Service set overlap");
+}
+
+struct l_dbus_message *dbus_error_already_provisioned(
+						struct l_dbus_message *msg)
+{
+	return l_dbus_message_new_error(msg, IWD_SERVICE ".AlreadyProvisioned",
+					"Already provisioned");
+}
+
+struct l_dbus_message *dbus_error_not_hidden(struct l_dbus_message *msg)
+{
+	return l_dbus_message_new_error(msg, IWD_SERVICE ".NotHidden",
+					"Not hidden");
+}
+
+struct l_dbus_message *dbus_error_from_errno(int err,
+						struct l_dbus_message *msg)
+{
+	switch (err) {
+	case -EBUSY:
+		return dbus_error_busy(msg);
+	case -ECANCELED:
+		return dbus_error_aborted(msg);
+	case -ERFKILL:
+		return dbus_error_not_available(msg);
+	case -EINVAL:
+		return dbus_error_invalid_args(msg);
+	case -EBADMSG:
+		return dbus_error_invalid_format(msg);
+	case -EEXIST:
+		return dbus_error_already_exists(msg);
+	case -ENOENT:
+		return dbus_error_not_found(msg);
+	case -ENOTSUP:
+		return dbus_error_not_supported(msg);
+	/* TODO: no_agent */
+	case -ENOKEY:
+		return dbus_error_not_configured(msg);
+	case -ENOTCONN:
+		return dbus_error_not_connected(msg);
+	case -ENOSYS:
+		return dbus_error_not_implemented(msg);
+	default:
+		break;
+	}
+
+	return dbus_error_failed(msg);
+}
+
 void dbus_pending_reply(struct l_dbus_message **msg,
 				struct l_dbus_message *reply)
 {
@@ -214,6 +269,8 @@ struct l_dbus *dbus_get_bus(void)
 bool dbus_init(bool enable_debug)
 {
 	g_dbus = l_dbus_new_default(L_DBUS_SYSTEM_BUS);
+	if (!g_dbus)
+		return false;
 
 	if (enable_debug)
 		l_dbus_set_debug(g_dbus, do_debug, "[DBUS] ", NULL);
