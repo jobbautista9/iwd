@@ -23,9 +23,10 @@ build package:
     - eatmydata apt-get build-dep -y .
     - eatmydata apt-get install git-buildpackage -y
     - gbp pull --ignore-branch
-    - ! git rev-parse --verify 'pristine-tar' > /dev/null 2>&1 && \
-      git rev-parse --verify 'origin/pristine-tar' > /dev/null 2>&1 && \
-      git fetch origin pristine-tar:pristine-tar
+    - if ! git rev-parse --verify 'pristine-tar' > /dev/null 2>&1 ; then
+      git rev-parse --verify 'origin/pristine-tar' > /dev/null 2>&1 &&
+      git fetch origin pristine-tar:pristine-tar ;
+      fi
     - gbp buildpackage --git-ignore-branch --git-export-dir=${WORKING_DIR} -us -uc
 
 run autopkgtest:
