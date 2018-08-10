@@ -41,6 +41,7 @@
 #include "src/netdev.h"
 #include "src/dbus.h"
 #include "src/network.h"
+#include "src/knownnetworks.h"
 #include "src/device.h"
 #include "src/watchlist.h"
 #include "src/ap.h"
@@ -306,9 +307,6 @@ static bool process_bss(struct device *device, struct scan_bss *bss,
 		l_debug("Added new Network \"%s\" security %s",
 			network_get_ssid(network), security_to_str(security));
 	}
-
-	if (network_bss_list_isempty(network))
-		network_seen(network, timestamp);
 
 	network_bss_add(network, bss);
 
@@ -641,6 +639,9 @@ static enum ie_rsn_akm_suite device_select_akm_suite(struct network *network,
 		if (info->akm_suites & IE_RSN_AKM_SUITE_8021X)
 			return IE_RSN_AKM_SUITE_8021X;
 	} else if (security == SECURITY_PSK) {
+		if (info->akm_suites & IE_RSN_AKM_SUITE_SAE_SHA256)
+			return IE_RSN_AKM_SUITE_SAE_SHA256;
+
 		if ((info->akm_suites & IE_RSN_AKM_SUITE_FT_USING_PSK) &&
 				bss->rsne && bss->mde_present)
 			return IE_RSN_AKM_SUITE_FT_USING_PSK;
@@ -1177,8 +1178,6 @@ next:
 		goto fail_free_bss;
 
 	clock_gettime(CLOCK_REALTIME, &now);
-
-	network_seen(network, &now);
 
 	/* See if we have anywhere to roam to */
 	if (!best_bss || bss_match(best_bss, device->connected_bss))
@@ -1798,7 +1797,7 @@ static struct l_dbus_message *device_scan(struct l_dbus *dbus,
 	 */
 	if (!device->connected_bss &&
 			!(device->seen_hidden_networks &&
-						network_info_has_hidden())) {
+				known_networks_has_hidden())) {
 		if (!scan_passive(device->index, device_scan_triggered,
 						new_scan_results, device, NULL))
 			return dbus_error_failed(message);
@@ -2081,17 +2080,6 @@ static void device_prepare_adhoc_ap_mode(struct device *device)
 	device->networks_sorted = l_queue_new();
 }
 
-static bool device_network_is_known(const char *ssid, enum security security)
-{
-	const struct network_info *network_info =
-					network_info_find(ssid, security);
-
-	if (network_info && network_info->is_known)
-		return true;
-
-	return false;
-}
-
 static void device_hidden_network_scan_triggered(int err, void *user_data)
 {
 	struct device *device = user_data;
@@ -2201,8 +2189,8 @@ static struct l_dbus_message *device_connect_hidden_network(struct l_dbus *dbus,
 	if (strlen(ssid) > 32)
 		return dbus_error_invalid_args(message);
 
-	if (device_network_is_known(ssid, SECURITY_PSK) ||
-				device_network_is_known(ssid, SECURITY_NONE))
+	if (known_networks_find(ssid, SECURITY_PSK) ||
+			known_networks_find(ssid, SECURITY_NONE))
 		return dbus_error_already_provisioned(message);
 
 	if (device_network_find(device, ssid, SECURITY_PSK) ||

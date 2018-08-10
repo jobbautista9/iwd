@@ -23,10 +23,13 @@
 #include <stdio.h>
 
 struct proxy_interface;
+struct property_value_options;
 
 #define IWD_ADAPTER_INTERFACE          "net.connman.iwd.Adapter"
+#define IWD_ACCESS_POINT_INTERFACE     "net.connman.iwd.AccessPoint"
+#define IWD_AD_HOC_INTERFACE           "net.connman.iwd.AdHoc"
 #define IWD_DEVICE_INTERFACE           "net.connman.iwd.Device"
-#define IWD_KNOWN_NETWORKS_INTREFACE   "net.connman.iwd.KnownNetworks"
+#define IWD_KNOWN_NETWORK_INTREFACE    "net.connman.iwd.KnownNetwork"
 #define IWD_NETWORK_INTERFACE          "net.connman.iwd.Network"
 #define IWD_WSC_INTERFACE              "net.connman.iwd.WiFiSimpleConfiguration"
 
@@ -35,9 +38,12 @@ typedef bool (*proxy_property_match_func_t) (const void *a, const void *b);
 struct proxy_interface_property {
 	const char *name;
 	const char *type;
-	void (*set)(void *data, struct l_dbus_message_iter *variant);
+	void (*update)(void *data, struct l_dbus_message_iter *variant);
 	const char *(*tostr)(const void *data);
 	const bool is_read_write;
+	bool (*append)(struct l_dbus_message_builder *builder,
+							const char *value_str);
+	const struct property_value_options *options;
 };
 
 struct proxy_interface_type_ops {
@@ -56,6 +62,13 @@ struct proxy_interface_type {
 	const struct proxy_interface_property *properties;
 	const struct proxy_interface_type_ops *ops;
 };
+
+char *proxy_property_completion(
+			const struct proxy_interface_property *properties,
+			const char *text, int state);
+
+bool proxy_property_set(const struct proxy_interface *proxy, const char *name,
+			const char *value_str, l_dbus_message_func_t callback);
 
 struct proxy_interface *proxy_interface_find(const char *interface,
 							const char *path);

@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2017-2018  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -32,24 +32,32 @@
 #include "display.h"
 
 static struct l_queue *command_families;
+static int exit_status;
+static bool interactive_mode;
+static struct command_noninteractive {
+	char **argv;
+	int argc;
+} command_noninteractive;
 
-static enum cmd_status cmd_version(const char *entity, char *arg)
+static enum cmd_status cmd_version(const char *entity,
+						char **argv, int argc)
 {
 	display("IWD version %s\n", VERSION);
 
-	return CMD_STATUS_OK;
+	return CMD_STATUS_DONE;
 }
 
-static enum cmd_status cmd_quit(const char *entity, char *arg)
+static enum cmd_status cmd_quit(const char *entity,
+					char **argv, int argc)
 {
 	display_quit();
 
 	l_main_quit();
 
-	return CMD_STATUS_OK;
+	return CMD_STATUS_DONE;
 }
 
-static const struct command command_list[] = {
+static const struct command misc_commands[] = {
 	{ NULL, "version", NULL, cmd_version, "Display version" },
 	{ NULL, "quit",    NULL, cmd_quit,    "Quit program" },
 	{ NULL, "exit",    NULL, cmd_quit },
@@ -81,7 +89,7 @@ static char *cmd_generator(const char *text, int state)
 		return l_strdup(family->name);
 	}
 
-	while ((cmd = command_list[index].cmd)) {
+	while ((cmd = misc_commands[index].cmd)) {
 		index++;
 
 		if (strncmp(cmd, text, len))
@@ -128,6 +136,38 @@ static bool cmd_completion_cmd_has_arg(const char *cmd,
 	l_strfreev(matches);
 
 	return status;
+}
+
+static bool find_next_token(int *i, const char *token, int token_len)
+{
+	char *line = rl_line_buffer;
+
+	while (*i && line[*i] == ' ')
+		(*i)--;
+
+	while (*i && line[*i] != ' ')
+		(*i)--;
+
+	return !strncmp(line + (line[*i] == ' ' ? *i + 1 : *i),
+							token, token_len);
+}
+
+bool command_line_find_token(const char *token, uint8_t num_to_inspect)
+{
+	int i = rl_point - 1;
+	int len = strlen(token);
+
+	if (!len)
+		return false;
+
+	while (i && num_to_inspect) {
+		if (find_next_token(&i, token, len))
+			return true;
+
+		num_to_inspect--;
+	}
+
+	return false;
 }
 
 static char **cmd_completion_match_entity_cmd(const char *cmd, const char *text,
@@ -291,16 +331,26 @@ char *command_entity_arg_completion(const char *text, int state,
 }
 
 static void execute_cmd(const char *family, const char *entity,
-					const struct command *cmd, char *args)
+					const struct command *cmd,
+					char **argv, int argc)
 {
 	enum cmd_status status;
 
-	display_refresh_set_cmd(family, entity, cmd, args);
+	display_refresh_set_cmd(family, entity, cmd, argv, argc);
 
-	status = cmd->function(entity, args);
+	status = cmd->function(entity, argv, argc);
 
-	if (status != CMD_STATUS_OK)
+	if (status != CMD_STATUS_TRIGGERED && status != CMD_STATUS_DONE)
 		goto error;
+
+	if (status == CMD_STATUS_DONE && !interactive_mode) {
+		l_main_quit();
+
+		return;
+	}
+
+	if (!interactive_mode)
+		return;
 
 	if (cmd->refreshable)
 		display_refresh_timeout_set();
@@ -324,68 +374,78 @@ error:
 		break;
 
 	case CMD_STATUS_FAILED:
-		l_main_quit();
-		break;
+		goto failure;
 
 	default:
 		l_error("Unknown command status.");
 	}
+
+	if (interactive_mode)
+		return;
+
+failure:
+	exit_status = EXIT_FAILURE;
+
+	l_main_quit();
 }
 
-static bool match_cmd(const char *family, const char *entity, const char *cmd,
-				char *args, const struct command *command_list)
+static bool match_cmd(const char *family, const char *param,
+				char **argv, int argc,
+				const struct command *command_list)
 {
 	size_t i;
 
 	for (i = 0; command_list[i].cmd; i++) {
+		const char *entity;
+		const char *cmd;
+		int offset;
+
+		if  (command_list[i].entity) {
+			if (argc < 1)
+				continue;
+
+			entity = param;
+			cmd = argv[0];
+			offset = 1;
+		} else {
+			entity = NULL;
+			cmd = param;
+			offset = 0;
+		}
+
 		if (strcmp(command_list[i].cmd, cmd))
 			continue;
 
 		if (!command_list[i].function)
-			goto nomatch;
+			return false;
 
-		execute_cmd(family, entity, &command_list[i], args);
+		execute_cmd(family, entity, &command_list[i],
+				argv + offset, argc - offset);
 
 		return true;
 	}
 
-nomatch:
 	return false;
 }
 
-static bool match_cmd_family(const char *cmd_family, char *arg)
+static bool match_cmd_family(char **argv, int argc)
 {
 	const struct l_queue_entry *entry;
-	const char *arg1;
-	const char *arg2;
+
+	if (argc < 2)
+		return false;
 
 	for (entry = l_queue_get_entries(command_families); entry;
 							entry = entry->next) {
 		const struct command_family *family = entry->data;
 
-		if (strcmp(family->name, cmd_family))
+		if (strcmp(family->name, argv[0]))
 			continue;
 
-		arg1 = strtok_r(NULL, " ", &arg);
-		if (!arg1)
-			goto nomatch;
-
-		if (match_cmd(family->name, NULL, arg1, arg,
-							family->command_list))
-			return true;
-
-		arg2 = strtok_r(NULL, " ", &arg);
-		if (!arg2)
-			goto nomatch;
-
-		if (!match_cmd(family->name, arg1, arg2, arg,
-							family->command_list))
-			goto nomatch;
-
-		return true;
+		return match_cmd(family->name, argv[1], argv + 2, argc - 2,
+					family->command_list);
 	}
 
-nomatch:
 	return false;
 }
 
@@ -415,36 +475,74 @@ static void list_cmd_families(void)
 	}
 }
 
-void command_process_prompt(char *prompt)
+static bool command_match_misc_commands(char **argv, int argc)
 {
-	const char *cmd;
-	char *arg = NULL;
+	if (match_cmd(NULL, argv[0], argv + 1, argc - 1, misc_commands))
+		return true;
 
-	cmd = strtok_r(prompt, " ", &arg);
-	if (!cmd)
-		return;
-
-	if (match_cmd_family(cmd, arg))
-		return;
-
-	display_refresh_reset();
-
-	if (match_cmd(NULL, NULL, cmd, arg, command_list))
-		return;
-
-	if (strcmp(cmd, "help")) {
-		display("Invalid command\n");
-		return;
-	}
+	if (strcmp(argv[0], "help"))
+		return false;
 
 	display_table_header("Available commands", MARGIN "%-*s%-*s",
 					50, "Commands", 28, "Description");
 
 	list_cmd_families();
 
+	if (!interactive_mode)
+		return true;
+
 	display("\nMiscellaneous:\n");
 
-	list_commands(NULL, command_list);
+	list_commands(NULL, misc_commands);
+
+	return true;
+}
+
+void command_process_prompt(char **argv, int argc)
+{
+	if (argc == 0)
+		return;
+
+	if (match_cmd_family(argv, argc))
+		return;
+
+	if (!interactive_mode) {
+		display_error("Invalid command\n");
+		exit_status = EXIT_FAILURE;
+		l_main_quit();
+		return;
+	}
+
+	display_refresh_reset();
+
+	if (command_match_misc_commands(argv, argc))
+		return;
+
+	display_error("Invalid command\n");
+}
+
+void command_noninteractive_trigger(void)
+{
+	if (!command_noninteractive.argc)
+		return;
+
+	command_process_prompt(command_noninteractive.argv,
+						command_noninteractive.argc);
+}
+
+bool command_is_interactive_mode(void)
+{
+	return interactive_mode;
+}
+
+void command_set_exit_status(int status)
+{
+	exit_status = status;
+}
+
+int command_get_exit_status(void)
+{
+	return exit_status;
 }
 
 void command_family_register(const struct command_family *family)
@@ -460,7 +558,7 @@ void command_family_unregister(const struct command_family *family)
 extern struct command_family_desc __start___command[];
 extern struct command_family_desc __stop___command[];
 
-void command_init(void)
+bool command_init(char **argv, int argc)
 {
 	struct command_family_desc *desc;
 
@@ -472,6 +570,16 @@ void command_init(void)
 
 		desc->init();
 	}
+
+	if (argc < 2) {
+		interactive_mode = true;
+		return true;
+	}
+
+	command_noninteractive.argv = argv + 1;
+	command_noninteractive.argc = argc - 1;
+
+	return false;
 }
 
 void command_exit(void)

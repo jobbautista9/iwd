@@ -23,7 +23,8 @@
 typedef char *(*command_completion_func_t) (const char *text, int state);
 
 enum cmd_status {
-	CMD_STATUS_OK,
+	CMD_STATUS_TRIGGERED,
+	CMD_STATUS_DONE,
 	CMD_STATUS_INVALID_ARGS,
 	CMD_STATUS_INVALID_VALUE,
 	CMD_STATUS_UNSUPPORTED,
@@ -34,7 +35,8 @@ struct command {
 	const char *entity;
 	const char *cmd;
 	const char *arg;
-	enum cmd_status (*function)(const char *entity, char *arg);
+	enum cmd_status (*function)(const char *entity,
+						char **argv, int argc);
 	const char *desc;
 	const bool refreshable;
 	command_completion_func_t completion;
@@ -49,11 +51,17 @@ struct command_family {
 	void (*set_default_entity)(const char *entity);
 };
 
+bool command_line_find_token(const char *token, uint8_t num_to_inspect);
 char **command_completion(const char *text, int start, int end);
 char *command_entity_arg_completion(const char *text, int state,
 					const struct command *command_list);
 
-void command_process_prompt(char *prompt);
+void command_process_prompt(char **argv, int argc);
+
+void command_noninteractive_trigger(void);
+bool command_is_interactive_mode(void);
+int command_get_exit_status(void);
+void command_set_exit_status(int status);
 
 void command_family_register(const struct command_family *family);
 void command_family_unregister(const struct command_family *family);
@@ -70,5 +78,5 @@ struct command_family_desc {
 			#name, init, exit				\
 		};							\
 
-void command_init(void);
+bool command_init(char **argv, int argc);
 void command_exit(void);

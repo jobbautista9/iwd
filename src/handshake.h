@@ -93,6 +93,7 @@ struct handshake_state {
 	uint8_t pmk_r0_name[16];
 	uint8_t pmk_r1[32];
 	uint8_t pmk_r1_name[16];
+	uint8_t pmkid[16];
 	struct l_settings *settings_8021x;
 	bool have_snonce : 1;
 	bool ptk_complete : 1;
@@ -100,8 +101,10 @@ struct handshake_state {
 	bool have_pmk : 1;
 	bool mfp : 1;
 	bool have_anonce : 1;
+	bool have_pmkid : 1;
 	uint8_t ssid[32];
 	size_t ssid_len;
+	char *passphrase;
 	uint8_t r0khid[48];
 	size_t r0khid_len;
 	uint8_t r1khid[6];
@@ -144,12 +147,14 @@ void handshake_state_set_kh_ids(struct handshake_state *s,
 void handshake_state_set_event_func(struct handshake_state *s,
 					handshake_event_func_t func,
 					void *user_data);
+void handshake_state_set_passphrase(struct handshake_state *s,
+					const char *passphrase);
 
 void handshake_state_new_snonce(struct handshake_state *s);
 void handshake_state_new_anonce(struct handshake_state *s);
 void handshake_state_set_anonce(struct handshake_state *s,
 				const uint8_t *anonce);
-
+void handshake_state_set_pmkid(struct handshake_state *s, const uint8_t *pmkid);
 bool handshake_state_derive_ptk(struct handshake_state *s);
 const struct crypto_ptk *handshake_state_get_ptk(struct handshake_state *s);
 void handshake_state_install_ptk(struct handshake_state *s);

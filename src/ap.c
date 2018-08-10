@@ -93,8 +93,11 @@ static void ap_sta_free(void *data)
 	if (sta->assoc_resp_cmd_id)
 		l_genl_family_cancel(nl80211, sta->assoc_resp_cmd_id);
 
-	eapol_sm_free(sta->sm);
-	handshake_state_free(sta->hs);
+	if (sta->sm)
+		eapol_sm_free(sta->sm);
+
+	if (sta->hs)
+		handshake_state_free(sta->hs);
 
 	l_free(sta);
 }
@@ -133,6 +136,9 @@ static void ap_reset(struct ap_state *ap)
 		l_uintset_free(ap->rates);
 
 	ap->started = false;
+
+	l_dbus_property_changed(dbus_get_bus(), device_get_path(ap->device),
+						IWD_AP_INTERFACE, "Started");
 }
 
 static void ap_free(void *data)
@@ -163,7 +169,7 @@ static bool ap_sta_match_addr(const void *a, const void *b)
 static void ap_remove_sta(struct sta_state *sta)
 {
 	if (!l_queue_remove(sta->ap->sta_states, sta)) {
-		l_error("tried to remove station that doesnt exist");
+		l_error("tried to remove station that doesn't exist");
 		return;
 	}
 
@@ -535,7 +541,7 @@ static void ap_fail_assoc_resp_cb(struct l_genl_msg *msg, void *user_data)
 		l_error("AP (Re)Association Response with an error status not "
 			"sent or not ACKed: %i", l_genl_msg_get_error(msg));
 	else
-		l_info("AP (Re)Association Response with an errror status "
+		l_info("AP (Re)Association Response with an error status "
 			"delivered OK");
 }
 
@@ -1156,6 +1162,9 @@ static void ap_start_cb(struct l_genl_msg *msg, void *user_data)
 			l_dbus_message_new_method_return(ap->pending));
 
 	ap->started = true;
+
+	l_dbus_property_changed(dbus_get_bus(), device_get_path(ap->device),
+						IWD_AP_INTERFACE, "Started");
 }
 
 static struct l_genl_msg *ap_build_cmd_start_ap(struct ap_state *ap)
@@ -1406,11 +1415,27 @@ static struct l_dbus_message *ap_dbus_stop(struct l_dbus *dbus,
 	return NULL;
 }
 
+static bool ap_dbus_property_get_started(struct l_dbus *dbus,
+					struct l_dbus_message *message,
+					struct l_dbus_message_builder *builder,
+					void *user_data)
+{
+	struct ap_state *ap = user_data;
+	bool started = ap->started;
+
+	l_dbus_message_builder_append_basic(builder, 'b', &started);
+
+	return true;
+}
+
 static void ap_setup_interface(struct l_dbus_interface *interface)
 {
 	l_dbus_interface_method(interface, "Start", 0, ap_dbus_start, "",
 			"ss", "ssid", "wpa2_psk");
 	l_dbus_interface_method(interface, "Stop", 0, ap_dbus_stop, "", "");
+
+	l_dbus_interface_property(interface, "Started", 0, "b",
+					ap_dbus_property_get_started, NULL);
 }
 
 static void ap_destroy_interface(void *user_data)

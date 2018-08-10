@@ -122,6 +122,9 @@ src_iwd_DEPENDENCIES += src/iwd.service
 
 systemd_unitdir = @SYSTEMD_UNITDIR@
 systemd_unit_DATA = src/iwd.service
+
+dbus_busdir = @DBUS_BUSDIR@
+dbus_bus_DATA = src/net.connman.iwd.service
 endif
 
 if CLIENT
@@ -131,12 +134,15 @@ client_iwctl_SOURCES = client/main.c \
 			client/adapter.c \
 			client/agent.h client/agent.c \
 			client/agent-manager.h client/agent-manager.c \
+			client/ad-hoc.c \
+			client/ap.c \
 			client/command.h client/command.c \
 			client/dbus-proxy.h client/dbus-proxy.c \
 			client/device.h client/device.c \
 			client/display.h client/display.c \
 			client/known-networks.c \
 			client/network.h client/network.c \
+			client/properties.h client/properties.c \
 			client/wsc.c
 client_iwctl_LDADD = ell/libell-internal.la -lreadline
 endif
@@ -296,7 +302,8 @@ unit_test_client_SOURCES = unit/test-client.c \
 				client/command.h client/command.c \
 				client/dbus-proxy.h client/dbus-proxy.c \
 				client/display.h client/display.c \
-				client/network.h client/network.c
+				client/network.h client/network.c \
+				client/properties.h client/properties.c
 unit_test_client_LDADD = ell/libell-internal.la -lreadline
 
 unit_test_ecc_SOURCES = unit/test-ecc.c src/ecc.c src/ecc.h
@@ -310,7 +317,7 @@ if BUILD_DOCS
 dist_man_MANS = $(manual_pages)
 endif
 
-EXTRA_DIST = src/genbuiltin src/iwd.service.in \
+EXTRA_DIST = src/genbuiltin src/iwd.service.in src/net.connman.iwd.service \
 			doc/main.conf $(manual_pages:.1=.txt)
 
 AM_CFLAGS = -fvisibility=hidden

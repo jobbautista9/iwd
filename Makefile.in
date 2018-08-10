@@ -147,8 +147,8 @@ am__v_lt_1 =
 @CLIENT_TRUE@am__EXEEXT_1 = client/iwctl$(EXEEXT)
 @MONITOR_TRUE@am__EXEEXT_2 = monitor/iwmon$(EXEEXT)
 am__installdirs = "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libexecdir)" \
-	"$(DESTDIR)$(man1dir)" "$(DESTDIR)$(dbus_datadir)" \
-	"$(DESTDIR)$(systemd_unitdir)"
+	"$(DESTDIR)$(man1dir)" "$(DESTDIR)$(dbus_busdir)" \
+	"$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_unitdir)"
 am__EXEEXT_3 = unit/test-cmac-aes$(EXEEXT) unit/test-hmac-md5$(EXEEXT) \
 	unit/test-hmac-sha1$(EXEEXT) unit/test-hmac-sha256$(EXEEXT) \
 	unit/test-prf-sha1$(EXEEXT) unit/test-kdf-sha256$(EXEEXT) \
@@ -163,19 +163,22 @@ am__EXEEXT_3 = unit/test-cmac-aes$(EXEEXT) unit/test-hmac-md5$(EXEEXT) \
 PROGRAMS = $(bin_PROGRAMS) $(libexec_PROGRAMS) $(noinst_PROGRAMS)
 am__client_iwctl_SOURCES_DIST = client/main.c client/adapter.c \
 	client/agent.h client/agent.c client/agent-manager.h \
-	client/agent-manager.c client/command.h client/command.c \
-	client/dbus-proxy.h client/dbus-proxy.c client/device.h \
-	client/device.c client/display.h client/display.c \
-	client/known-networks.c client/network.h client/network.c \
-	client/wsc.c
+	client/agent-manager.c client/ad-hoc.c client/ap.c \
+	client/command.h client/command.c client/dbus-proxy.h \
+	client/dbus-proxy.c client/device.h client/device.c \
+	client/display.h client/display.c client/known-networks.c \
+	client/network.h client/network.c client/properties.h \
+	client/properties.c client/wsc.c
 @CLIENT_TRUE@am_client_iwctl_OBJECTS = client/main.$(OBJEXT) \
 @CLIENT_TRUE@	client/adapter.$(OBJEXT) client/agent.$(OBJEXT) \
 @CLIENT_TRUE@	client/agent-manager.$(OBJEXT) \
+@CLIENT_TRUE@	client/ad-hoc.$(OBJEXT) client/ap.$(OBJEXT) \
 @CLIENT_TRUE@	client/command.$(OBJEXT) \
 @CLIENT_TRUE@	client/dbus-proxy.$(OBJEXT) \
 @CLIENT_TRUE@	client/device.$(OBJEXT) client/display.$(OBJEXT) \
 @CLIENT_TRUE@	client/known-networks.$(OBJEXT) \
-@CLIENT_TRUE@	client/network.$(OBJEXT) client/wsc.$(OBJEXT)
+@CLIENT_TRUE@	client/network.$(OBJEXT) \
+@CLIENT_TRUE@	client/properties.$(OBJEXT) client/wsc.$(OBJEXT)
 client_iwctl_OBJECTS = $(am_client_iwctl_OBJECTS)
 @CLIENT_TRUE@client_iwctl_DEPENDENCIES = ell/libell-internal.la
 am__monitor_iwmon_SOURCES_DIST = monitor/main.c linux/nl80211.h \
@@ -251,7 +254,7 @@ am_unit_test_client_OBJECTS = unit/test-client.$(OBJEXT) \
 	client/adapter.$(OBJEXT) client/agent.$(OBJEXT) \
 	client/agent-manager.$(OBJEXT) client/command.$(OBJEXT) \
 	client/dbus-proxy.$(OBJEXT) client/display.$(OBJEXT) \
-	client/network.$(OBJEXT)
+	client/network.$(OBJEXT) client/properties.$(OBJEXT)
 unit_test_client_OBJECTS = $(am_unit_test_client_OBJECTS)
 unit_test_client_DEPENDENCIES = ell/libell-internal.la
 am_unit_test_cmac_aes_OBJECTS = unit/test-cmac-aes.$(OBJEXT) \
@@ -424,7 +427,8 @@ man1dir = $(mandir)/man1
 NROFF = nroff
 MANS = $(dist_man_MANS)
 am__dist_dbus_data_DATA_DIST = src/iwd-dbus.conf
-DATA = $(dist_dbus_data_DATA) $(noinst_DATA) $(systemd_unit_DATA)
+DATA = $(dbus_bus_DATA) $(dist_dbus_data_DATA) $(noinst_DATA) \
+	$(systemd_unit_DATA)
 am__tagged_files = $(HEADERS) $(SOURCES) $(TAGS_FILES) \
 	$(LISP)config.h.in
 # Read a list of newline-separated strings from the standard input,
@@ -655,6 +659,7 @@ CFLAGS = @CFLAGS@
 CPP = @CPP@
 CPPFLAGS = @CPPFLAGS@
 CYGPATH_W = @CYGPATH_W@
+DBUS_BUSDIR = @DBUS_BUSDIR@
 DBUS_DATADIR = @DBUS_DATADIR@
 DEFS = @DEFS@
 DEPDIR = @DEPDIR@
@@ -867,16 +872,21 @@ src_iwd_LDADD = ell/libell-internal.la -ldl
 src_iwd_DEPENDENCIES = ell/libell-internal.la $(am__append_1)
 @SYSTEMD_SERVICE_TRUE@systemd_unitdir = @SYSTEMD_UNITDIR@
 @SYSTEMD_SERVICE_TRUE@systemd_unit_DATA = src/iwd.service
+@SYSTEMD_SERVICE_TRUE@dbus_busdir = @DBUS_BUSDIR@
+@SYSTEMD_SERVICE_TRUE@dbus_bus_DATA = src/net.connman.iwd.service
 @CLIENT_TRUE@client_iwctl_SOURCES = client/main.c \
 @CLIENT_TRUE@			client/adapter.c \
 @CLIENT_TRUE@			client/agent.h client/agent.c \
 @CLIENT_TRUE@			client/agent-manager.h client/agent-manager.c \
+@CLIENT_TRUE@			client/ad-hoc.c \
+@CLIENT_TRUE@			client/ap.c \
 @CLIENT_TRUE@			client/command.h client/command.c \
 @CLIENT_TRUE@			client/dbus-proxy.h client/dbus-proxy.c \
 @CLIENT_TRUE@			client/device.h client/device.c \
 @CLIENT_TRUE@			client/display.h client/display.c \
 @CLIENT_TRUE@			client/known-networks.c \
 @CLIENT_TRUE@			client/network.h client/network.c \
+@CLIENT_TRUE@			client/properties.h client/properties.c \
 @CLIENT_TRUE@			client/wsc.c
 
 @CLIENT_TRUE@client_iwctl_LDADD = ell/libell-internal.la -lreadline
@@ -1009,14 +1019,15 @@ unit_test_client_SOURCES = unit/test-client.c \
 				client/command.h client/command.c \
 				client/dbus-proxy.h client/dbus-proxy.c \
 				client/display.h client/display.c \
-				client/network.h client/network.c
+				client/network.h client/network.c \
+				client/properties.h client/properties.c
 
 unit_test_client_LDADD = ell/libell-internal.la -lreadline
 unit_test_ecc_SOURCES = unit/test-ecc.c src/ecc.c src/ecc.h
 unit_test_ecc_LDADD = ell/libell-internal.la
 manual_pages = doc/iwmon.1
 @BUILD_DOCS_TRUE@dist_man_MANS = $(manual_pages)
-EXTRA_DIST = src/genbuiltin src/iwd.service.in \
+EXTRA_DIST = src/genbuiltin src/iwd.service.in src/net.connman.iwd.service \
 			doc/main.conf $(manual_pages:.1=.txt)
 
 AM_CFLAGS = -fvisibility=hidden
@@ -1270,6 +1281,10 @@ client/agent.$(OBJEXT): client/$(am__dirstamp) \
 	client/$(DEPDIR)/$(am__dirstamp)
 client/agent-manager.$(OBJEXT): client/$(am__dirstamp) \
 	client/$(DEPDIR)/$(am__dirstamp)
+client/ad-hoc.$(OBJEXT): client/$(am__dirstamp) \
+	client/$(DEPDIR)/$(am__dirstamp)
+client/ap.$(OBJEXT): client/$(am__dirstamp) \
+	client/$(DEPDIR)/$(am__dirstamp)
 client/command.$(OBJEXT): client/$(am__dirstamp) \
 	client/$(DEPDIR)/$(am__dirstamp)
 client/dbus-proxy.$(OBJEXT): client/$(am__dirstamp) \
@@ -1281,6 +1296,8 @@ client/display.$(OBJEXT): client/$(am__dirstamp) \
 client/known-networks.$(OBJEXT): client/$(am__dirstamp) \
 	client/$(DEPDIR)/$(am__dirstamp)
 client/network.$(OBJEXT): client/$(am__dirstamp) \
+	client/$(DEPDIR)/$(am__dirstamp)
+client/properties.$(OBJEXT): client/$(am__dirstamp) \
 	client/$(DEPDIR)/$(am__dirstamp)
 client/wsc.$(OBJEXT): client/$(am__dirstamp) \
 	client/$(DEPDIR)/$(am__dirstamp)
@@ -1539,9 +1556,11 @@ mostlyclean-compile:
 distclean-compile:
 	-rm -f *.tab.c
 
+@AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/ad-hoc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/adapter.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/agent-manager.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/agent.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/ap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/command.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/dbus-proxy.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/device.Po@am__quote@
@@ -1549,6 +1568,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/known-networks.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/main.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/network.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/properties.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/wsc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/base64.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/checksum.Plo@am__quote@
@@ -1741,6 +1761,27 @@ uninstall-man1:
 	} | sed -e 's,.*/,,;h;s,.*\.,,;s,^[^1][0-9a-z]*$$,1,;x' \
 	      -e 's,\.[0-9a-z]*$$,,;$(transform);G;s,\n,.,'`; \
 	dir='$(DESTDIR)$(man1dir)'; $(am__uninstall_files_from_dir)
+install-dbus_busDATA: $(dbus_bus_DATA)
+	@$(NORMAL_INSTALL)
+	@list='$(dbus_bus_DATA)'; test -n "$(dbus_busdir)" || list=; \
+	if test -n "$$list"; then \
+	  echo " $(MKDIR_P) '$(DESTDIR)$(dbus_busdir)'"; \
+	  $(MKDIR_P) "$(DESTDIR)$(dbus_busdir)" || exit 1; \
+	fi; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  echo "$$d$$p"; \
+	done | $(am__base_list) | \
+	while read files; do \
+	  echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(dbus_busdir)'"; \
+	  $(INSTALL_DATA) $$files "$(DESTDIR)$(dbus_busdir)" || exit $$?; \
+	done
+
+uninstall-dbus_busDATA:
+	@$(NORMAL_UNINSTALL)
+	@list='$(dbus_bus_DATA)'; test -n "$(dbus_busdir)" || list=; \
+	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
+	dir='$(DESTDIR)$(dbus_busdir)'; $(am__uninstall_files_from_dir)
 install-dist_dbus_dataDATA: $(dist_dbus_data_DATA)
 	@$(NORMAL_INSTALL)
 	@list='$(dist_dbus_data_DATA)'; test -n "$(dbus_datadir)" || list=; \
@@ -2293,7 +2334,7 @@ check: $(BUILT_SOURCES)
 	$(MAKE) $(AM_MAKEFLAGS) check-am
 all-am: Makefile $(LTLIBRARIES) $(PROGRAMS) $(MANS) $(DATA) config.h
 installdirs:
-	for dir in "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libexecdir)" "$(DESTDIR)$(man1dir)" "$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_unitdir)"; do \
+	for dir in "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libexecdir)" "$(DESTDIR)$(man1dir)" "$(DESTDIR)$(dbus_busdir)" "$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_unitdir)"; do \
 	  test -z "$$dir" || $(MKDIR_P) "$$dir"; \
 	done
 install: $(BUILT_SOURCES)
@@ -2373,8 +2414,8 @@ info: info-am
 
 info-am:
 
-install-data-am: install-dist_dbus_dataDATA install-man \
-	install-systemd_unitDATA
+install-data-am: install-dbus_busDATA install-dist_dbus_dataDATA \
+	install-man install-systemd_unitDATA
 
 install-dvi: install-dvi-am
 
@@ -2423,9 +2464,9 @@ ps: ps-am
 
 ps-am:
 
-uninstall-am: uninstall-binPROGRAMS uninstall-dist_dbus_dataDATA \
-	uninstall-libexecPROGRAMS uninstall-man \
-	uninstall-systemd_unitDATA
+uninstall-am: uninstall-binPROGRAMS uninstall-dbus_busDATA \
+	uninstall-dist_dbus_dataDATA uninstall-libexecPROGRAMS \
+	uninstall-man uninstall-systemd_unitDATA
 
 uninstall-man: uninstall-man1
 
@@ -2441,16 +2482,17 @@ uninstall-man: uninstall-man1
 	distclean-tags distcleancheck distdir distuninstallcheck dvi \
 	dvi-am html html-am info info-am install install-am \
 	install-binPROGRAMS install-data install-data-am \
-	install-dist_dbus_dataDATA install-dvi install-dvi-am \
-	install-exec install-exec-am install-html install-html-am \
-	install-info install-info-am install-libexecPROGRAMS \
-	install-man install-man1 install-pdf install-pdf-am install-ps \
-	install-ps-am install-strip install-systemd_unitDATA \
-	installcheck installcheck-am installdirs maintainer-clean \
-	maintainer-clean-generic maintainer-clean-local mostlyclean \
-	mostlyclean-compile mostlyclean-generic mostlyclean-libtool \
-	pdf pdf-am ps ps-am recheck tags tags-am uninstall \
-	uninstall-am uninstall-binPROGRAMS \
+	install-dbus_busDATA install-dist_dbus_dataDATA install-dvi \
+	install-dvi-am install-exec install-exec-am install-html \
+	install-html-am install-info install-info-am \
+	install-libexecPROGRAMS install-man install-man1 install-pdf \
+	install-pdf-am install-ps install-ps-am install-strip \
+	install-systemd_unitDATA installcheck installcheck-am \
+	installdirs maintainer-clean maintainer-clean-generic \
+	maintainer-clean-local mostlyclean mostlyclean-compile \
+	mostlyclean-generic mostlyclean-libtool pdf pdf-am ps ps-am \
+	recheck tags tags-am uninstall uninstall-am \
+	uninstall-binPROGRAMS uninstall-dbus_busDATA \
 	uninstall-dist_dbus_dataDATA uninstall-libexecPROGRAMS \
 	uninstall-man uninstall-man1 uninstall-systemd_unitDATA
 

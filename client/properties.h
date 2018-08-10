@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2018  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,12 +20,17 @@
  *
  */
 
-const struct proxy_interface *device_wsc_get(const char *device_name);
+struct property_value_options {
+	const char *value_str;
+	const void *value;
+};
 
-char *device_wsc_family_arg_completion(const char *text, int state);
+static const struct property_value_options properties_on_off_opts[] = {
+	{ "on",  (void *) true },
+	{ "off", (void *) false },
+	{ }
+};
 
-const struct proxy_interface *device_ap_get(const char *device_name);
-char *device_ap_family_arg_completion(const char *text, int state);
-
-const struct proxy_interface *device_ad_hoc_get(const char *device_name);
-char *device_ad_hoc_family_arg_completion(const char *text, int state);
+bool properties_builder_append_on_off_variant(
+					struct l_dbus_message_builder *builder,
+					const char *value_str);

@@ -486,7 +486,7 @@ static void eap_ttls_handle_request(struct eap_state *eap,
 
 	if (!ttls->rx_pkt_buf && (flags & EAP_TTLS_FLAG_M)) {
 		if (!(flags & EAP_TTLS_FLAG_L)) {
-			l_error("EAP-TTLS requst 1st fragment with no length");
+			l_error("EAP-TTLS request 1st fragment with no length");
 
 			goto err;
 		}
@@ -728,7 +728,8 @@ static int eap_ttls_check_settings(struct l_settings *settings,
 			 */
 			eap_append_secret(out_missing,
 					EAP_SECRET_LOCAL_PKEY_PASSPHRASE,
-					passphrase_setting, NULL, path);
+					passphrase_setting, NULL, path,
+					EAP_CACHE_TEMPORARY);
 		} else {
 			memset(priv_key, 0, size);
 			l_free(priv_key);
