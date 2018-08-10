@@ -23,11 +23,11 @@
 #include <stdbool.h>
 #include <time.h>
 
+enum security;
 struct device;
 struct network;
 struct scan_bss;
 
-bool network_seen(struct network *network, struct timespec *when);
 void network_connected(struct network *network);
 void network_disconnected(struct network *network);
 bool network_rankmod(const struct network *network, double *rankmod);
@@ -40,6 +40,7 @@ struct device *network_get_device(const struct network *network);
 const char *network_get_path(const struct network *network);
 enum security network_get_security(const struct network *network);
 const uint8_t *network_get_psk(const struct network *network);
+const char *network_get_passphrase(const struct network *network);
 struct l_queue *network_get_secrets(const struct network *network);
 int network_get_signal_strength(const struct network *network);
 struct l_settings *network_get_settings(const struct network *network);
@@ -70,22 +71,12 @@ struct network_info {
 	char ssid[33];
 	enum security type;
 	struct timespec connected_time;	/* Time last connected */
-	struct timespec seen_time;	/* Time last seen */
 	int seen_count;			/* Ref count for network.info */
-	bool is_known:1;
 	bool is_hidden:1;
 };
 
-typedef void (*network_info_foreach_func_t)(const struct network_info *info,
-						void *user_data);
-
-bool network_info_add_known(const char *ssid, enum security security);
-bool network_info_forget_known(const char *ssid, enum security security);
-void network_info_foreach(network_info_foreach_func_t function,
-				void *user_data);
-const struct l_queue *network_info_get_known();
-bool network_info_has_hidden(void);
-void network_info_set_hidden(struct network *network);
-bool network_info_is_hidden(struct network *network);
-const struct network_info *network_info_find(const char *ssid,
+struct network_info *network_info_add_known(const char *ssid,
 						enum security security);
+void network_info_forget_known(struct network_info *network);
+bool network_info_match(const void *a, const void *b);
+void network_info_free(void *data);

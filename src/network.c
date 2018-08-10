@@ -43,6 +43,7 @@
 #include "src/device.h"
 #include "src/wiphy.h"
 #include "src/eap.h"
+#include "src/knownnetworks.h"
 #include "src/network.h"
 
 struct network {
@@ -50,6 +51,7 @@ struct network {
 	struct device *device;
 	struct network_info *info;
 	unsigned char *psk;
+	char *passphrase;
 	unsigned int agent_request;
 	struct l_queue *bss_list;
 	struct l_settings *settings;
@@ -59,21 +61,15 @@ struct network {
 	int rank;
 };
 
-static struct l_queue *networks = NULL;
-static size_t num_known_hidden_networks;
+static struct l_queue *networks;
 
 static bool network_settings_load(struct network *network)
 {
-	const char *strtype;
-
 	if (network->settings)
 		return true;
 
-	strtype = security_to_str(network_get_security(network));
-	if (!strtype)
-		return false;
-
-	network->settings = storage_network_open(strtype, network->info->ssid);
+	network->settings = storage_network_open(network_get_security(network),
+							network->info->ssid);
 
 	return network->settings != NULL;
 }
@@ -86,33 +82,14 @@ static void network_settings_close(struct network *network)
 	l_free(network->psk);
 	network->psk = NULL;
 
+	l_free(network->passphrase);
+	network->passphrase = NULL;
+
 	l_settings_free(network->settings);
 	network->settings = NULL;
 }
 
-static int timespec_compare(const void *a, const void *b, void *user_data)
-{
-	const struct network_info *ni_a = a;
-	const struct network_info *ni_b = b;
-	const struct timespec *tsa = &ni_a->connected_time;
-	const struct timespec *tsb = &ni_b->connected_time;
-
-	if (tsa->tv_sec > tsb->tv_sec)
-		return -1;
-
-	if (tsa->tv_sec < tsb->tv_sec)
-		return 1;
-
-	if (tsa->tv_nsec > tsb->tv_nsec)
-		return -1;
-
-	if (tsa->tv_nsec < tsb->tv_nsec)
-		return -1;
-
-	return 0;
-}
-
-static bool network_info_match(const void *a, const void *b)
+bool network_info_match(const void *a, const void *b)
 {
 	const struct network_info *ni_a = a;
 	const struct network_info *ni_b = b;
@@ -126,30 +103,28 @@ static bool network_info_match(const void *a, const void *b)
 	return true;
 }
 
-bool network_seen(struct network *network, struct timespec *when)
+static bool network_info_ptr_match(const void *a, const void *b)
 {
-	/*
-	 * Update the last seen time.  Note this is not preserved across
-	 * the network going out of range and back, or program restarts.
-	 * It may be desirable for it to be preserved in some way but
-	 * without too frequent filesystem writes.
-	 */
-	memcpy(&network->info->seen_time, when, sizeof(struct timespec));
+	return a == b;
+}
 
-	return true;
+static bool network_secret_check_cacheable(void *data, void *user_data)
+{
+	struct eap_secret_info *secret = data;
+
+	return secret->cache_policy == EAP_CACHE_NEVER;
 }
 
 void network_connected(struct network *network)
 {
 	int err;
-	const char *strtype;
 
-	l_queue_remove(networks, network->info);
-	l_queue_push_head(networks, network->info);
-
-	strtype = security_to_str(network_get_security(network));
-
-	err = storage_network_touch(strtype, network->info->ssid);
+	/*
+	 * This triggers an update to network->info->connected_time and
+	 * other possible actions in knownnetworks.c.
+	 */
+	err = storage_network_touch(network_get_security(network),
+					network->info->ssid);
 	switch (err) {
 	case 0:
 		break;
@@ -163,7 +138,8 @@ void network_connected(struct network *network)
 		 */
 		network->settings = l_settings_new();
 
-		storage_network_sync(strtype, network->info->ssid,
+		storage_network_sync(network_get_security(network),
+					network->info->ssid,
 					network->settings);
 		break;
 	default:
@@ -171,12 +147,8 @@ void network_connected(struct network *network)
 		break;
 	}
 
-	err = storage_network_get_mtime(strtype, network->info->ssid,
-					&network->info->connected_time);
-	if (err < 0)
-		l_error("Error %i reading network timestamp", err);
-
-	network->info->is_known = true;
+	l_queue_foreach_remove(network->secrets,
+				network_secret_check_cacheable, network);
 }
 
 void network_disconnected(struct network *network)
@@ -184,21 +156,31 @@ void network_disconnected(struct network *network)
 	network_settings_close(network);
 }
 
+struct network_find_rank_data {
+	const struct network_info *info;
+	int n;
+};
+
+static bool network_find_rank_update(const struct network_info *network,
+					void *user_data)
+{
+	struct network_find_rank_data *data = user_data;
+
+	if (network == data->info)
+		return false;
+
+	if (network->seen_count)
+		data->n++;
+
+	return true;
+}
+
 static int network_find_rank_index(const struct network_info *info)
 {
-	const struct l_queue_entry *entry;
-	int n;
+	struct network_find_rank_data data = { info, 0 };
 
-	for (n = 0, entry = l_queue_get_entries(networks); entry;
-						entry = entry->next) {
-		struct network_info *network = entry->data;
-
-		if (network == info)
-			return n;
-
-		if (network->is_known && network->seen_count)
-			n++;
-	}
+	if (!known_networks_foreach(network_find_rank_update, &data))
+		return data.n;
 
 	return -1;
 }
@@ -250,12 +232,9 @@ bool network_rankmod(const struct network *network, double *rankmod)
 	return true;
 }
 
-static void network_info_free(void *data)
+void network_info_free(void *data)
 {
 	struct network_info *network = data;
-
-	if (network->is_hidden)
-		num_known_hidden_networks--;
 
 	l_free(network);
 }
@@ -263,12 +242,18 @@ static void network_info_free(void *data)
 static struct network_info *network_info_get(const char *ssid,
 						enum security security)
 {
-	struct network_info *network, search;
+	struct network_info *network;
 
-	search.type = security;
-	strcpy(search.ssid, ssid);
+	network = known_networks_find(ssid, security);
 
-	network = l_queue_find(networks, network_info_match, &search);
+	if (!network) {
+		struct network_info search;
+
+		search.type = security;
+		strcpy(search.ssid, ssid);
+
+		network = l_queue_find(networks, network_info_match, &search);
+	}
 
 	if (!network) {
 		network = l_new(struct network_info, 1);
@@ -285,17 +270,14 @@ static struct network_info *network_info_get(const char *ssid,
 
 static void network_info_put(struct network_info *network)
 {
-	if (!networks)
-		return;
-
 	if (--network->seen_count)
 		return;
 
-	if (network->is_known)
+	if (!networks)
 		return;
 
-	l_queue_remove(networks, network);
-	network_info_free(network);
+	if (l_queue_remove(networks, network))
+		network_info_free(network);
 }
 
 struct network *network_create(struct device *device, const char *ssid,
@@ -335,6 +317,11 @@ enum security network_get_security(const struct network *network)
 const uint8_t *network_get_psk(const struct network *network)
 {
 	return network->psk;
+}
+
+const char *network_get_passphrase(const struct network *network)
+{
+	return network->passphrase;
 }
 
 struct l_queue *network_get_secrets(const struct network *network)
@@ -440,16 +427,22 @@ static int network_load_psk(struct network *network)
 void network_sync_psk(struct network *network)
 {
 	char *hex;
+	struct l_settings *fs_settings;
 
 	if (!network->update_psk)
 		return;
 
 	network->update_psk = false;
+
+	fs_settings = storage_network_open(SECURITY_PSK, network->info->ssid);
 	hex = l_util_hexstring(network->psk, 32);
 	l_settings_set_value(network->settings, "Security",
 						"PreSharedKey", hex);
+	l_settings_set_value(fs_settings, "Security", "PreSharedKey", hex);
 	l_free(hex);
-	storage_network_sync("psk", network->info->ssid, network->settings);
+
+	storage_network_sync(SECURITY_PSK, network->info->ssid, fs_settings);
+	l_settings_free(fs_settings);
 }
 
 int network_autoconnect(struct network *network, struct scan_bss *bss)
@@ -644,6 +637,8 @@ static void passphrase_callback(enum agent_result result,
 
 	l_free(network->psk);
 	network->psk = l_malloc(32);
+	l_free(network->passphrase);
+	network->passphrase = l_strdup(passphrase);
 
 	if (crypto_psk_from_passphrase(passphrase,
 					(uint8_t *) network->info->ssid,
@@ -997,7 +992,12 @@ void network_connect_new_hidden_network(struct network *network,
 
 	l_debug("");
 
-	network_info_set_hidden(network);
+	/*
+	 * This is not a Known Network.  If connection succeeds, either
+	 * network_sync_psk or network_connected will save this network
+	 * as hidden and trigger an update to the hidden networks count.
+	 */
+	network->info->is_hidden = true;
 
 	bss = network_bss_select(network);
 	if (!bss) {
@@ -1208,7 +1208,9 @@ void network_rank_update(struct network *network)
 			n = L_ARRAY_SIZE(rankmod_table) - 1;
 
 		rank = rankmod_table[n] * best_bss->rank + USHRT_MAX;
-	} else if (network->info->is_known)
+	} else if (!l_queue_find(networks, network_info_ptr_match,
+					network->info))
+		/* Is a known network */
 		rank = best_bss->rank;
 	else
 		rank = (int) best_bss->rank - USHRT_MAX; /* Negative rank */
@@ -1216,39 +1218,24 @@ void network_rank_update(struct network *network)
 	network->rank = rank;
 }
 
-bool network_info_add_known(const char *ssid, enum security security)
+struct network_info *network_info_add_known(const char *ssid,
+						enum security security)
 {
 	struct network_info *network;
-	struct l_settings *settings;
-	bool is_hidden;
-	int err;
+	struct network_info search;
+
+	strcpy(search.ssid, ssid);
+	search.type = security;
+
+	network = l_queue_remove_if(networks, network_info_match, &search);
+	if (network)
+		return network;
 
 	network = l_new(struct network_info, 1);
 	strcpy(network->ssid, ssid);
 	network->type = security;
 
-	err = storage_network_get_mtime(security_to_str(security), ssid,
-					&network->connected_time);
-	if (err < 0) {
-		l_free(network);
-		return false;
-	}
-
-	network->is_known = true;
-
-	settings = storage_network_open(security_to_str(security), ssid);
-
-	if (l_settings_get_bool(settings, "Settings", "Hidden", &is_hidden))
-		network->is_hidden = is_hidden;
-
-	if (network->is_hidden)
-		num_known_hidden_networks++;
-
-	l_settings_free(settings);
-
-	l_queue_insert(networks, network, timespec_compare, NULL);
-
-	return true;
+	return network;
 }
 
 static void network_info_check_device(struct device *device, void *user_data)
@@ -1262,74 +1249,16 @@ static void network_info_check_device(struct device *device, void *user_data)
 		device_disconnect(device);
 }
 
-bool network_info_forget_known(const char *ssid, enum security security)
+void network_info_forget_known(struct network_info *network)
 {
-	struct network_info *network, search;
-
-	search.type = security;
-	strcpy(search.ssid, ssid);
-
-	network = l_queue_remove_if(networks, network_info_match, &search);
-	if (!network)
-		return false;
-
-	if (!network->seen_count) {
-		network_info_free(network);
-
-		return true;
-	}
-
-	memset(&network->connected_time, 0, sizeof(struct timespec));
-
-	network->is_known = false;
-
-	l_queue_push_tail(networks, network);
-
 	__iwd_device_foreach(network_info_check_device, network);
 
-	return true;
-}
-
-void network_info_foreach(network_info_foreach_func_t function,
-				void *user_data)
-{
-	const struct l_queue_entry *entry;
-
-	for (entry = l_queue_get_entries(networks); entry; entry = entry->next)
-		function(entry->data, user_data);
-}
-
-const struct l_queue *network_info_get_known()
-{
-	return networks;
-}
-
-bool network_info_has_hidden(void)
-{
-	return num_known_hidden_networks ? true : false;
-}
-
-void network_info_set_hidden(struct network *network)
-{
-	if (network->info->is_hidden)
-		return;
-
-	network->info->is_hidden = true;
-	num_known_hidden_networks += 1;
-}
-
-bool network_info_is_hidden(struct network *network)
-{
-	return network->info->is_hidden;
-}
-
-const struct network_info *network_info_find(const char *ssid,
-						enum security security)
-{
-	struct network_info query;
-
-	query.type = security;
-	strcpy(query.ssid, ssid);
-
-	return l_queue_find(networks, network_info_match, &query);
+	/*
+	 * Network is no longer a Known Network, see if we still need to
+	 * keep the network_info around.
+	 */
+	if (network->seen_count)
+		l_queue_push_tail(networks, network);
+	else
+		network_info_free(network);
 }

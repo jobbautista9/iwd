@@ -1,7 +1,11 @@
 [Unit]
 Description=Wireless service
+Before=network.target
+Wants=network.target
 
 [Service]
+Type=dbus
+BusName=net.connman.iwd
 ExecStart=@libexecdir@/iwd
 LimitNPROC=1
 

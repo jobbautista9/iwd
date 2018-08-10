@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2017-2018  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -29,6 +29,7 @@
 #include "command.h"
 #include "dbus-proxy.h"
 #include "display.h"
+#include "properties.h"
 
 struct adapter {
 	bool powered;
@@ -44,7 +45,7 @@ static const char *get_name(const void *data)
 	return adapter->name;
 }
 
-static void set_name(void *data, struct l_dbus_message_iter *variant)
+static void update_name(void *data, struct l_dbus_message_iter *variant)
 {
 	struct adapter *adapter = data;
 	const char *value;
@@ -60,7 +61,7 @@ static void set_name(void *data, struct l_dbus_message_iter *variant)
 	adapter->name = l_strdup(value);
 }
 
-static void set_vendor(void *data, struct l_dbus_message_iter *variant)
+static void update_vendor(void *data, struct l_dbus_message_iter *variant)
 {
 	struct adapter *adapter = data;
 	const char *value;
@@ -76,7 +77,14 @@ static void set_vendor(void *data, struct l_dbus_message_iter *variant)
 	adapter->vendor = l_strdup(value);
 }
 
-static void set_model(void *data, struct l_dbus_message_iter *variant)
+static const char *get_vendor(const void *data)
+{
+	const struct adapter *adapter = data;
+
+	return adapter->vendor;
+}
+
+static void update_model(void *data, struct l_dbus_message_iter *variant)
 {
 	struct adapter *adapter = data;
 	const char *value;
@@ -92,6 +100,13 @@ static void set_model(void *data, struct l_dbus_message_iter *variant)
 	adapter->model = l_strdup(value);
 }
 
+static const char *get_model(const void *data)
+{
+	const struct adapter *adapter = data;
+
+	return adapter->model;
+}
+
 static const char *get_powered_tostr(const void *data)
 {
 	const struct adapter *adapter = data;
@@ -99,7 +114,7 @@ static const char *get_powered_tostr(const void *data)
 	return adapter->powered ? "on" : "off";
 }
 
-static void set_powered(void *data, struct l_dbus_message_iter *variant)
+static void update_powered(void *data, struct l_dbus_message_iter *variant)
 {
 	struct adapter *adapter = data;
 	bool value;
@@ -114,10 +129,12 @@ static void set_powered(void *data, struct l_dbus_message_iter *variant)
 }
 
 static const struct proxy_interface_property adapter_properties[] = {
-	{ "Name",     "s", set_name,     get_name },
-	{ "Powered",  "b", set_powered,  get_powered_tostr, true },
-	{ "Vendor",   "s", set_vendor },
-	{ "Model",    "s", set_model },
+	{ "Name",     "s", update_name,     get_name },
+	{ "Powered",  "b", update_powered,  get_powered_tostr, true,
+		properties_builder_append_on_off_variant,
+		properties_on_off_opts },
+	{ "Vendor",   "s", update_vendor,   get_vendor },
+	{ "Model",    "s", update_model,    get_model },
 	{ }
 };
 
@@ -126,7 +143,7 @@ static void display_adapter(const struct proxy_interface *proxy)
 	const struct adapter *adapter = proxy_interface_get_data(proxy);
 	char *caption = l_strdup_printf("%s: %s", "Adapter", adapter->name);
 
-	proxy_properties_display(proxy, caption, MARGIN, 17, 47);
+	proxy_properties_display(proxy, caption, MARGIN, 17, 50);
 
 	l_free(caption);
 
@@ -137,7 +154,7 @@ static void display_adapter_inline(const char *margin, const void *data)
 {
 	const struct adapter *adapter = data;
 
-	display("%s%-*s%-*s%-*s%-*s\n", margin,
+	display("%s%-*s%-*s%-.*s%-.*s\n", margin,
 		19, adapter->name ? : "-", 10, get_powered_tostr(adapter),
 		20, adapter->vendor ? : "-", 20, adapter->model ? : "-");
 }
@@ -216,7 +233,8 @@ static const struct proxy_interface *get_adapter_proxy_by_name(
 	return proxy;
 }
 
-static enum cmd_status cmd_list(const char *adapter_name, char *args)
+static enum cmd_status cmd_list(const char *adapter_name,
+						char **argv, int argc)
 {
 	display_table_header("Adapters", MARGIN "%-*s%-*s%-*s%-*s", 19, "Name",
 				10, "Powered", 20, "Vendor", 20, "Model");
@@ -225,10 +243,11 @@ static enum cmd_status cmd_list(const char *adapter_name, char *args)
 
 	display_table_footer();
 
-	return CMD_STATUS_OK;
+	return CMD_STATUS_DONE;
 }
 
-static enum cmd_status cmd_show(const char *adapter_name, char *args)
+static enum cmd_status cmd_show(const char *adapter_name,
+						char **argv, int argc)
 {
 	const struct proxy_interface *proxy =
 					get_adapter_proxy_by_name(adapter_name);
@@ -238,36 +257,37 @@ static enum cmd_status cmd_show(const char *adapter_name, char *args)
 
 	display_adapter(proxy);
 
-	return CMD_STATUS_OK;
+	return CMD_STATUS_DONE;
 }
 
-static enum cmd_status cmd_set_property(const char *adapter_name, char *args)
+static void property_set_callback(struct l_dbus_message *message,
+								void *user_data)
 {
-	return CMD_STATUS_UNSUPPORTED;
+	dbus_message_has_error(message);
 }
 
-static char *cmd_set_property_completion(const char *text, int state)
+static enum cmd_status cmd_set_property(const char *adapter_name,
+						char **argv, int argc)
 {
-	static size_t index;
-	static size_t len;
-	const char *prop;
+	const struct proxy_interface *proxy =
+					get_adapter_proxy_by_name(adapter_name);
 
-	if (!state) {
-		index = 0;
-		len = strlen(text);
-	}
+	if (!proxy)
+		return CMD_STATUS_INVALID_VALUE;
 
-	while ((prop = adapter_properties[index].name)) {
-		if (!adapter_properties[index++].is_read_write)
-			continue;
+	if (argc != 2)
+		return CMD_STATUS_INVALID_ARGS;
 
-		if (strncmp(prop, text, len))
-			continue;
+	if (!proxy_property_set(proxy, argv[0], argv[1],
+						property_set_callback))
+		return CMD_STATUS_INVALID_VALUE;
 
-		return l_strdup(prop);
-	}
+	return CMD_STATUS_TRIGGERED;
+}
 
-	return NULL;
+static char *set_property_cmd_arg_completion(const char *text, int state)
+{
+	return proxy_property_completion(adapter_properties, text, state);
 }
 
 static const struct command adapter_commands[] = {
@@ -278,7 +298,7 @@ static const struct command adapter_commands[] = {
 	{ "<phy>", "set-property", "<name> <value>",
 					cmd_set_property, "Set property",
 									false,
-						cmd_set_property_completion },
+		set_property_cmd_arg_completion },
 	{ }
 };
 

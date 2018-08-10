@@ -30,13 +30,12 @@
 #define IWD_NETWORK_INTERFACE "net.connman.iwd.Network"
 #define IWD_AGENT_INTERFACE "net.connman.iwd.Agent"
 #define IWD_WSC_INTERFACE "net.connman.iwd.WiFiSimpleConfiguration"
-#define IWD_KNOWN_NETWORKS_INTERFACE "net.connman.iwd.KnownNetworks"
+#define IWD_KNOWN_NETWORK_INTERFACE "net.connman.iwd.KnownNetwork"
 #define IWD_SIGNAL_AGENT_INTERFACE "net.connman.iwd.SignalLevelAgent"
 #define IWD_AP_INTERFACE "net.connman.iwd.AccessPoint"
 #define IWD_ADHOC_INTERFACE "net.connman.iwd.AdHoc"
 
 #define IWD_AGENT_MANAGER_PATH "/"
-#define IWD_KNOWN_NETWORKS_PATH "/"
 
 struct l_dbus;
 
@@ -45,15 +44,7 @@ struct l_dbus *dbus_get_bus(void);
 void dbus_pending_reply(struct l_dbus_message **msg,
 				struct l_dbus_message *reply);
 
-void dbus_dict_append_string(struct l_dbus_message_builder *builder,
-				const char *key, const char *strval);
-void dbus_dict_append_bool(struct l_dbus_message_builder *builder,
-				const char *key, bool boolval);
-void dbus_dict_append_object(struct l_dbus_message_builder *builder,
-				const char *key, const char *object_path);
-void dbus_dict_append_bytearray(struct l_dbus_message_builder *builder,
-				const char *key, const uint8_t *arrayval,
-				const int len);
+const char *dbus_iftype_to_string(unsigned int iftype);
 
 struct l_dbus_message *dbus_error_busy(struct l_dbus_message *msg);
 struct l_dbus_message *dbus_error_failed(struct l_dbus_message *msg);

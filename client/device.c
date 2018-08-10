@@ -31,6 +31,7 @@
 #include "device.h"
 #include "display.h"
 #include "network.h"
+#include "properties.h"
 
 struct device {
 	bool powered;
@@ -39,10 +40,12 @@ struct device {
 	char *address;
 	char *name;
 	char *state;
-	struct l_queue *ordered_networks;
+	char *mode;
 	const struct proxy_interface *adapter;
 	const struct proxy_interface *connected_network;
 	const struct proxy_interface *wsc;
+	const struct proxy_interface *ap;
+	const struct proxy_interface *ad_hoc;
 };
 
 static struct proxy_interface *default_device;
@@ -69,9 +72,6 @@ static void display_device(const struct proxy_interface *proxy)
 						device->adapter) ? : "");
 	}
 
-	display("%s%*s  %-*s%-*s\n", MARGIN, 8, "", 20, "WSC-capable",
-						47, device->wsc ? "yes" : "no");
-
 	display_table_footer();
 }
 
@@ -82,7 +82,7 @@ static const char *get_name(const void *data)
 	return device->name;
 }
 
-static void set_name(void *data, struct l_dbus_message_iter *variant)
+static void update_name(void *data, struct l_dbus_message_iter *variant)
 {
 	struct device *device = data;
 	const char *value;
@@ -98,6 +98,43 @@ static void set_name(void *data, struct l_dbus_message_iter *variant)
 	device->name = l_strdup(value);
 }
 
+static const struct property_value_options device_mode_opts[] = {
+	{ "ad-hoc",  (void *) "ad-hoc" },
+	{ "ap",      (void *) "ap" },
+	{ "station", (void *) "station" },
+	{ }
+};
+
+static const char *get_mode(const void *data)
+{
+	const struct device *device = data;
+
+	return device->mode;
+}
+
+static void update_mode(void *data, struct l_dbus_message_iter *variant)
+{
+	struct device *device = data;
+	const char *value;
+
+	l_free(device->mode);
+
+	if (!l_dbus_message_iter_get_variant(variant, "s", &value)) {
+		device->mode = NULL;
+
+		return;
+	}
+
+	device->mode = l_strdup(value);
+}
+
+static bool builder_append_string_variant(
+					struct l_dbus_message_builder *builder,
+					const char *value_str)
+{
+	return l_dbus_message_builder_append_basic(builder, 's', value_str);
+}
+
 static const char *get_address(const void *data)
 {
 	const struct device *device = data;
@@ -105,7 +142,7 @@ static const char *get_address(const void *data)
 	return device->address;
 }
 
-static void set_address(void *data, struct l_dbus_message_iter *variant)
+static void update_address(void *data, struct l_dbus_message_iter *variant)
 {
 	struct device *device = data;
 	const char *value;
@@ -128,7 +165,7 @@ static const char *get_state(const void *data)
 	return device->state;
 }
 
-static void set_state(void *data, struct l_dbus_message_iter *variant)
+static void update_state(void *data, struct l_dbus_message_iter *variant)
 {
 	struct device *device = data;
 	const char *value;
@@ -144,7 +181,7 @@ static void set_state(void *data, struct l_dbus_message_iter *variant)
 	device->state = l_strdup(value);
 }
 
-static void set_connected_network(void *data,
+static void update_connected_network(void *data,
 					struct l_dbus_message_iter *variant)
 {
 	struct device *device = data;
@@ -167,7 +204,7 @@ static const char *get_powered_tostr(const void *data)
 	return device->powered ? "on" : "off";
 }
 
-static void set_powered(void *data, struct l_dbus_message_iter *variant)
+static void update_powered(void *data, struct l_dbus_message_iter *variant)
 {
 	struct device *device = data;
 	bool value;
@@ -188,7 +225,7 @@ static const char *get_wds_tostr(const void *data)
 	return device->wds ? "on" : "off";
 }
 
-static void set_wds(void *data, struct l_dbus_message_iter *variant)
+static void update_wds(void *data, struct l_dbus_message_iter *variant)
 {
 	struct device *device = data;
 	bool value;
@@ -209,7 +246,7 @@ static const char *get_scanning_tostr(const void *data)
 	return device->scanning ? "yes" : "no";
 }
 
-static void set_scanning(void *data, struct l_dbus_message_iter *variant)
+static void update_scanning(void *data, struct l_dbus_message_iter *variant)
 {
 	struct device *device = data;
 	bool value;
@@ -223,7 +260,7 @@ static void set_scanning(void *data, struct l_dbus_message_iter *variant)
 	device->scanning = value;
 }
 
-static void set_adapter(void *data, struct l_dbus_message_iter *variant)
+static void update_adapter(void *data, struct l_dbus_message_iter *variant)
 {
 	struct device *device = data;
 	const char *path;
@@ -238,15 +275,21 @@ static void set_adapter(void *data, struct l_dbus_message_iter *variant)
 }
 
 static const struct proxy_interface_property device_properties[] = {
-	{ "Name",     "s", set_name,     get_name },
-	{ "Powered",  "b", set_powered,  get_powered_tostr, true },
-	{ "Adapter",  "o", set_adapter },
-	{ "Address",  "s", set_address,  get_address },
-	{ "WDS",      "b", set_wds,      get_wds_tostr,     true },
-	{ "Scanning", "b", set_scanning, get_scanning_tostr },
-	{ "State",    "s", set_state,    get_state },
+	{ "Name",     "s", update_name,     get_name },
+	{ "Mode",     "s", update_mode,     get_mode,          true,
+		builder_append_string_variant, device_mode_opts },
+	{ "Powered",  "b", update_powered,  get_powered_tostr, true,
+		properties_builder_append_on_off_variant,
+		properties_on_off_opts },
+	{ "Adapter",  "o", update_adapter },
+	{ "Address",  "s", update_address,  get_address },
+	{ "WDS",      "b", update_wds,      get_wds_tostr,     true,
+		properties_builder_append_on_off_variant,
+		properties_on_off_opts },
+	{ "Scanning", "b", update_scanning, get_scanning_tostr },
+	{ "State",    "s", update_state,    get_state },
 	{ "ConnectedNetwork",
-			"o", set_connected_network },
+			"o", update_connected_network },
 	{ }
 };
 
@@ -345,7 +388,6 @@ static void ordered_networks_display(struct l_queue *ordered_networks)
 static void ordered_networks_callback(struct l_dbus_message *message,
 								void *proxy)
 {
-	struct device *device = proxy_interface_get_data(proxy);
 	struct l_queue *networks = NULL;
 	struct ordered_network network;
 	struct l_dbus_message_iter iter;
@@ -358,8 +400,6 @@ static void ordered_networks_callback(struct l_dbus_message *message,
 
 		return;
 	}
-
-	l_queue_destroy(device->ordered_networks, ordered_networks_destroy);
 
 	while (l_dbus_message_iter_next_entry(&iter,
 						&network.network_path,
@@ -379,9 +419,9 @@ static void ordered_networks_callback(struct l_dbus_message *message,
 		l_queue_push_tail(networks, net);
 	}
 
-	device->ordered_networks = networks;
-
 	ordered_networks_display(networks);
+
+	l_queue_destroy(networks, ordered_networks_destroy);
 }
 
 static void *device_create(void)
@@ -396,8 +436,7 @@ static void device_destroy(void *data)
 	l_free(device->address);
 	l_free(device->name);
 	l_free(device->state);
-
-	l_queue_destroy(device->ordered_networks, ordered_networks_destroy);
+	l_free(device->mode);
 
 	device->adapter = NULL;
 	device->connected_network = NULL;
@@ -417,6 +456,18 @@ static bool device_bind_interface(const struct proxy_interface *proxy,
 		device->wsc = dependency;
 
 		return true;
+	} else if (!strcmp(interface, IWD_ACCESS_POINT_INTERFACE)) {
+		struct device *device = proxy_interface_get_data(proxy);
+
+		device->ap = dependency;
+
+		return true;
+	} else if (!strcmp(interface, IWD_AD_HOC_INTERFACE)) {
+		struct device *device = proxy_interface_get_data(proxy);
+
+		device->ad_hoc = dependency;
+
+		return true;
 	}
 
 	return false;
@@ -431,6 +482,18 @@ static bool device_unbind_interface(const struct proxy_interface *proxy,
 		struct device *device = proxy_interface_get_data(proxy);
 
 		device->wsc = NULL;
+
+		return true;
+	} else if (!strcmp(interface, IWD_ACCESS_POINT_INTERFACE)) {
+		struct device *device = proxy_interface_get_data(proxy);
+
+		device->ap = NULL;
+
+		return true;
+	} else if (!strcmp(interface, IWD_AD_HOC_INTERFACE)) {
+		struct device *device = proxy_interface_get_data(proxy);
+
+		device->ad_hoc = NULL;
 
 		return true;
 	}
@@ -502,6 +565,20 @@ static bool match_by_partial_name_and_wsc(const void *a, const void *b)
 	return match_by_partial_name(a, b) && device->wsc ? true : false;
 }
 
+static bool match_by_partial_name_and_ap(const void *a, const void *b)
+{
+	const struct device *device = a;
+
+	return match_by_partial_name(a, b) && device->ap ? true : false;
+}
+
+static bool match_by_partial_name_and_ad_hoc(const void *a, const void *b)
+{
+	const struct device *device = a;
+
+	return match_by_partial_name(a, b) && device->ad_hoc ? true : false;
+}
+
 static bool match_all(const void *a, const void *b)
 {
 	return true;
@@ -565,7 +642,8 @@ static const struct proxy_interface *get_device_proxy_by_name(
 	return proxy;
 }
 
-static enum cmd_status cmd_show(const char *device_name, char *args)
+static enum cmd_status cmd_show(const char *device_name,
+						char **argv, int argc)
 {
 	const struct proxy_interface *proxy =
 					get_device_proxy_by_name(device_name);
@@ -575,7 +653,7 @@ static enum cmd_status cmd_show(const char *device_name, char *args)
 
 	display_device(proxy);
 
-	return CMD_STATUS_OK;
+	return CMD_STATUS_DONE;
 }
 
 static void check_errors_method_callback(struct l_dbus_message *message,
@@ -584,7 +662,8 @@ static void check_errors_method_callback(struct l_dbus_message *message,
 	dbus_message_has_error(message);
 }
 
-static enum cmd_status cmd_scan(const char *device_name, char *args)
+static enum cmd_status cmd_scan(const char *device_name,
+						char **argv, int argc)
 {
 	const struct proxy_interface *proxy =
 					get_device_proxy_by_name(device_name);
@@ -595,10 +674,11 @@ static enum cmd_status cmd_scan(const char *device_name, char *args)
 	proxy_interface_method_call(proxy, "Scan", "",
 						check_errors_method_callback);
 
-	return CMD_STATUS_OK;
+	return CMD_STATUS_TRIGGERED;
 }
 
-static enum cmd_status cmd_disconnect(const char *device_name, char *args)
+static enum cmd_status cmd_disconnect(const char *device_name,
+						char **argv, int argc)
 {
 	const struct proxy_interface *proxy =
 					get_device_proxy_by_name(device_name);
@@ -609,10 +689,11 @@ static enum cmd_status cmd_disconnect(const char *device_name, char *args)
 	proxy_interface_method_call(proxy, "Disconnect", "",
 						check_errors_method_callback);
 
-	return CMD_STATUS_OK;
+	return CMD_STATUS_TRIGGERED;
 }
 
-static enum cmd_status cmd_get_networks(const char *device_name, char *args)
+static enum cmd_status cmd_get_networks(const char *device_name,
+						char **argv, int argc)
 {
 	const struct proxy_interface *proxy =
 					get_device_proxy_by_name(device_name);
@@ -620,10 +701,10 @@ static enum cmd_status cmd_get_networks(const char *device_name, char *args)
 	if (!proxy)
 		return CMD_STATUS_INVALID_ARGS;
 
-	if (!args)
+	if (!argc)
 		goto proceed;
 
-	if (!strcmp(args, RSSI_DBMS))
+	if (!strcmp(argv[0], RSSI_DBMS))
 		display_signal_as_dbms = true;
 	else
 		display_signal_as_dbms = false;
@@ -632,10 +713,11 @@ proceed:
 	proxy_interface_method_call(proxy, "GetOrderedNetworks", "",
 					ordered_networks_callback);
 
-	return CMD_STATUS_OK;
+	return CMD_STATUS_TRIGGERED;
 }
 
-static enum cmd_status cmd_list(const char *device_name, char *args)
+static enum cmd_status cmd_list(const char *device_name,
+						char **argv, int argc)
 {
 	display_table_header("Devices", MARGIN "%-*s%-*s%-*s%-*s", 20, "Name",
 				20, "Address", 15, "State", 10, "Adapter");
@@ -644,17 +726,32 @@ static enum cmd_status cmd_list(const char *device_name, char *args)
 
 	display_table_footer();
 
-	return CMD_STATUS_OK;
+	return CMD_STATUS_DONE;
 }
 
-static enum cmd_status cmd_set_property(const char *device_name, char *args)
+static enum cmd_status cmd_set_property(const char *device_name,
+						char **argv, int argc)
 {
-	return CMD_STATUS_UNSUPPORTED;
+	const struct proxy_interface *proxy =
+					get_device_proxy_by_name(device_name);
+
+	if (!proxy)
+		return CMD_STATUS_INVALID_VALUE;
+
+	if (argc != 2)
+		return CMD_STATUS_INVALID_ARGS;
+
+	if (!proxy_property_set(proxy, argv[0], argv[1],
+						check_errors_method_callback))
+		return CMD_STATUS_INVALID_VALUE;
+
+	return CMD_STATUS_TRIGGERED;
 }
 
-static enum cmd_status cmd_connect(const char *device_name, char *args)
+static enum cmd_status cmd_connect(const char *device_name,
+						char **argv, int argc)
 {
-	struct network_args *network_args;
+	struct network_args network_args;
 	struct l_queue *match;
 	const struct proxy_interface *network_proxy;
 	const struct proxy_interface *device_proxy =
@@ -663,70 +760,54 @@ static enum cmd_status cmd_connect(const char *device_name, char *args)
 	if (!device_proxy)
 		return CMD_STATUS_INVALID_VALUE;
 
-	network_args = network_parse_args(args);
-
-	if (!network_args || !network_args->name) {
-		network_args_destroy(network_args);
-
+	if (argc < 1)
 		return CMD_STATUS_INVALID_ARGS;
-	}
 
-	match = network_match_by_device_and_args(device_proxy, network_args);
+	network_args.name = argv[0];
+	network_args.type = argc >= 2 ? argv[1] : NULL;
 
+	match = network_match_by_device_and_args(device_proxy, &network_args);
 	if (!match) {
-		display("Invalid network name '%s'\n", network_args->name);
-		network_args_destroy(network_args);
-
+		display("Invalid network name '%s'\n", network_args.name);
 		return CMD_STATUS_INVALID_VALUE;
 	}
 
 	if (l_queue_length(match) > 1) {
-		if (!network_args->type) {
+		if (!network_args.type) {
 			display("Provided network name is ambiguous. "
 				"Please specify security type.\n");
 		}
 
 		l_queue_destroy(match, NULL);
-		network_args_destroy(network_args);
 
 		return CMD_STATUS_INVALID_VALUE;
 	}
 
 	network_proxy = l_queue_pop_head(match);
-
 	l_queue_destroy(match, NULL);
-	network_args_destroy(network_args);
-
 	network_connect(network_proxy);
 
-	return CMD_STATUS_OK;
+	return CMD_STATUS_TRIGGERED;
 }
 
 static enum cmd_status cmd_connect_hidden_network(const char *device_name,
-								char *args)
+							char **argv,
+							int argc)
 {
-	struct network_args *network_args;
 	const struct proxy_interface *proxy =
 					get_device_proxy_by_name(device_name);
 
 	if (!proxy)
 		return CMD_STATUS_INVALID_VALUE;
 
-	network_args = network_parse_args(args);
-
-	if (!network_args || !network_args->name) {
-		network_args_destroy(network_args);
-
+	if (argc != 1)
 		return CMD_STATUS_INVALID_ARGS;
-	}
 
 	proxy_interface_method_call(proxy, "ConnectHiddenNetwork", "s",
 					check_errors_method_callback,
-					network_args->name);
+					argv[0]);
 
-	network_args_destroy(network_args);
-
-	return CMD_STATUS_OK;
+	return CMD_STATUS_TRIGGERED;
 }
 
 static char *get_networks_cmd_arg_completion(const char *text, int state)
@@ -758,6 +839,11 @@ static char *connect_cmd_arg_completion(const char *text, int state)
 	return network_name_completion(device, text, state);
 }
 
+static char *set_property_cmd_arg_completion(const char *text, int state)
+{
+	return proxy_property_completion(device_properties, text, state);
+}
+
 static const struct command device_commands[] = {
 	{ NULL,     "list",     NULL,   cmd_list, "List devices",     true },
 	{ "<wlan>", "show",     NULL,   cmd_show, "Show device info", true },
@@ -770,7 +856,8 @@ static const struct command device_commands[] = {
 	{ "<wlan>", "set-property",
 				"<name> <value>",
 					cmd_set_property,
-						"Set property",       false },
+						"Set property",       false,
+		set_property_cmd_arg_completion },
 	{ "<wlan>", "connect",
 				"<\"network name\"> [security]",
 					cmd_connect,
@@ -805,6 +892,48 @@ char *device_wsc_family_arg_completion(const char *text, int state)
 	return proxy_property_str_completion(&device_interface_type,
 						match_by_partial_name_and_wsc,
 						"Name", text, state);
+}
+
+const struct proxy_interface *device_ap_get(const char *device_name)
+{
+	const struct device *device;
+	const struct proxy_interface *proxy =
+					get_device_proxy_by_name(device_name);
+
+	if (!proxy)
+		return NULL;
+
+	device = proxy_interface_get_data(proxy);
+
+	return device->ap;
+}
+
+char *device_ap_family_arg_completion(const char *text, int state)
+{
+	return proxy_property_str_completion(&device_interface_type,
+						match_by_partial_name_and_ap,
+						"Name", text, state);
+}
+
+const struct proxy_interface *device_ad_hoc_get(const char *device_name)
+{
+	const struct device *device;
+	const struct proxy_interface *proxy =
+					get_device_proxy_by_name(device_name);
+
+	if (!proxy)
+		return NULL;
+
+	device = proxy_interface_get_data(proxy);
+
+	return device->ad_hoc;
+}
+
+char *device_ad_hoc_family_arg_completion(const char *text, int state)
+{
+	return proxy_property_str_completion(&device_interface_type,
+					match_by_partial_name_and_ad_hoc,
+					"Name", text, state);
 }
 
 static char *family_arg_completion(const char *text, int state)

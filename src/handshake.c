@@ -78,6 +78,7 @@ void handshake_state_free(struct handshake_state *s)
 	l_free(s->own_ie);
 	l_free(s->mde);
 	l_free(s->fte);
+	l_free(s->passphrase);
 
 	memset(s, 0, sizeof(*s));
 
@@ -226,6 +227,12 @@ void handshake_state_set_event_func(struct handshake_state *s,
 {
 	s->event_func = func;
 	s->user_data = user_data;
+}
+
+void handshake_state_set_passphrase(struct handshake_state *s,
+					const char *passphrase)
+{
+	s->passphrase = l_strdup(passphrase);
 }
 
 void handshake_state_new_snonce(struct handshake_state *s)
@@ -380,9 +387,21 @@ void handshake_state_override_pairwise_cipher(struct handshake_state *s,
 	s->pairwise_cipher = pairwise;
 }
 
+void handshake_state_set_pmkid(struct handshake_state *s, const uint8_t *pmkid)
+{
+	memcpy(s->pmkid, pmkid, 16);
+	s->have_pmkid = true;
+}
+
 bool handshake_state_get_pmkid(struct handshake_state *s, uint8_t *out_pmkid)
 {
 	bool use_sha256;
+
+	/* SAE exports pmkid */
+	if (s->have_pmkid) {
+		memcpy(out_pmkid, s->pmkid, 16);
+		return true;
+	}
 
 	if (!s->have_pmk)
 		return false;
