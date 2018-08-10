@@ -1,3 +1,9 @@
+iwd (0.5-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Andreas Henriksson <andreas@fatal.se>  Fri, 10 Aug 2018 21:37:10 +0200
+
 iwd (0.4-1) unstable; urgency=medium
 
   * Enable pristine-tar usage in gbp.conf
