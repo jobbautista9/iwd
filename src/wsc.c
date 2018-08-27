@@ -46,10 +46,11 @@
 
 #define WALK_TIME 120
 
-static uint32_t device_watch = 0;
+static uint32_t netdev_watch = 0;
 
 struct wsc {
-	struct device *device;
+	struct netdev *netdev;
+	struct device *device;	/* TODO: Should be Station */
 	struct l_dbus_message *pending;
 	struct l_dbus_message *pending_cancel;
 	uint8_t *wsc_ies;
@@ -206,7 +207,7 @@ static void wsc_connect_cb(struct netdev *netdev, enum netdev_result result,
 {
 	struct wsc *wsc = user_data;
 
-	l_debug("%d, result: %d", device_get_ifindex(wsc->device), result);
+	l_debug("%d, result: %d", netdev_get_ifindex(wsc->netdev), result);
 
 	wsc->wsc_association = false;
 
@@ -370,7 +371,7 @@ static void wsc_netdev_event(struct netdev *netdev, enum netdev_event event,
 		break;
 	case NETDEV_EVENT_DISCONNECT_BY_AP:
 		l_debug("Disconnect by AP");
-		wsc_connect_cb(device_get_netdev(wsc->device),
+		wsc_connect_cb(wsc->netdev,
 				NETDEV_RESULT_HANDSHAKE_FAILED, wsc);
 		break;
 	case NETDEV_EVENT_RSSI_THRESHOLD_LOW:
@@ -418,7 +419,7 @@ static void wsc_connect(struct wsc *wsc)
 
 	wsc->target = NULL;
 
-	hs = netdev_handshake_state_new(device_get_netdev(wsc->device));
+	hs = netdev_handshake_state_new(wsc->netdev);
 
 	l_settings_set_string(settings, "Security", "EAP-Identity",
 					"WFA-SimpleConfig-Enrollee-1-0");
@@ -433,7 +434,7 @@ static void wsc_connect(struct wsc *wsc)
 	l_settings_set_string(settings, "WSC", "PrimaryDeviceType",
 					"0-00000000-0");
 	l_settings_set_string(settings, "WSC", "EnrolleeMAC",
-		util_address_to_string(device_get_address(wsc->device)));
+		util_address_to_string(netdev_get_address(wsc->netdev)));
 
 	if (!strcmp(l_dbus_message_get_member(wsc->pending), "StartPin")) {
 		const char *pin;
@@ -457,7 +458,7 @@ static void wsc_connect(struct wsc *wsc)
 	handshake_state_set_8021x_config(hs, settings);
 	wsc->eap_settings = settings;
 
-	if (netdev_connect_wsc(device_get_netdev(wsc->device), bss, hs,
+	if (netdev_connect_wsc(wsc->netdev, bss, hs,
 					wsc_netdev_event, wsc_connect_cb,
 					wsc_eapol_event, wsc) < 0) {
 		dbus_pending_reply(&wsc->pending,
@@ -487,8 +488,6 @@ static void wsc_check_can_connect(struct wsc *wsc, struct scan_bss *target)
 {
 	l_debug("%p", wsc);
 
-	if (device_get_mode(wsc->device) != DEVICE_MODE_STATION)
-		goto error;
 	/*
 	 * For now we assign the target pointer directly, since we should not
 	 * be triggering any more scans while disconnecting / connecting
@@ -528,7 +527,7 @@ static void wsc_cancel_scan(struct wsc *wsc)
 	wsc->wsc_ies = 0;
 
 	if (wsc->scan_id > 0) {
-		scan_cancel(device_get_ifindex(wsc->device), wsc->scan_id);
+		scan_cancel(netdev_get_ifindex(wsc->netdev), wsc->scan_id);
 		wsc->scan_id = 0;
 	}
 
@@ -659,7 +658,7 @@ static bool push_button_scan_results(uint32_t wiphy_id, uint32_t ifindex,
 		target = bss_2g;
 	else {
 		l_debug("No PBC APs found, running the scan again");
-		wsc->scan_id = scan_active(device_get_ifindex(wsc->device),
+		wsc->scan_id = scan_active(netdev_get_ifindex(wsc->netdev),
 						wsc->wsc_ies, wsc->wsc_ies_size,
 						NULL, push_button_scan_results,
 						wsc, NULL);
@@ -796,7 +795,7 @@ static bool pin_scan_results(uint32_t wiphy_id, uint32_t ifindex, int err,
 		l_debug("AuthorizedMacs: %s", authorized_macs_to_string(amacs));
 
 		if (authorized_macs_contains(amacs,
-					device_get_address(wsc->device))) {
+					netdev_get_address(wsc->netdev))) {
 			target = bss;
 			break;
 		} else if (!target && authorized_macs_contains(amacs,
@@ -806,7 +805,7 @@ static bool pin_scan_results(uint32_t wiphy_id, uint32_t ifindex, int err,
 
 	if (!target) {
 		l_debug("No PIN APs found, running the scan again");
-		wsc->scan_id = scan_active(device_get_ifindex(wsc->device),
+		wsc->scan_id = scan_active(netdev_get_ifindex(wsc->netdev),
 						wsc->wsc_ies, wsc->wsc_ies_size,
 						NULL, pin_scan_results,
 						wsc, NULL);
@@ -829,7 +828,7 @@ static bool wsc_initiate_scan(struct wsc *wsc,
 {
 	static const uint8_t wfa_oui[] = { 0x00, 0x50, 0xF2 };
 	struct wsc_probe_request req;
-	struct wiphy *wiphy = device_get_wiphy(wsc->device);
+	struct wiphy *wiphy = netdev_get_wiphy(wsc->netdev);
 	uint32_t bands;
 	uint8_t *wsc_data;
 	size_t wsc_data_size;
@@ -843,7 +842,7 @@ static bool wsc_initiate_scan(struct wsc *wsc,
 	req.config_methods = WSC_CONFIGURATION_METHOD_VIRTUAL_PUSH_BUTTON |
 				WSC_CONFIGURATION_METHOD_KEYPAD;
 
-	if (!wsc_uuid_from_addr(device_get_address(wsc->device), req.uuid_e))
+	if (!wsc_uuid_from_addr(netdev_get_address(wsc->netdev), req.uuid_e))
 		return false;
 
 	/* TODO: Grab from configuration file ? */
@@ -874,7 +873,7 @@ static bool wsc_initiate_scan(struct wsc *wsc,
 	if (!wsc->wsc_ies)
 		return false;
 
-	wsc->scan_id = scan_active(device_get_ifindex(wsc->device),
+	wsc->scan_id = scan_active(netdev_get_ifindex(wsc->netdev),
 					wsc->wsc_ies, wsc->wsc_ies_size,
 					NULL, callback, wsc, NULL);
 	if (!wsc->scan_id) {
@@ -986,8 +985,7 @@ static struct l_dbus_message *wsc_cancel(struct l_dbus *dbus,
 	if (wsc->wsc_association) {
 		int r;
 
-		r = netdev_disconnect(device_get_netdev(wsc->device),
-					wsc_disconnect_cb, wsc);
+		r = netdev_disconnect(wsc->netdev, wsc_disconnect_cb, wsc);
 		if (r == 0) {
 			wsc->pending_cancel = l_dbus_message_ref(message);
 			return NULL;
@@ -1043,15 +1041,16 @@ static void wsc_free(void *userdata)
 	l_free(wsc);
 }
 
-static void device_appeared(struct device *device, void *userdata)
+static void wsc_add_interface(struct netdev *netdev)
 {
 	struct l_dbus *dbus = dbus_get_bus();
 	struct wsc *wsc;
 
 	wsc = l_new(struct wsc, 1);
-	wsc->device = device;
+	wsc->netdev = netdev;
+	wsc->device = netdev_get_device(netdev);
 
-	if (!l_dbus_object_add_interface(dbus, device_get_path(device),
+	if (!l_dbus_object_add_interface(dbus, netdev_get_path(netdev),
 						IWD_WSC_INTERFACE,
 						wsc)) {
 		wsc_free(wsc);
@@ -1059,63 +1058,52 @@ static void device_appeared(struct device *device, void *userdata)
 	}
 }
 
-static void device_disappeared(struct device *device, void *userdata)
+static void wsc_remove_interface(struct netdev *netdev)
 {
 	struct l_dbus *dbus = dbus_get_bus();
 
-	l_dbus_object_remove_interface(dbus, device_get_path(device),
+	l_dbus_object_remove_interface(dbus, netdev_get_path(netdev),
 					IWD_WSC_INTERFACE);
 }
 
-static void device_mode_changed(struct device *device, void *userdata)
+static void wsc_netdev_watch(struct netdev *netdev,
+				enum netdev_watch_event event, void *userdata)
 {
-	enum device_mode mode = device_get_mode(device);
+	struct device *device = netdev_get_device(netdev);
 
-	switch (mode) {
-	case DEVICE_MODE_STATION:
-		device_appeared(device, userdata);
+	if (!device)
+		return;
+
+	switch (event) {
+	case NETDEV_WATCH_EVENT_UP:
+	case NETDEV_WATCH_EVENT_NEW:
+		if (netdev_get_iftype(netdev) == NETDEV_IFTYPE_STATION)
+			wsc_add_interface(netdev);
+		break;
+	case NETDEV_WATCH_EVENT_DOWN:
+	case NETDEV_WATCH_EVENT_DEL:
+		wsc_remove_interface(netdev);
 		break;
 	default:
-		device_disappeared(device, userdata);
 		break;
-	}
-}
-
-static void device_event(struct device *device, enum device_event event,
-								void *userdata)
-{
-	switch (event) {
-	case DEVICE_EVENT_INSERTED:
-		return device_appeared(device, userdata);
-	case DEVICE_EVENT_REMOVED:
-		return device_disappeared(device, userdata);
-	case DEVICE_EVENT_MODE_CHANGED:
-		return device_mode_changed(device, userdata);
 	}
 }
 
 bool wsc_init(void)
 {
-	if (!l_dbus_register_interface(dbus_get_bus(), IWD_WSC_INTERFACE,
+	l_debug("");
+	netdev_watch = netdev_watch_add(wsc_netdev_watch, NULL, NULL);
+	l_dbus_register_interface(dbus_get_bus(), IWD_WSC_INTERFACE,
 					setup_wsc_interface,
-					wsc_free, false))
-		return false;
-
-	device_watch = device_watch_add(device_event, NULL, NULL);
-	if (!device_watch) {
-		l_dbus_unregister_interface(dbus_get_bus(), IWD_WSC_INTERFACE);
-		return false;
-	}
-
+					wsc_free, false);
 	return true;
 }
 
 bool wsc_exit()
 {
 	l_debug("");
-
 	l_dbus_unregister_interface(dbus_get_bus(), IWD_WSC_INTERFACE);
-	device_watch_remove(device_watch);
+	netdev_watch_remove(netdev_watch);
 
 	return true;
 }

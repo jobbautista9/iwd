@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2016  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2018  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,16 +20,20 @@
  *
  */
 
-enum security;
-struct network_info;
+struct sae_sm;
+struct handshake_state;
 
-typedef bool (*known_networks_foreach_func_t)(const struct network_info *info,
-						void *user_data);
+typedef int (*sae_tx_packet_func_t)(const uint8_t *dest, const uint8_t *frame,
+					size_t len, void *user_data);
 
-bool known_networks_foreach(known_networks_foreach_func_t function,
-				void *user_data);
-bool known_networks_has_hidden(void);
-struct network_info *known_networks_find(const char *ssid,
-						enum security security);
+typedef void (*sae_complete_func_t)(uint16_t status, void *user_data);
 
-const char *known_network_get_path(const struct network_info *network);
+struct sae_sm *sae_sm_new(struct handshake_state *hs, sae_tx_packet_func_t tx,
+				sae_complete_func_t complete, void *user_data);
+void sae_sm_free(struct sae_sm *sm);
+
+void sae_rx_packet(struct sae_sm *sm, const uint8_t *src,
+				const uint8_t *frame, size_t len);
+void sae_timeout(struct sae_sm *sm);
+
+void sae_start(struct sae_sm *sm);

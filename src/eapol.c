@@ -687,7 +687,6 @@ struct eapol_sm {
 	bool use_eapol_start:1;
 	bool require_handshake:1;
 	bool eap_exchanged:1;
-	bool authenticator:1;
 	struct eap_state *eap;
 	struct eapol_frame *early_frame;
 	uint32_t watch_id;
@@ -1205,7 +1204,10 @@ static void eapol_handle_ptk_2_of_4(struct eapol_sm *sm,
 	if (!eapol_verify_mic(sm->handshake->akm_suite, ptk->kck, ek))
 		return;
 
-	/* Bitwise identical RSNE required */
+	/*
+	 * 12.7.6.3 b) 2) "the Authenticator checks that the RSNE bitwise
+	 * matches that from the (Re)Association Request frame.
+	 */
 	rsne = eapol_find_rsne(ek->key_data,
 				L_BE16_TO_CPU(ek->key_data_len), NULL);
 	if (!rsne || rsne[1] != sm->handshake->own_ie[1] ||
@@ -2040,22 +2042,17 @@ void eapol_register(struct eapol_sm *sm)
 {
 	l_queue_push_head(state_machines, sm);
 
-	sm->watch_id = eapol_frame_watch_add(sm->handshake->ifindex,
+	if (sm->handshake->authenticator) {
+		sm->watch_id = eapol_frame_watch_add(sm->handshake->ifindex,
+						eapol_rx_auth_packet, sm);
+
+		sm->started = true;
+
+		/* kick off handshake */
+		eapol_ptk_1_of_4_retry(NULL, sm);
+	} else
+		sm->watch_id = eapol_frame_watch_add(sm->handshake->ifindex,
 						eapol_rx_packet, sm);
-}
-
-void eapol_register_authenticator(struct eapol_sm *sm)
-{
-	l_queue_push_head(state_machines, sm);
-
-	sm->watch_id = eapol_frame_watch_add(sm->handshake->ifindex,
-			eapol_rx_auth_packet, sm);
-
-	sm->started = true;
-	sm->authenticator = true;
-
-	/* kick off handshake */
-	eapol_ptk_1_of_4_retry(NULL, sm);
 }
 
 bool eapol_start(struct eapol_sm *sm)

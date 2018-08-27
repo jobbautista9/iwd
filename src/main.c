@@ -34,14 +34,11 @@
 #include "linux/nl80211.h"
 
 #include "src/iwd.h"
-#include "src/netdev.h"
-#include "src/device.h"
 #include "src/wiphy.h"
 #include "src/dbus.h"
 #include "src/eap.h"
 #include "src/eapol.h"
 #include "src/scan.h"
-#include "src/knownnetworks.h"
 #include "src/rfkill.h"
 #include "src/ap.h"
 #include "src/plugin.h"
@@ -149,8 +146,7 @@ static void nl80211_appeared(void *user_data)
 	if (!wiphy_init(nl80211, phys, nophys))
 		l_error("Unable to init wiphy functionality");
 
-	if (!netdev_init(nl80211, interfaces, nointerfaces))
-		l_error("Unable to init netdev functionality");
+	netdev_set_nl80211(nl80211);
 
 	if (!scan_init(nl80211))
 		l_error("Unable to init scan functionality");
@@ -163,9 +159,7 @@ static void nl80211_vanished(void *user_data)
 	l_debug("Lost nl80211 interface");
 
 	ap_exit();
-	wsc_exit();
 	scan_exit();
-	netdev_exit();
 	wiphy_exit();
 }
 
@@ -392,7 +386,6 @@ int main(int argc, char *argv[])
 		config_dir = CONFIGDIR;
 
 	config_path = l_strdup_printf("/%s/%s", config_dir, "main.conf");
-
 	iwd_config = l_settings_new();
 
 	if (!l_settings_load_from_file(iwd_config, config_path))
@@ -400,50 +393,50 @@ int main(int argc, char *argv[])
 
 	l_free(config_path);
 
+	__eapol_set_config(iwd_config);
+
+	if (!l_settings_get_uint(iwd_config, "EAP", "mtu", &eap_mtu))
+		eap_mtu = 1400; /* on WiFi the real MTU is around 2304 */
+
+	exit_status = EXIT_FAILURE;
+
 	if (!dbus_init(enable_dbus_debug)) {
-		exit_status = EXIT_FAILURE;
-		goto done;
+		l_error("Failed to initialize D-Bus");
+		goto fail_dbus;
 	}
 
 	genl = l_genl_new_default();
 	if (!genl) {
 		l_error("Failed to open generic netlink socket");
-		exit_status = EXIT_FAILURE;
 		goto fail_genl;
 	}
 
 	if (getenv("IWD_GENL_DEBUG"))
 		l_genl_set_debug(genl, do_debug, "[GENL] ", NULL);
 
-	if (!device_init()) {
-		exit_status = EXIT_FAILURE;
-		goto fail_device;
-	}
-
-	l_debug("Opening nl80211 interface");
-
 	nl80211 = l_genl_family_new(genl, NL80211_GENL_NAME);
 	if (!nl80211) {
 		l_error("Failed to open nl80211 interface");
-		exit_status = EXIT_FAILURE;
 		goto fail_nl80211;
 	}
 
 	l_genl_family_set_watches(nl80211, nl80211_appeared, nl80211_vanished,
 								nl80211, NULL);
 
-	if (!l_settings_get_uint(iwd_config, "EAP", "mtu", &eap_mtu))
-		eap_mtu = 1400; /* on WiFi the real MTU is around 2304 */
+	eap_init(eap_mtu);
+	eapol_init();
+	rfkill_init();
 
-	__eapol_set_config(iwd_config);
+	if (!netdev_init(interfaces, nointerfaces))
+		goto fail_netdev;
+
+	if (!device_init())
+		goto fail_device;
 
 	adhoc_init();
 	wsc_init();
-	eap_init(eap_mtu);
-	eapol_init();
 	network_init();
 	known_networks_init();
-	rfkill_init();
 	sim_auth_init();
 	plugin_init(plugins, noplugins);
 
@@ -452,26 +445,24 @@ int main(int argc, char *argv[])
 
 	plugin_exit();
 	sim_auth_exit();
-	rfkill_exit();
 	known_networks_exit();
 	network_exit();
-	eapol_exit();
-	eap_exit();
 	wsc_exit();
 	adhoc_exit();
+	device_exit();
+fail_device:
+	netdev_exit();
+fail_netdev:
+	rfkill_exit();
+	eapol_exit();
+	eap_exit();
 
 	l_genl_family_unref(nl80211);
-
 fail_nl80211:
-	device_exit();
-
-fail_device:
 	l_genl_unref(genl);
-
 fail_genl:
 	dbus_exit();
-
-done:
+fail_dbus:
 	l_settings_free(iwd_config);
 
 	l_signal_remove(signal);

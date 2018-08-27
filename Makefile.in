@@ -158,7 +158,7 @@ am__EXEEXT_3 = unit/test-cmac-aes$(EXEEXT) unit/test-hmac-md5$(EXEEXT) \
 	unit/test-ssid-security$(EXEEXT) unit/test-arc4$(EXEEXT) \
 	unit/test-wsc$(EXEEXT) unit/test-eap-mschapv2$(EXEEXT) \
 	unit/test-eap-sim$(EXEEXT) unit/test-client$(EXEEXT) \
-	unit/test-ecc$(EXEEXT)
+	unit/test-ecc$(EXEEXT) unit/test-sae$(EXEEXT)
 @MAINTAINER_MODE_TRUE@am__EXEEXT_4 = $(am__EXEEXT_3)
 PROGRAMS = $(bin_PROGRAMS) $(libexec_PROGRAMS) $(noinst_PROGRAMS)
 am__client_iwctl_SOURCES_DIST = client/main.c client/adapter.c \
@@ -216,8 +216,8 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/netdev.h \
 	src/eap-aka.c src/simutil.h src/simutil.c src/ap.h src/ap.c \
 	src/simauth.h src/simauth.c src/plugin.h src/plugin.c \
 	src/eap-peap.c src/eap-gtc.c src/eap-pwd.c src/ecc.h src/ecc.c \
-	src/adhoc.h src/adhoc.c plugins/sim_hardcoded.c \
-	plugins/ofono.c
+	src/adhoc.h src/adhoc.c src/sae.h src/sae.c \
+	plugins/sim_hardcoded.c plugins/ofono.c
 @SIM_HARDCODED_TRUE@am__objects_2 = plugins/sim_hardcoded.$(OBJEXT)
 @OFONO_TRUE@am__objects_3 = plugins/ofono.$(OBJEXT)
 am__objects_4 = $(am__objects_2) $(am__objects_3)
@@ -237,7 +237,7 @@ am_src_iwd_OBJECTS = src/main.$(OBJEXT) src/netdev.$(OBJEXT) \
 	src/simauth.$(OBJEXT) src/plugin.$(OBJEXT) \
 	src/eap-peap.$(OBJEXT) src/eap-gtc.$(OBJEXT) \
 	src/eap-pwd.$(OBJEXT) src/ecc.$(OBJEXT) src/adhoc.$(OBJEXT) \
-	$(am__objects_4)
+	src/sae.$(OBJEXT) $(am__objects_4)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am_tools_hwsim_OBJECTS = tools/hwsim.$(OBJEXT) src/util.$(OBJEXT) \
 	src/storage.$(OBJEXT) src/common.$(OBJEXT)
@@ -313,6 +313,11 @@ am_unit_test_prf_sha1_OBJECTS = unit/test-prf-sha1.$(OBJEXT) \
 	src/crypto.$(OBJEXT)
 unit_test_prf_sha1_OBJECTS = $(am_unit_test_prf_sha1_OBJECTS)
 unit_test_prf_sha1_DEPENDENCIES = ell/libell-internal.la
+am_unit_test_sae_OBJECTS = unit/test-sae.$(OBJEXT) src/sae.$(OBJEXT) \
+	src/crypto.$(OBJEXT) src/ie.$(OBJEXT) src/handshake.$(OBJEXT) \
+	src/util.$(OBJEXT) src/ecc.$(OBJEXT)
+unit_test_sae_OBJECTS = $(am_unit_test_sae_OBJECTS)
+unit_test_sae_DEPENDENCIES = ell/libell-internal.la
 am_unit_test_ssid_security_OBJECTS =  \
 	unit/test-ssid-security.$(OBJEXT) src/ie.$(OBJEXT) \
 	src/common.$(OBJEXT)
@@ -374,7 +379,7 @@ SOURCES = $(ell_libell_internal_la_SOURCES) $(client_iwctl_SOURCES) \
 	$(unit_test_hmac_md5_SOURCES) $(unit_test_hmac_sha1_SOURCES) \
 	$(unit_test_hmac_sha256_SOURCES) $(unit_test_ie_SOURCES) \
 	$(unit_test_kdf_sha256_SOURCES) $(unit_test_mpdu_SOURCES) \
-	$(unit_test_prf_sha1_SOURCES) \
+	$(unit_test_prf_sha1_SOURCES) $(unit_test_sae_SOURCES) \
 	$(unit_test_ssid_security_SOURCES) \
 	$(unit_test_ssid_to_utf8_SOURCES) $(unit_test_wsc_SOURCES)
 DIST_SOURCES = $(ell_libell_internal_la_SOURCES) \
@@ -388,7 +393,7 @@ DIST_SOURCES = $(ell_libell_internal_la_SOURCES) \
 	$(unit_test_hmac_md5_SOURCES) $(unit_test_hmac_sha1_SOURCES) \
 	$(unit_test_hmac_sha256_SOURCES) $(unit_test_ie_SOURCES) \
 	$(unit_test_kdf_sha256_SOURCES) $(unit_test_mpdu_SOURCES) \
-	$(unit_test_prf_sha1_SOURCES) \
+	$(unit_test_prf_sha1_SOURCES) $(unit_test_sae_SOURCES) \
 	$(unit_test_ssid_security_SOURCES) \
 	$(unit_test_ssid_to_utf8_SOURCES) $(unit_test_wsc_SOURCES)
 am__can_run_installinfo = \
@@ -866,6 +871,7 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h \
 					src/eap-pwd.c \
 					src/ecc.h src/ecc.c \
 					src/adhoc.h src/adhoc.c \
+					src/sae.h src/sae.c \
 					$(builtin_sources)
 
 src_iwd_LDADD = ell/libell-internal.la -ldl
@@ -919,7 +925,8 @@ unit_tests = unit/test-cmac-aes \
 		unit/test-crypto unit/test-eapol unit/test-mpdu \
 		unit/test-ie unit/test-ssid-to-utf8 unit/test-ssid-security \
 		unit/test-arc4 unit/test-wsc unit/test-eap-mschapv2 \
-		unit/test-eap-sim unit/test-client unit/test-ecc
+		unit/test-eap-sim unit/test-client unit/test-ecc \
+		unit/test-sae
 
 ell_pem_files = cert-ca-key.pem cert-client-key.pem cert-client-key-pkcs8.pem \
 		cert-server-key.pem cert-server-key-pkcs8.pem \
@@ -1025,6 +1032,15 @@ unit_test_client_SOURCES = unit/test-client.c \
 unit_test_client_LDADD = ell/libell-internal.la -lreadline
 unit_test_ecc_SOURCES = unit/test-ecc.c src/ecc.c src/ecc.h
 unit_test_ecc_LDADD = ell/libell-internal.la
+unit_test_sae_SOURCES = unit/test-sae.c \
+				src/sae.h src/sae.c \
+				src/crypto.h src/crypto.c \
+				src/ie.h src/ie.c \
+				src/handshake.h src/handshake.c \
+				src/util.h src/util.c \
+				src/ecc.h src/ecc.c
+
+unit_test_sae_LDADD = ell/libell-internal.la
 manual_pages = doc/iwmon.1
 @BUILD_DOCS_TRUE@dist_man_MANS = $(manual_pages)
 EXTRA_DIST = src/genbuiltin src/iwd.service.in src/net.connman.iwd.service \
@@ -1395,6 +1411,7 @@ src/eap-pwd.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/ecc.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/adhoc.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/sae.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 plugins/$(am__dirstamp):
 	@$(MKDIR_P) plugins
 	@: > plugins/$(am__dirstamp)
@@ -1523,6 +1540,12 @@ unit/test-prf-sha1.$(OBJEXT): unit/$(am__dirstamp) \
 unit/test-prf-sha1$(EXEEXT): $(unit_test_prf_sha1_OBJECTS) $(unit_test_prf_sha1_DEPENDENCIES) $(EXTRA_unit_test_prf_sha1_DEPENDENCIES) unit/$(am__dirstamp)
 	@rm -f unit/test-prf-sha1$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(unit_test_prf_sha1_OBJECTS) $(unit_test_prf_sha1_LDADD) $(LIBS)
+unit/test-sae.$(OBJEXT): unit/$(am__dirstamp) \
+	unit/$(DEPDIR)/$(am__dirstamp)
+
+unit/test-sae$(EXEEXT): $(unit_test_sae_OBJECTS) $(unit_test_sae_DEPENDENCIES) $(EXTRA_unit_test_sae_DEPENDENCIES) unit/$(am__dirstamp)
+	@rm -f unit/test-sae$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(unit_test_sae_OBJECTS) $(unit_test_sae_LDADD) $(LIBS)
 unit/test-ssid-security.$(OBJEXT): unit/$(am__dirstamp) \
 	unit/$(DEPDIR)/$(am__dirstamp)
 
@@ -1650,6 +1673,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/network.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/plugin.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/rfkill.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/sae.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/scan.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/simauth.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/simutil.Po@am__quote@
@@ -1676,6 +1700,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-kdf-sha256.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-mpdu.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-prf-sha1.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-sae.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-ssid-security.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-ssid-to-utf8.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-wsc.Po@am__quote@
@@ -2147,6 +2172,13 @@ unit/test-client.log: unit/test-client$(EXEEXT)
 unit/test-ecc.log: unit/test-ecc$(EXEEXT)
 	@p='unit/test-ecc$(EXEEXT)'; \
 	b='unit/test-ecc'; \
+	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
+	--log-file $$b.log --trs-file $$b.trs \
+	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
+	"$$tst" $(AM_TESTS_FD_REDIRECT)
+unit/test-sae.log: unit/test-sae$(EXEEXT)
+	@p='unit/test-sae$(EXEEXT)'; \
+	b='unit/test-sae'; \
 	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
 	--log-file $$b.log --trs-file $$b.trs \
 	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \

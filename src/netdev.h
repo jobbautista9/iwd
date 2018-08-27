@@ -23,6 +23,7 @@
 #include <stdbool.h>
 
 struct netdev;
+struct device;
 struct scan_bss;
 struct handshake_state;
 struct eapol_sm;
@@ -49,6 +50,8 @@ enum netdev_event {
 };
 
 enum netdev_watch_event {
+	NETDEV_WATCH_EVENT_NEW,
+	NETDEV_WATCH_EVENT_DEL,
 	NETDEV_WATCH_EVENT_UP,
 	NETDEV_WATCH_EVENT_DOWN,
 	NETDEV_WATCH_EVENT_NAME_CHANGE,
@@ -61,7 +64,8 @@ enum netdev_iftype {
 	NETDEV_IFTYPE_AP = 3,
 };
 
-typedef void (*netdev_command_func_t) (bool result, void *user_data);
+typedef void (*netdev_command_cb_t)(struct netdev *netdev, int result,
+						void *user_data);
 typedef void (*netdev_connect_cb_t)(struct netdev *netdev,
 					enum netdev_result result,
 					void *user_data);
@@ -70,14 +74,8 @@ typedef void (*netdev_event_func_t)(struct netdev *netdev,
 					void *user_data);
 typedef void (*netdev_disconnect_cb_t)(struct netdev *netdev, bool result,
 					void *user_data);
-typedef void (*netdev_adhoc_cb_t)(struct netdev *netdev, int result,
-					void *user_data);
 typedef void (*netdev_watch_func_t)(struct netdev *netdev,
 					enum netdev_watch_event event,
-					void *user_data);
-typedef void (*netdev_set_powered_cb_t)(struct netdev *netdev, int result,
-					void *user_data);
-typedef void (*netdev_set_4addr_cb_t)(struct netdev *netdev, int result,
 					void *user_data);
 typedef void (*netdev_destroy_func_t)(void *user_data);
 typedef void (*netdev_eapol_event_func_t)(unsigned int event,
@@ -101,13 +99,17 @@ struct wiphy *netdev_get_wiphy(struct netdev *netdev);
 const uint8_t *netdev_get_address(struct netdev *netdev);
 uint32_t netdev_get_ifindex(struct netdev *netdev);
 enum netdev_iftype netdev_get_iftype(struct netdev *netdev);
-int netdev_set_iftype(struct netdev *netdev, enum netdev_iftype type);
+int netdev_set_iftype(struct netdev *netdev, enum netdev_iftype type,
+			netdev_command_cb_t cb, void *user_data,
+			netdev_destroy_func_t destroy);
 int netdev_set_4addr(struct netdev *netdev, bool use_4addr,
-			netdev_set_4addr_cb_t cb, void *user_data,
+			netdev_command_cb_t cb, void *user_data,
 			netdev_destroy_func_t destroy);
 bool netdev_get_4addr(struct netdev *netdev);
 const char *netdev_get_name(struct netdev *netdev);
 bool netdev_get_is_up(struct netdev *netdev);
+struct device *netdev_get_device(struct netdev *netdev);
+const char *netdev_get_path(struct netdev *netdev);
 
 struct handshake_state *netdev_handshake_state_new(struct netdev *netdev);
 struct handshake_state *netdev_get_handshake(struct netdev *netdev);
@@ -139,13 +141,13 @@ int netdev_del_station(struct netdev *netdev, const uint8_t *sta,
 
 int netdev_join_adhoc(struct netdev *netdev, const char *ssid,
 			struct iovec *extra_ie, size_t extra_ie_elems,
-			bool control_port, netdev_adhoc_cb_t cb,
+			bool control_port, netdev_command_cb_t cb,
 			void *user_data);
-int netdev_leave_adhoc(struct netdev *netdev, netdev_adhoc_cb_t cb,
+int netdev_leave_adhoc(struct netdev *netdev, netdev_command_cb_t cb,
 			void *user_data);
 
 int netdev_set_powered(struct netdev *netdev, bool powered,
-				netdev_set_powered_cb_t cb, void *user_data,
+				netdev_command_cb_t cb, void *user_data,
 				netdev_destroy_func_t destroy);
 
 int netdev_neighbor_report_req(struct netdev *netdev,
@@ -165,16 +167,11 @@ void netdev_handshake_failed(struct handshake_state *hs, uint16_t reason_code);
 
 struct netdev *netdev_find(int ifindex);
 
-uint32_t netdev_watch_add(struct netdev *netdev, netdev_watch_func_t func,
-				void *user_data);
-bool netdev_watch_remove(struct netdev *netdev, uint32_t id);
+uint32_t netdev_watch_add(netdev_watch_func_t func,
+				void *user_data, netdev_destroy_func_t destroy);
+bool netdev_watch_remove(uint32_t id);
 
 uint32_t netdev_station_watch_add(struct netdev *netdev,
 		netdev_station_watch_func_t func, void *user_data);
 
 bool netdev_station_watch_remove(struct netdev *netdev, uint32_t id);
-
-bool netdev_init(struct l_genl_family *in,
-				const char *whitelist, const char *blacklist);
-bool netdev_exit(void);
-void netdev_shutdown(void);
