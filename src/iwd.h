@@ -22,6 +22,7 @@
 
 #define uninitialized_var(x) x = x
 
+struct l_genl_family;
 struct device;
 
 typedef void (*iwd_device_foreach_func)(struct device *, void *data);
@@ -32,6 +33,11 @@ const struct l_settings *iwd_get_config(void);
 
 void iwd_shutdown(void);
 
+bool netdev_init(const char *whitelist, const char *blacklist);
+void netdev_exit(void);
+void netdev_set_nl80211(struct l_genl_family *nl80211);
+void netdev_shutdown(void);
+
 void network_init();
 void network_exit();
 
@@ -40,3 +46,9 @@ void sim_auth_exit(void);
 
 bool wsc_init(void);
 bool wsc_exit();
+
+bool known_networks_init(void);
+void known_networks_exit(void);
+
+bool device_init(void);
+void device_exit(void);

@@ -47,14 +47,6 @@
 #include "src/ap.h"
 #include "src/adhoc.h"
 
-struct device_watchlist_item {
-	uint32_t id;
-	device_watch_func_t added;
-	device_watch_func_t removed;
-	void *userdata;
-	device_destroy_func_t destroy;
-};
-
 struct autoconnect_entry {
 	uint16_t rank;
 	struct network *network;
@@ -74,15 +66,12 @@ struct device {
 	struct l_queue *autoconnect_list;
 	struct l_dbus_message *connect_pending;
 	struct l_dbus_message *disconnect_pending;
-	uint32_t netdev_watch_id;
 	struct watchlist state_watches;
 	struct timespec roam_min_time;
 	struct l_timeout *roam_trigger_timeout;
 	uint32_t roam_scan_id;
 	uint8_t preauth_bssid[ETH_ALEN];
 	struct signal_agent *signal_agent;
-	struct l_dbus_message *start_ap_pending;
-	struct l_dbus_message *stop_ap_pending;
 
 	struct wiphy *wiphy;
 	struct netdev *netdev;
@@ -96,8 +85,6 @@ struct device {
 	bool seen_hidden_networks : 1;
 
 	uint32_t ap_roam_watch;
-
-	enum device_mode mode;
 };
 
 struct signal_agent {
@@ -106,24 +93,13 @@ struct signal_agent {
 	unsigned int disconnect_watch;
 };
 
-static struct watchlist device_watches;
 static struct l_queue *device_list;
+static uint32_t netdev_watch;
 
 static void device_roam_timeout_rearm(struct device *device, int seconds);
 
 static void device_netdev_event(struct netdev *netdev, enum netdev_event event,
 					void *user_data);
-
-uint32_t device_watch_add(device_watch_func_t func,
-				void *userdata, device_destroy_func_t destroy)
-{
-	return watchlist_add(&device_watches, func, userdata, destroy);
-}
-
-bool device_watch_remove(uint32_t id)
-{
-	return watchlist_remove(&device_watches, id);
-}
 
 void __iwd_device_foreach(iwd_device_foreach_func func, void *user_data)
 {
@@ -408,7 +384,8 @@ static bool new_scan_results(uint32_t wiphy_id, uint32_t ifindex, int err,
 	if (err)
 		return false;
 
-	if (device->mode == DEVICE_MODE_AP)
+	/* TODO: Remove when Device/Station split is done */
+	if (netdev_get_iftype(device->netdev) != NETDEV_IFTYPE_STATION)
 		return false;
 
 	device_set_scan_results(device, bss_list);
@@ -445,29 +422,9 @@ struct wiphy *device_get_wiphy(struct device *device)
 	return device->wiphy;
 }
 
-struct netdev *device_get_netdev(struct device *device)
-{
-	return device->netdev;
-}
-
-uint32_t device_get_ifindex(struct device *device)
-{
-	return device->index;
-}
-
-const uint8_t *device_get_address(struct device *device)
-{
-	return netdev_get_address(device->netdev);
-}
-
 enum device_state device_get_state(struct device *device)
 {
 	return device->state;
-}
-
-enum device_mode device_get_mode(struct device *device)
-{
-	return device->mode;
 }
 
 static void periodic_scan_trigger(int err, void *user_data)
@@ -779,10 +736,15 @@ static struct handshake_state *device_handshake_setup(struct device *device,
 			handshake_state_set_own_wpa(hs, rsne_buf);
 		}
 
-		if (security == SECURITY_PSK)
-			handshake_state_set_pmk(hs, network_get_psk(network),
-						32);
-		else
+		if (security == SECURITY_PSK) {
+			/* SAE will generate/set the PMK */
+			if (info.akm_suites == IE_RSN_AKM_SUITE_SAE_SHA256)
+				handshake_state_set_passphrase(hs,
+					network_get_passphrase(network));
+			else
+				handshake_state_set_pmk(hs,
+						network_get_psk(network), 32);
+		} else
 			handshake_state_set_8021x_config(hs,
 						network_get_settings(network));
 
@@ -1596,7 +1558,6 @@ static void device_connect_cb(struct netdev *netdev, enum netdev_result result,
 
 	network_connected(device->connected_network);
 	device_enter_state(device, DEVICE_STATE_CONNECTED);
-	device->autoconnect = true;
 }
 
 static void device_signal_agent_notify(struct signal_agent *agent,
@@ -1608,7 +1569,7 @@ static void device_signal_agent_notify(struct signal_agent *agent,
 	msg = l_dbus_message_new_method_call(dbus_get_bus(),
 						agent->owner, agent->path,
 						IWD_SIGNAL_AGENT_INTERFACE,
-						"SignalLevelChanged");
+						"Changed");
 	l_dbus_message_set_arguments(msg, "oy", device_path, value);
 	l_dbus_message_set_no_reply(msg, true);
 
@@ -1744,6 +1705,7 @@ void device_connect_network(struct device *device, struct network *network,
 	}
 
 	device->connect_pending = l_dbus_message_ref(message);
+	device->autoconnect = true;
 }
 
 static void device_scan_triggered(int err, void *user_data)
@@ -1785,8 +1747,11 @@ static struct l_dbus_message *device_scan(struct l_dbus *dbus,
 	if (device->scan_pending)
 		return dbus_error_busy(message);
 
-	if (device->state == DEVICE_STATE_OFF ||
-			device->mode != DEVICE_MODE_STATION)
+	/* TODO: Remove when Device/Station split is done */
+	if (netdev_get_iftype(device->netdev) != NETDEV_IFTYPE_STATION)
+		return dbus_error_not_available(message);
+
+	if (device->state == DEVICE_STATE_OFF)
 		return dbus_error_failed(message);
 
 	device->scan_pending = l_dbus_message_ref(message);
@@ -2057,29 +2022,6 @@ static struct l_dbus_message *device_signal_agent_unregister(
 	return l_dbus_message_new_method_return(message);
 }
 
-static void device_prepare_adhoc_ap_mode(struct device *device)
-{
-	periodic_scan_stop(device);
-
-	/* Drop all state we can related to client mode */
-
-	if (device->scan_pending)
-		dbus_pending_reply(&device->scan_pending,
-				dbus_error_aborted(device->scan_pending));
-
-	l_hashmap_foreach_remove(device->networks,
-					device_remove_network, device);
-
-	l_queue_destroy(device->autoconnect_list, l_free);
-	device->autoconnect_list = l_queue_new();
-
-	l_queue_destroy(device->bss_list, bss_free);
-	device->bss_list = l_queue_new();
-
-	l_queue_destroy(device->networks_sorted, NULL);
-	device->networks_sorted = l_queue_new();
-}
-
 static void device_hidden_network_scan_triggered(int err, void *user_data)
 {
 	struct device *device = user_data;
@@ -2271,6 +2213,18 @@ struct set_generic_cb_data {
 	l_dbus_property_complete_cb_t complete;
 };
 
+static void set_generic_destroy(void *user_data)
+{
+	struct set_generic_cb_data *cb_data = user_data;
+
+	/* Message hasn't been replied to, generate an Aborted error */
+	if (cb_data->message)
+		cb_data->complete(cb_data->dbus, cb_data->message,
+					dbus_error_aborted(cb_data->message));
+
+	l_free(cb_data);
+}
+
 static void set_powered_cb(struct netdev *netdev, int result, void *user_data)
 {
 	struct set_generic_cb_data *cb_data = user_data;
@@ -2280,6 +2234,7 @@ static void set_powered_cb(struct netdev *netdev, int result, void *user_data)
 		reply = dbus_error_failed(cb_data->message);
 
 	cb_data->complete(cb_data->dbus, cb_data->message, reply);
+	cb_data->message = NULL;
 }
 
 static struct l_dbus_message *device_property_set_powered(struct l_dbus *dbus,
@@ -2291,6 +2246,7 @@ static struct l_dbus_message *device_property_set_powered(struct l_dbus *dbus,
 	struct device *device = user_data;
 	bool powered;
 	struct set_generic_cb_data *cb_data;
+	int r;
 
 	if (!l_dbus_message_iter_get_variant(new_value, "b", &powered))
 		return dbus_error_invalid_args(message);
@@ -2307,8 +2263,12 @@ static struct l_dbus_message *device_property_set_powered(struct l_dbus *dbus,
 	cb_data->message = message;
 	cb_data->complete = complete;
 
-	netdev_set_powered(device->netdev, powered, set_powered_cb, cb_data,
-				l_free);
+	r = netdev_set_powered(device->netdev, powered, set_powered_cb,
+					cb_data, set_generic_destroy);
+	if (r < 0) {
+		l_free(cb_data);
+		return dbus_error_from_errno(r, message);
+	}
 
 	return NULL;
 }
@@ -2335,6 +2295,7 @@ static void set_4addr_cb(struct netdev *netdev, int result, void *user_data)
 		reply = dbus_error_failed(cb_data->message);
 
 	cb_data->complete(cb_data->dbus, cb_data->message, reply);
+	cb_data->message = NULL;
 
 	l_dbus_property_changed(cb_data->dbus, device_get_path(cb_data->device),
 				IWD_DEVICE_INTERFACE, "WDS");
@@ -2365,8 +2326,8 @@ static struct l_dbus_message *device_property_set_4addr(struct l_dbus *dbus,
 	cb_data->message = message;
 	cb_data->complete = complete;
 
-	if (netdev_set_4addr(device->netdev, use_4addr, set_4addr_cb, cb_data,
-				l_free) < 0)
+	if (netdev_set_4addr(device->netdev, use_4addr, set_4addr_cb,
+				cb_data, set_generic_destroy) < 0)
 		return dbus_error_failed(message);
 
 	return NULL;
@@ -2393,10 +2354,11 @@ static bool device_property_get_state(struct l_dbus *dbus,
 	struct device *device = user_data;
 	const char *statestr = "unknown";
 
-	/* special case for AP mode */
-	if (device->mode == DEVICE_MODE_AP) {
+	/* TODO: Remove when Device/Station split is done */
+	if (netdev_get_iftype(device->netdev) != NETDEV_IFTYPE_STATION) {
+		uint32_t iftype = netdev_get_iftype(device->netdev);
 		l_dbus_message_builder_append_basic(builder, 's',
-				"accesspoint");
+						dbus_iftype_to_string(iftype));
 		return true;
 	}
 
@@ -2444,57 +2406,34 @@ static bool device_property_get_mode(struct l_dbus *dbus,
 					void *user_data)
 {
 	struct device *device = user_data;
-	const char *modestr = "unknown";
+	uint32_t iftype = netdev_get_iftype(device->netdev);
+	const char *modestr = dbus_iftype_to_string(iftype);
 
-	switch (device->mode) {
-	case DEVICE_MODE_STATION:
-		modestr = "station";
-		break;
-	case DEVICE_MODE_AP:
-		modestr = "ap";
-		break;
-	case DEVICE_MODE_ADHOC:
-		modestr = "ad-hoc";
-		break;
-	}
+	if (modestr == NULL)
+		modestr = "unknown";
 
 	l_dbus_message_builder_append_basic(builder, 's', modestr);
 
 	return true;
 }
 
-static struct l_dbus_message *device_change_mode(struct device *device,
-		struct l_dbus_message *message, enum device_mode mode)
+static void set_mode_cb(struct netdev *netdev, int result, void *user_data)
 {
-	if (device->mode == mode)
-		return dbus_error_already_exists(message);
+	struct set_generic_cb_data *cb_data = user_data;
+	struct l_dbus_message *reply = NULL;
 
-	/* ensure correct connection state in AP/AdHoc mode */
-	if ((mode == DEVICE_MODE_AP || mode == DEVICE_MODE_ADHOC) &&
-			(device->state != DEVICE_STATE_DISCONNECTED &&
-			device->state != DEVICE_STATE_AUTOCONNECT))
-		return dbus_error_busy(message);
+	if (result < 0)
+		reply = dbus_error_from_errno(result, cb_data->message);
 
-	switch (mode) {
-	case DEVICE_MODE_AP:
-		device_prepare_adhoc_ap_mode(device);
-		netdev_set_iftype(device->netdev, NETDEV_IFTYPE_AP);
-		break;
-	case DEVICE_MODE_ADHOC:
-		device_prepare_adhoc_ap_mode(device);
-		netdev_set_iftype(device->netdev, NETDEV_IFTYPE_ADHOC);
-		break;
-	case DEVICE_MODE_STATION:
-		netdev_set_iftype(device->netdev, NETDEV_IFTYPE_STATION);
-		break;
-	}
+	cb_data->complete(cb_data->dbus, cb_data->message, reply);
+	cb_data->message = NULL;
 
-	device->mode = mode;
+	l_dbus_property_changed(cb_data->dbus, device_get_path(cb_data->device),
+				IWD_DEVICE_INTERFACE, "Mode");
 
-	WATCHLIST_NOTIFY(&device_watches, device_watch_func_t, device,
-				DEVICE_EVENT_MODE_CHANGED);
-
-	return NULL;
+	/* TODO: Special case, remove when Device/Station split is made */
+	l_dbus_property_changed(cb_data->dbus, device_get_path(cb_data->device),
+				IWD_DEVICE_INTERFACE, "State");
 }
 
 static struct l_dbus_message *device_property_set_mode(struct l_dbus *dbus,
@@ -2504,27 +2443,45 @@ static struct l_dbus_message *device_property_set_mode(struct l_dbus *dbus,
 					void *user_data)
 {
 	struct device *device = user_data;
-	struct l_dbus_message *reply;
-	const char* mode;
-	enum device_mode change;
+	struct netdev *netdev = device->netdev;
+	const char *mode;
+	enum netdev_iftype iftype;
+	int r;
+	struct set_generic_cb_data *cb_data;
 
 	if (!l_dbus_message_iter_get_variant(new_value, "s", &mode))
 		return dbus_error_invalid_args(message);
 
 	if (!strcmp(mode, "station"))
-		change = DEVICE_MODE_STATION;
+		iftype = NETDEV_IFTYPE_STATION;
 	else if (!strcmp(mode, "ap"))
-		change = DEVICE_MODE_AP;
+		iftype = NETDEV_IFTYPE_AP;
 	else if (!strcmp(mode, "ad-hoc"))
-		change = DEVICE_MODE_ADHOC;
+		iftype = NETDEV_IFTYPE_ADHOC;
 	else
 		return dbus_error_invalid_args(message);
 
-	reply = device_change_mode(device, message, change);
-	if (reply)
-		return reply;
+	if (iftype == netdev_get_iftype(netdev)) {
+		complete(dbus, message, NULL);
+		return NULL;
+	}
 
-	complete(dbus, message, NULL);
+	/* TODO: Special case, remove when Device/Station split is made */
+	if (iftype != NETDEV_IFTYPE_STATION && device_is_busy(device))
+		return dbus_error_busy(message);
+
+	cb_data = l_new(struct set_generic_cb_data, 1);
+	cb_data->device = device;
+	cb_data->dbus = dbus;
+	cb_data->message = message;
+	cb_data->complete = complete;
+
+	r = netdev_set_iftype(device->netdev, iftype, set_mode_cb,
+					cb_data, set_generic_destroy);
+	if (r < 0) {
+		l_free(cb_data);
+		return dbus_error_from_errno(r, message);
+	}
 
 	return NULL;
 }
@@ -2574,19 +2531,25 @@ static void device_netdev_notify(struct netdev *netdev,
 					enum netdev_watch_event event,
 					void *user_data)
 {
-	struct device *device = user_data;
+	struct device *device = netdev_get_device(netdev);
 	struct l_dbus *dbus = dbus_get_bus();
+
+	if (!device)
+		return;
 
 	switch (event) {
 	case NETDEV_WATCH_EVENT_UP:
-		device->autoconnect = true;
-		device_enter_state(device, DEVICE_STATE_AUTOCONNECT);
-
-		WATCHLIST_NOTIFY(&device_watches, device_watch_func_t,
-						device, DEVICE_EVENT_INSERTED);
-
 		l_dbus_property_changed(dbus, device_get_path(device),
 					IWD_DEVICE_INTERFACE, "Powered");
+
+		/* TODO: Remove when Device/Station split is done */
+		if (netdev_get_iftype(device->netdev) != NETDEV_IFTYPE_STATION)
+			return;
+
+		if (device->autoconnect)
+			device_enter_state(device, DEVICE_STATE_AUTOCONNECT);
+		else
+			device_enter_state(device, DEVICE_STATE_DISCONNECTED);
 		break;
 	case NETDEV_WATCH_EVENT_DOWN:
 		device_enter_state(device, DEVICE_STATE_OFF);
@@ -2613,9 +2576,6 @@ static void device_netdev_notify(struct netdev *netdev,
 		l_queue_destroy(device->networks_sorted, NULL);
 		device->networks_sorted = l_queue_new();
 
-		WATCHLIST_NOTIFY(&device_watches, device_watch_func_t,
-						device, DEVICE_EVENT_REMOVED);
-
 		l_dbus_property_changed(dbus, device_get_path(device),
 					IWD_DEVICE_INTERFACE, "Powered");
 		break;
@@ -2626,6 +2586,8 @@ static void device_netdev_notify(struct netdev *netdev,
 	case NETDEV_WATCH_EVENT_ADDRESS_CHANGE:
 		l_dbus_property_changed(dbus, device_get_path(device),
 					IWD_DEVICE_INTERFACE, "Address");
+		break;
+	default:
 		break;
 	}
 }
@@ -2663,21 +2625,16 @@ struct device *device_create(struct wiphy *wiphy, struct netdev *netdev)
 
 	scan_ifindex_add(device->index);
 
-	netdev_set_iftype(device->netdev, NETDEV_IFTYPE_STATION);
-
-	device_netdev_notify(netdev, netdev_get_is_up(netdev) ?
-						NETDEV_WATCH_EVENT_UP :
-						NETDEV_WATCH_EVENT_DOWN,
-						device);
-	device->netdev_watch_id =
-		netdev_watch_add(netdev, device_netdev_notify, device);
-
 	/*
 	 * register for AP roam transition watch
 	 */
 	device->ap_roam_watch = netdev_frame_watch_add(netdev, 0x00d0,
 			action_ap_roam_prefix, sizeof(action_ap_roam_prefix),
 			device_ap_roam_frame_event, device);
+
+	if (netdev_get_is_up(netdev) &&
+			netdev_get_iftype(netdev) == NETDEV_IFTYPE_STATION)
+		device_enter_state(device, DEVICE_STATE_AUTOCONNECT);
 
 	return device;
 }
@@ -2703,9 +2660,6 @@ static void device_free(void *user)
 		signal_agent_free(device->signal_agent);
 	}
 
-	if (device->state != DEVICE_STATE_OFF)
-		WATCHLIST_NOTIFY(&device_watches, device_watch_func_t,
-						device, DEVICE_EVENT_REMOVED);
 
 	watchlist_destroy(&device->state_watches);
 
@@ -2718,8 +2672,6 @@ static void device_free(void *user)
 	l_queue_destroy(device->bss_list, bss_free);
 	l_queue_destroy(device->old_bss_list, bss_free);
 	l_queue_destroy(device->autoconnect_list, l_free);
-
-	netdev_watch_remove(device->netdev, device->netdev_watch_id);
 
 	l_timeout_remove(device->roam_trigger_timeout);
 
@@ -2746,23 +2698,20 @@ bool device_init(void)
 					NULL, false))
 		return false;
 
-	watchlist_init(&device_watches, NULL);
+	netdev_watch = netdev_watch_add(device_netdev_notify, NULL, NULL);
 	device_list = l_queue_new();
 
 	return true;
 }
 
-bool device_exit(void)
+void device_exit(void)
 {
 	if (!l_queue_isempty(device_list))
 		l_warn("device_list isn't empty!");
 
 	l_queue_destroy(device_list, device_free);
 	device_list = NULL;
-
-	watchlist_destroy(&device_watches);
+	netdev_watch_remove(netdev_watch);
 
 	l_dbus_unregister_interface(dbus_get_bus(), IWD_DEVICE_INTERFACE);
-
-	return true;
 }

@@ -28,12 +28,6 @@ struct wiphy;
 struct netdev;
 struct device;
 
-enum device_event {
-	DEVICE_EVENT_INSERTED,
-	DEVICE_EVENT_REMOVED,
-	DEVICE_EVENT_MODE_CHANGED,
-};
-
 enum device_state {
 	DEVICE_STATE_OFF = 0,		/* Interface down */
 	DEVICE_STATE_DISCONNECTED,	/* Disconnected, no auto-connect */
@@ -44,31 +38,14 @@ enum device_state {
 	DEVICE_STATE_ROAMING
 };
 
-enum device_mode {
-	DEVICE_MODE_STATION,
-	DEVICE_MODE_AP,
-	DEVICE_MODE_ADHOC,
-};
-
-typedef void (*device_watch_func_t)(struct device *device,
-					enum device_event event,
-					void *userdata);
 typedef void (*device_state_watch_func_t)(enum device_state, void *userdata);
 typedef void (*device_destroy_func_t)(void *userdata);
-
-uint32_t device_watch_add(device_watch_func_t func,
-				void *userdata, device_destroy_func_t destroy);
-bool device_watch_remove(uint32_t id);
 
 struct network *device_get_connected_network(struct device *device);
 const char *device_get_path(struct device *device);
 bool device_is_busy(struct device *device);
 struct wiphy *device_get_wiphy(struct device *device);
-struct netdev *device_get_netdev(struct device *device);
-uint32_t device_get_ifindex(struct device *device);
-const uint8_t *device_get_address(struct device *device);
 enum device_state device_get_state(struct device *device);
-enum device_mode device_get_mode(struct device *device);
 
 uint32_t device_add_state_watch(struct device *device,
 					device_state_watch_func_t func,
@@ -90,6 +67,3 @@ int device_disconnect(struct device *device);
 
 struct device *device_create(struct wiphy *wiphy, struct netdev *netdev);
 void device_remove(struct device *device);
-
-bool device_init(void);
-bool device_exit(void);
