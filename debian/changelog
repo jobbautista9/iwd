@@ -1,8 +1,12 @@
-iwd (0.7-1) UNRELEASED; urgency=medium
+iwd (0.7-1) unstable; urgency=medium
 
   * New upstream release.
+  * Bump Standards-Version to 4.2.1
+  * Add debian/patches/lfs.patch
+    - enable large file support by adding AC_SYS_LARGEFILE to configure.ac
+  * Enable all hardening flags (incl. bindnow)
 
- -- Andreas Henriksson <andreas@fatal.se>  Mon, 27 Aug 2018 19:55:06 +0200
+ -- Andreas Henriksson <andreas@fatal.se>  Mon, 27 Aug 2018 20:12:36 +0200
 
 iwd (0.6-1) unstable; urgency=medium
 
