@@ -1,3 +1,9 @@
+iwd (0.7-3) UNRELEASED; urgency=medium
+
+  * Properly escape libexecdir path configure argument
+
+ -- Andreas Henriksson <andreas@fatal.se>  Thu, 20 Sep 2018 21:14:53 +0200
+
 iwd (0.7-2) unstable; urgency=medium
 
   * Add debian/patches/disable-sae-test.patch
