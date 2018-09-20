@@ -8,11 +8,6 @@ builtin_sources =
 
 noinst_LTLIBRARIES = ell/libell-internal.la
 
-if DBUS_POLICY
-dbus_datadir = @DBUS_DATADIR@/dbus-1/system.d
-dist_dbus_data_DATA = src/iwd-dbus.conf
-endif
-
 ell_sources = ell/ell.h ell/private.h ell/missing.h \
 			ell/util.h ell/util.c \
 			ell/test.h ell/test.c \
@@ -69,63 +64,95 @@ ell_sources = ell/ell.h ell/private.h ell/missing.h \
 ell_libell_internal_la_SOURCES = $(ell_sources)
 
 bin_PROGRAMS =
+libexec_PROGRAMS =
+noinst_PROGRAMS =
 
-libexec_PROGRAMS = src/iwd
+if DBUS_POLICY
+dbus_datadir = @DBUS_DATADIR@/dbus-1/system.d
+dist_dbus_data_DATA =
+endif
 
-src_iwd_SOURCES = src/main.c linux/nl80211.h \
+if SYSTEMD_SERVICE
+systemd_unitdir = @SYSTEMD_UNITDIR@
+systemd_unit_DATA =
+
+dbus_busdir = @DBUS_BUSDIR@
+dbus_bus_DATA =
+endif
+
+eap_sources = src/eap.c src/eap.h src/eap-private.h \
+				src/eap-wsc.c src/eap-wsc.h \
+				src/eap-md5.c \
+				src/eap-tls.c \
+				src/eap-ttls.c \
+				src/eap-mschapv2.c src/eap-mschapv2.h \
+				src/eap-sim.c \
+				src/eap-aka.c \
+				src/eap-peap.c \
+				src/eap-gtc.c \
+				src/eap-pwd.c \
+				src/util.h src/util.c \
+				src/crypto.h src/crypto.c \
+				src/ecc.h src/ecc.c \
+				src/wscutil.h src/wscutil.c \
+				src/simutil.h src/simutil.c \
+				src/simauth.h src/simauth.c \
+				src/watchlist.h src/watchlist.c
+
+if DAEMON
+libexec_PROGRAMS += src/iwd
+
+src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h \
+					src/plugin.h src/plugin.c \
 					src/netdev.h src/netdev.c \
 					src/wiphy.h src/wiphy.c \
 					src/device.h src/device.c \
+					src/station.h src/station.c \
 					src/ie.h src/ie.c \
 					src/dbus.h src/dbus.c \
-					src/crypto.h src/crypto.c \
 					src/mpdu.h src/mpdu.c \
 					src/eapol.h src/eapol.c \
+					src/eapolutil.h src/eapolutil.c \
 					src/handshake.h src/handshake.c \
 					src/scan.h src/scan.c \
-					src/util.h src/util.c \
 					src/common.h src/common.c \
 					src/agent.h src/agent.c \
 					src/storage.h src/storage.c \
 					src/network.h src/network.c \
-					src/wscutil.h src/wscutil.c \
 					src/wsc.c \
-					src/eap-wsc.h src/eap-wsc.c \
-					src/eap.h src/eap.c src/eap-private.h \
-					src/eap-md5.c \
-					src/eap-tls.c src/eap-ttls.c \
-					src/eap-mschapv2.c src/eap-mschapv2.h \
 					src/backtrace.h src/backtrace.c \
 					src/knownnetworks.h \
 					src/knownnetworks.c \
 					src/rfkill.h src/rfkill.c \
-					src/watchlist.h src/watchlist.c \
 					src/ftutil.h src/ftutil.c \
-					src/iwd.h src/eap-sim.c src/eap-aka.c \
-					src/simutil.h src/simutil.c \
 					src/ap.h src/ap.c \
-					src/simauth.h src/simauth.c \
-					src/plugin.h src/plugin.c \
-					src/eap-peap.c \
-					src/eap-gtc.c \
-					src/eap-pwd.c \
-					src/ecc.h src/ecc.c \
 					src/adhoc.h src/adhoc.c \
 					src/sae.h src/sae.c \
+					$(eap_sources) \
 					$(builtin_sources)
-
 src_iwd_LDADD = ell/libell-internal.la -ldl
-
 src_iwd_DEPENDENCIES = ell/libell-internal.la
+
+if SIM_HARDCODED
+builtin_modules += sim_hardcoded
+builtin_sources += plugins/sim_hardcoded.c
+endif
+
+if OFONO
+builtin_modules += ofono
+builtin_sources += plugins/ofono.c
+endif
+
+if DBUS_POLICY
+dist_dbus_data_DATA += src/iwd-dbus.conf
+endif
 
 if SYSTEMD_SERVICE
 src_iwd_DEPENDENCIES += src/iwd.service
 
-systemd_unitdir = @SYSTEMD_UNITDIR@
-systemd_unit_DATA = src/iwd.service
-
-dbus_busdir = @DBUS_BUSDIR@
-dbus_bus_DATA = src/net.connman.iwd.service
+systemd_unit_DATA += src/iwd.service
+dbus_bus_DATA += src/net.connman.iwd.service
+endif
 endif
 
 if CLIENT
@@ -144,7 +171,7 @@ client_iwctl_SOURCES = client/main.c \
 			client/known-networks.c \
 			client/network.h client/network.c \
 			client/properties.h client/properties.c \
-			client/wsc.c
+			client/wsc.c client/station.c
 client_iwctl_LDADD = ell/libell-internal.la -lreadline
 endif
 
@@ -161,31 +188,51 @@ monitor_iwmon_SOURCES = monitor/main.c linux/nl80211.h \
 					src/util.h src/util.c \
 					src/crypto.h src/crypto.c \
 					src/watchlist.h src/watchlist.c \
-					src/eapol.h src/eapol.c \
-					src/handshake.h src/handshake.c \
-					src/eap.h src/eap.c src/eap-private.h \
-					src/eap-tls.c src/eap-ttls.c
+					src/eapolutil.h src/eapolutil.c \
+					src/handshake.h src/handshake.c
 monitor_iwmon_LDADD = ell/libell-internal.la
 endif
 
-noinst_PROGRAMS = tools/hwsim
-noinst_PROGRAMS += tools/test-runner
+if WIRED
+libexec_PROGRAMS += wired/ead
+
+wired_ead_SOURCES = wired/main.c wired/ethdev.h wired/ethdev.c \
+				wired/network.h wired/network.c \
+				wired/dbus.h wired/dbus.c $(eap_sources)
+wired_ead_LDADD = ell/libell-internal.la
+wired_ead_DEPENDENCIES = ell/libell-internal.la
+
+if DBUS_POLICY
+dist_dbus_data_DATA += wired/ead-dbus.conf
+endif
+
+if SYSTEMD_SERVICE
+wired_ead_DEPENDENCIES += wired/ead.service
+
+systemd_unit_DATA += wired/ead.service
+dbus_bus_DATA += wired/net.connman.ead.service
+endif
+endif
+
+if HWSIM
+bin_PROGRAMS += tools/hwsim
 
 tools_hwsim_SOURCES = tools/hwsim.c src/mpdu.h \
 					src/util.h src/util.c \
 					src/storage.h src/storage.c \
 					src/common.h src/common.c
 tools_hwsim_LDADD = ell/libell-internal.la
-tools_test_runner_LDADD = ell/libell-internal.la
 
-if SIM_HARDCODED
-builtin_modules += sim_hardcoded
-builtin_sources += plugins/sim_hardcoded.c
+if DBUS_POLICY
+dist_dbus_data_DATA += tools/hwsim-dbus.conf
+endif
 endif
 
-if OFONO
-builtin_modules += ofono
-builtin_sources += plugins/ofono.c
+if TOOLS
+noinst_PROGRAMS += tools/test-runner
+
+tools_test_runner_SOURCES = tools/test-runner.c
+tools_test_runner_LDADD = ell/libell-internal.la
 endif
 
 unit_tests = unit/test-cmac-aes \
@@ -212,6 +259,7 @@ unit_test_eap_sim_SOURCES = unit/test-eap-sim.c \
 		src/ie.h src/ie.c \
 		src/watchlist.h src/watchlist.c \
 		src/eapol.h src/eapol.c \
+		src/eapolutil.h src/eapolutil.c \
 		src/handshake.h src/handshake.c \
 		src/eap.h src/eap.c src/eap-private.h \
 		src/util.h src/util.c \
@@ -266,6 +314,7 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 				src/ie.h src/ie.c \
 				src/watchlist.h src/watchlist.c \
 				src/eapol.h src/eapol.c \
+				src/eapolutil.h src/eapolutil.c \
 				src/handshake.h src/handshake.c \
 				src/eap.h src/eap.c src/eap-private.h \
 				src/eap-tls.c src/eap-ttls.c \
@@ -285,6 +334,7 @@ unit_test_wsc_SOURCES = unit/test-wsc.c src/wscutil.h src/wscutil.c \
 				src/ie.h src/ie.c \
 				src/watchlist.h src/watchlist.c \
 				src/eapol.h src/eapol.c \
+				src/eapolutil.h src/eapolutil.c \
 				src/handshake.h src/handshake.c \
 				src/eap.h src/eap.c src/eap-private.h \
 				src/util.h src/util.c \
@@ -329,13 +379,19 @@ dist_man_MANS = $(manual_pages)
 endif
 
 EXTRA_DIST = src/genbuiltin src/iwd.service.in src/net.connman.iwd.service \
+			wired/ead.service.in wired/net.connman.ead.service \
 			doc/main.conf $(manual_pages:.1=.txt)
 
 AM_CFLAGS = -fvisibility=hidden
 
-CLEANFILES = src/iwd.service
+CLEANFILES = src/iwd.service wired/ead.service
 
-DISTCHECK_CONFIGURE_FLAGS = --disable-dbus-policy --disable-systemd-service
+DISTCHECK_CONFIGURE_FLAGS = --disable-dbus-policy --disable-systemd-service \
+				--enable-sim-hardcoded \
+				--enable-ofono \
+				--enable-wired \
+				--enable-hwsim \
+				--enable-tools
 
 DISTCLEANFILES = $(BUILT_SOURCES) $(unit_tests) $(manual_pages)
 

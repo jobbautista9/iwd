@@ -80,19 +80,30 @@ PRE_UNINSTALL = :
 POST_UNINSTALL = :
 build_triplet = @build@
 host_triplet = @host@
-bin_PROGRAMS = $(am__EXEEXT_1) $(am__EXEEXT_2)
-libexec_PROGRAMS = src/iwd$(EXEEXT)
-@SYSTEMD_SERVICE_TRUE@am__append_1 = src/iwd.service
-@CLIENT_TRUE@am__append_2 = client/iwctl
-@MONITOR_TRUE@am__append_3 = monitor/iwmon
-noinst_PROGRAMS = tools/hwsim$(EXEEXT) tools/test-runner$(EXEEXT) \
-	$(am__EXEEXT_4)
-@SIM_HARDCODED_TRUE@am__append_4 = sim_hardcoded
-@SIM_HARDCODED_TRUE@am__append_5 = plugins/sim_hardcoded.c
-@OFONO_TRUE@am__append_6 = ofono
-@OFONO_TRUE@am__append_7 = plugins/ofono.c
-@MAINTAINER_MODE_TRUE@am__append_8 = $(unit_tests)
-TESTS = $(am__EXEEXT_3)
+bin_PROGRAMS = $(am__EXEEXT_1) $(am__EXEEXT_2) $(am__EXEEXT_3)
+libexec_PROGRAMS = $(am__EXEEXT_4) $(am__EXEEXT_5)
+noinst_PROGRAMS = $(am__EXEEXT_6) $(am__EXEEXT_8)
+@DAEMON_TRUE@am__append_1 = src/iwd
+@DAEMON_TRUE@@SIM_HARDCODED_TRUE@am__append_2 = sim_hardcoded
+@DAEMON_TRUE@@SIM_HARDCODED_TRUE@am__append_3 = plugins/sim_hardcoded.c
+@DAEMON_TRUE@@OFONO_TRUE@am__append_4 = ofono
+@DAEMON_TRUE@@OFONO_TRUE@am__append_5 = plugins/ofono.c
+@DAEMON_TRUE@@DBUS_POLICY_TRUE@am__append_6 = src/iwd-dbus.conf
+@DAEMON_TRUE@@SYSTEMD_SERVICE_TRUE@am__append_7 = src/iwd.service
+@DAEMON_TRUE@@SYSTEMD_SERVICE_TRUE@am__append_8 = src/iwd.service
+@DAEMON_TRUE@@SYSTEMD_SERVICE_TRUE@am__append_9 = src/net.connman.iwd.service
+@CLIENT_TRUE@am__append_10 = client/iwctl
+@MONITOR_TRUE@am__append_11 = monitor/iwmon
+@WIRED_TRUE@am__append_12 = wired/ead
+@DBUS_POLICY_TRUE@@WIRED_TRUE@am__append_13 = wired/ead-dbus.conf
+@SYSTEMD_SERVICE_TRUE@@WIRED_TRUE@am__append_14 = wired/ead.service
+@SYSTEMD_SERVICE_TRUE@@WIRED_TRUE@am__append_15 = wired/ead.service
+@SYSTEMD_SERVICE_TRUE@@WIRED_TRUE@am__append_16 = wired/net.connman.ead.service
+@HWSIM_TRUE@am__append_17 = tools/hwsim
+@DBUS_POLICY_TRUE@@HWSIM_TRUE@am__append_18 = tools/hwsim-dbus.conf
+@TOOLS_TRUE@am__append_19 = tools/test-runner
+@MAINTAINER_MODE_TRUE@am__append_20 = $(unit_tests)
+TESTS = $(am__EXEEXT_7)
 subdir = .
 DIST_COMMON = $(srcdir)/Makefile.in $(srcdir)/Makefile.am \
 	$(top_srcdir)/configure $(am__configure_deps) \
@@ -146,10 +157,14 @@ am__v_lt_0 = --silent
 am__v_lt_1 = 
 @CLIENT_TRUE@am__EXEEXT_1 = client/iwctl$(EXEEXT)
 @MONITOR_TRUE@am__EXEEXT_2 = monitor/iwmon$(EXEEXT)
+@HWSIM_TRUE@am__EXEEXT_3 = tools/hwsim$(EXEEXT)
 am__installdirs = "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libexecdir)" \
 	"$(DESTDIR)$(man1dir)" "$(DESTDIR)$(dbus_busdir)" \
 	"$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_unitdir)"
-am__EXEEXT_3 = unit/test-cmac-aes$(EXEEXT) unit/test-hmac-md5$(EXEEXT) \
+@DAEMON_TRUE@am__EXEEXT_4 = src/iwd$(EXEEXT)
+@WIRED_TRUE@am__EXEEXT_5 = wired/ead$(EXEEXT)
+@TOOLS_TRUE@am__EXEEXT_6 = tools/test-runner$(EXEEXT)
+am__EXEEXT_7 = unit/test-cmac-aes$(EXEEXT) unit/test-hmac-md5$(EXEEXT) \
 	unit/test-hmac-sha1$(EXEEXT) unit/test-hmac-sha256$(EXEEXT) \
 	unit/test-prf-sha1$(EXEEXT) unit/test-kdf-sha256$(EXEEXT) \
 	unit/test-crypto$(EXEEXT) unit/test-eapol$(EXEEXT) \
@@ -159,7 +174,7 @@ am__EXEEXT_3 = unit/test-cmac-aes$(EXEEXT) unit/test-hmac-md5$(EXEEXT) \
 	unit/test-wsc$(EXEEXT) unit/test-eap-mschapv2$(EXEEXT) \
 	unit/test-eap-sim$(EXEEXT) unit/test-client$(EXEEXT) \
 	unit/test-ecc$(EXEEXT) unit/test-sae$(EXEEXT)
-@MAINTAINER_MODE_TRUE@am__EXEEXT_4 = $(am__EXEEXT_3)
+@MAINTAINER_MODE_TRUE@am__EXEEXT_8 = $(am__EXEEXT_7)
 PROGRAMS = $(bin_PROGRAMS) $(libexec_PROGRAMS) $(noinst_PROGRAMS)
 am__client_iwctl_SOURCES_DIST = client/main.c client/adapter.c \
 	client/agent.h client/agent.c client/agent-manager.h \
@@ -168,7 +183,7 @@ am__client_iwctl_SOURCES_DIST = client/main.c client/adapter.c \
 	client/dbus-proxy.c client/device.h client/device.c \
 	client/display.h client/display.c client/known-networks.c \
 	client/network.h client/network.c client/properties.h \
-	client/properties.c client/wsc.c
+	client/properties.c client/wsc.c client/station.c
 @CLIENT_TRUE@am_client_iwctl_OBJECTS = client/main.$(OBJEXT) \
 @CLIENT_TRUE@	client/adapter.$(OBJEXT) client/agent.$(OBJEXT) \
 @CLIENT_TRUE@	client/agent-manager.$(OBJEXT) \
@@ -178,7 +193,8 @@ am__client_iwctl_SOURCES_DIST = client/main.c client/adapter.c \
 @CLIENT_TRUE@	client/device.$(OBJEXT) client/display.$(OBJEXT) \
 @CLIENT_TRUE@	client/known-networks.$(OBJEXT) \
 @CLIENT_TRUE@	client/network.$(OBJEXT) \
-@CLIENT_TRUE@	client/properties.$(OBJEXT) client/wsc.$(OBJEXT)
+@CLIENT_TRUE@	client/properties.$(OBJEXT) client/wsc.$(OBJEXT) \
+@CLIENT_TRUE@	client/station.$(OBJEXT)
 client_iwctl_OBJECTS = $(am_client_iwctl_OBJECTS)
 @CLIENT_TRUE@client_iwctl_DEPENDENCIES = ell/libell-internal.la
 am__monitor_iwmon_SOURCES_DIST = monitor/main.c linux/nl80211.h \
@@ -186,66 +202,76 @@ am__monitor_iwmon_SOURCES_DIST = monitor/main.c linux/nl80211.h \
 	monitor/display.h monitor/display.c src/ie.h src/ie.c \
 	src/wscutil.h src/wscutil.c src/mpdu.h src/mpdu.c src/util.h \
 	src/util.c src/crypto.h src/crypto.c src/watchlist.h \
-	src/watchlist.c src/eapol.h src/eapol.c src/handshake.h \
-	src/handshake.c src/eap.h src/eap.c src/eap-private.h \
-	src/eap-tls.c src/eap-ttls.c
+	src/watchlist.c src/eapolutil.h src/eapolutil.c \
+	src/handshake.h src/handshake.c
 @MONITOR_TRUE@am_monitor_iwmon_OBJECTS = monitor/main.$(OBJEXT) \
 @MONITOR_TRUE@	monitor/nlmon.$(OBJEXT) monitor/pcap.$(OBJEXT) \
 @MONITOR_TRUE@	monitor/display.$(OBJEXT) src/ie.$(OBJEXT) \
 @MONITOR_TRUE@	src/wscutil.$(OBJEXT) src/mpdu.$(OBJEXT) \
 @MONITOR_TRUE@	src/util.$(OBJEXT) src/crypto.$(OBJEXT) \
-@MONITOR_TRUE@	src/watchlist.$(OBJEXT) src/eapol.$(OBJEXT) \
-@MONITOR_TRUE@	src/handshake.$(OBJEXT) src/eap.$(OBJEXT) \
-@MONITOR_TRUE@	src/eap-tls.$(OBJEXT) src/eap-ttls.$(OBJEXT)
+@MONITOR_TRUE@	src/watchlist.$(OBJEXT) src/eapolutil.$(OBJEXT) \
+@MONITOR_TRUE@	src/handshake.$(OBJEXT)
 monitor_iwmon_OBJECTS = $(am_monitor_iwmon_OBJECTS)
 @MONITOR_TRUE@monitor_iwmon_DEPENDENCIES = ell/libell-internal.la
-am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/netdev.h \
-	src/netdev.c src/wiphy.h src/wiphy.c src/device.h src/device.c \
-	src/ie.h src/ie.c src/dbus.h src/dbus.c src/crypto.h \
-	src/crypto.c src/mpdu.h src/mpdu.c src/eapol.h src/eapol.c \
-	src/handshake.h src/handshake.c src/scan.h src/scan.c \
-	src/util.h src/util.c src/common.h src/common.c src/agent.h \
-	src/agent.c src/storage.h src/storage.c src/network.h \
-	src/network.c src/wscutil.h src/wscutil.c src/wsc.c \
-	src/eap-wsc.h src/eap-wsc.c src/eap.h src/eap.c \
-	src/eap-private.h src/eap-md5.c src/eap-tls.c src/eap-ttls.c \
-	src/eap-mschapv2.c src/eap-mschapv2.h src/backtrace.h \
-	src/backtrace.c src/knownnetworks.h src/knownnetworks.c \
-	src/rfkill.h src/rfkill.c src/watchlist.h src/watchlist.c \
-	src/ftutil.h src/ftutil.c src/iwd.h src/eap-sim.c \
-	src/eap-aka.c src/simutil.h src/simutil.c src/ap.h src/ap.c \
-	src/simauth.h src/simauth.c src/plugin.h src/plugin.c \
-	src/eap-peap.c src/eap-gtc.c src/eap-pwd.c src/ecc.h src/ecc.c \
-	src/adhoc.h src/adhoc.c src/sae.h src/sae.c \
-	plugins/sim_hardcoded.c plugins/ofono.c
-@SIM_HARDCODED_TRUE@am__objects_2 = plugins/sim_hardcoded.$(OBJEXT)
-@OFONO_TRUE@am__objects_3 = plugins/ofono.$(OBJEXT)
-am__objects_4 = $(am__objects_2) $(am__objects_3)
-am_src_iwd_OBJECTS = src/main.$(OBJEXT) src/netdev.$(OBJEXT) \
-	src/wiphy.$(OBJEXT) src/device.$(OBJEXT) src/ie.$(OBJEXT) \
-	src/dbus.$(OBJEXT) src/crypto.$(OBJEXT) src/mpdu.$(OBJEXT) \
-	src/eapol.$(OBJEXT) src/handshake.$(OBJEXT) src/scan.$(OBJEXT) \
-	src/util.$(OBJEXT) src/common.$(OBJEXT) src/agent.$(OBJEXT) \
-	src/storage.$(OBJEXT) src/network.$(OBJEXT) \
-	src/wscutil.$(OBJEXT) src/wsc.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
-	src/eap.$(OBJEXT) src/eap-md5.$(OBJEXT) src/eap-tls.$(OBJEXT) \
+am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
+	src/plugin.h src/plugin.c src/netdev.h src/netdev.c \
+	src/wiphy.h src/wiphy.c src/device.h src/device.c \
+	src/station.h src/station.c src/ie.h src/ie.c src/dbus.h \
+	src/dbus.c src/mpdu.h src/mpdu.c src/eapol.h src/eapol.c \
+	src/eapolutil.h src/eapolutil.c src/handshake.h \
+	src/handshake.c src/scan.h src/scan.c src/common.h \
+	src/common.c src/agent.h src/agent.c src/storage.h \
+	src/storage.c src/network.h src/network.c src/wsc.c \
+	src/backtrace.h src/backtrace.c src/knownnetworks.h \
+	src/knownnetworks.c src/rfkill.h src/rfkill.c src/ftutil.h \
+	src/ftutil.c src/ap.h src/ap.c src/adhoc.h src/adhoc.c \
+	src/sae.h src/sae.c src/eap.c src/eap.h src/eap-private.h \
+	src/eap-wsc.c src/eap-wsc.h src/eap-md5.c src/eap-tls.c \
+	src/eap-ttls.c src/eap-mschapv2.c src/eap-mschapv2.h \
+	src/eap-sim.c src/eap-aka.c src/eap-peap.c src/eap-gtc.c \
+	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
+	src/ecc.h src/ecc.c src/wscutil.h src/wscutil.c src/simutil.h \
+	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
+	src/watchlist.c plugins/sim_hardcoded.c plugins/ofono.c
+am__objects_2 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
+	src/eap-md5.$(OBJEXT) src/eap-tls.$(OBJEXT) \
 	src/eap-ttls.$(OBJEXT) src/eap-mschapv2.$(OBJEXT) \
-	src/backtrace.$(OBJEXT) src/knownnetworks.$(OBJEXT) \
-	src/rfkill.$(OBJEXT) src/watchlist.$(OBJEXT) \
-	src/ftutil.$(OBJEXT) src/eap-sim.$(OBJEXT) \
-	src/eap-aka.$(OBJEXT) src/simutil.$(OBJEXT) src/ap.$(OBJEXT) \
-	src/simauth.$(OBJEXT) src/plugin.$(OBJEXT) \
+	src/eap-sim.$(OBJEXT) src/eap-aka.$(OBJEXT) \
 	src/eap-peap.$(OBJEXT) src/eap-gtc.$(OBJEXT) \
-	src/eap-pwd.$(OBJEXT) src/ecc.$(OBJEXT) src/adhoc.$(OBJEXT) \
-	src/sae.$(OBJEXT) $(am__objects_4)
+	src/eap-pwd.$(OBJEXT) src/util.$(OBJEXT) src/crypto.$(OBJEXT) \
+	src/ecc.$(OBJEXT) src/wscutil.$(OBJEXT) src/simutil.$(OBJEXT) \
+	src/simauth.$(OBJEXT) src/watchlist.$(OBJEXT)
+@DAEMON_TRUE@@SIM_HARDCODED_TRUE@am__objects_3 = plugins/sim_hardcoded.$(OBJEXT)
+@DAEMON_TRUE@@OFONO_TRUE@am__objects_4 = plugins/ofono.$(OBJEXT)
+am__objects_5 = $(am__objects_3) $(am__objects_4)
+@DAEMON_TRUE@am_src_iwd_OBJECTS = src/main.$(OBJEXT) \
+@DAEMON_TRUE@	src/plugin.$(OBJEXT) src/netdev.$(OBJEXT) \
+@DAEMON_TRUE@	src/wiphy.$(OBJEXT) src/device.$(OBJEXT) \
+@DAEMON_TRUE@	src/station.$(OBJEXT) src/ie.$(OBJEXT) \
+@DAEMON_TRUE@	src/dbus.$(OBJEXT) src/mpdu.$(OBJEXT) \
+@DAEMON_TRUE@	src/eapol.$(OBJEXT) src/eapolutil.$(OBJEXT) \
+@DAEMON_TRUE@	src/handshake.$(OBJEXT) src/scan.$(OBJEXT) \
+@DAEMON_TRUE@	src/common.$(OBJEXT) src/agent.$(OBJEXT) \
+@DAEMON_TRUE@	src/storage.$(OBJEXT) src/network.$(OBJEXT) \
+@DAEMON_TRUE@	src/wsc.$(OBJEXT) src/backtrace.$(OBJEXT) \
+@DAEMON_TRUE@	src/knownnetworks.$(OBJEXT) src/rfkill.$(OBJEXT) \
+@DAEMON_TRUE@	src/ftutil.$(OBJEXT) src/ap.$(OBJEXT) \
+@DAEMON_TRUE@	src/adhoc.$(OBJEXT) src/sae.$(OBJEXT) \
+@DAEMON_TRUE@	$(am__objects_2) $(am__objects_5)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
-am_tools_hwsim_OBJECTS = tools/hwsim.$(OBJEXT) src/util.$(OBJEXT) \
-	src/storage.$(OBJEXT) src/common.$(OBJEXT)
+am__tools_hwsim_SOURCES_DIST = tools/hwsim.c src/mpdu.h src/util.h \
+	src/util.c src/storage.h src/storage.c src/common.h \
+	src/common.c
+@HWSIM_TRUE@am_tools_hwsim_OBJECTS = tools/hwsim.$(OBJEXT) \
+@HWSIM_TRUE@	src/util.$(OBJEXT) src/storage.$(OBJEXT) \
+@HWSIM_TRUE@	src/common.$(OBJEXT)
 tools_hwsim_OBJECTS = $(am_tools_hwsim_OBJECTS)
-tools_hwsim_DEPENDENCIES = ell/libell-internal.la
-tools_test_runner_SOURCES = tools/test-runner.c
-tools_test_runner_OBJECTS = tools/test-runner.$(OBJEXT)
-tools_test_runner_DEPENDENCIES = ell/libell-internal.la
+@HWSIM_TRUE@tools_hwsim_DEPENDENCIES = ell/libell-internal.la
+am__tools_test_runner_SOURCES_DIST = tools/test-runner.c
+@TOOLS_TRUE@am_tools_test_runner_OBJECTS =  \
+@TOOLS_TRUE@	tools/test-runner.$(OBJEXT)
+tools_test_runner_OBJECTS = $(am_tools_test_runner_OBJECTS)
+@TOOLS_TRUE@tools_test_runner_DEPENDENCIES = ell/libell-internal.la
 am_unit_test_arc4_OBJECTS = unit/test-arc4.$(OBJEXT) \
 	src/crypto.$(OBJEXT)
 unit_test_arc4_OBJECTS = $(am_unit_test_arc4_OBJECTS)
@@ -272,13 +298,15 @@ unit_test_eap_mschapv2_DEPENDENCIES = ell/libell-internal.la
 am_unit_test_eap_sim_OBJECTS = unit/test-eap-sim.$(OBJEXT) \
 	src/crypto.$(OBJEXT) src/simutil.$(OBJEXT) src/ie.$(OBJEXT) \
 	src/watchlist.$(OBJEXT) src/eapol.$(OBJEXT) \
-	src/handshake.$(OBJEXT) src/eap.$(OBJEXT) src/util.$(OBJEXT) \
-	src/simauth.$(OBJEXT) src/eap-sim.$(OBJEXT)
+	src/eapolutil.$(OBJEXT) src/handshake.$(OBJEXT) \
+	src/eap.$(OBJEXT) src/util.$(OBJEXT) src/simauth.$(OBJEXT) \
+	src/eap-sim.$(OBJEXT)
 unit_test_eap_sim_OBJECTS = $(am_unit_test_eap_sim_OBJECTS)
 unit_test_eap_sim_DEPENDENCIES = ell/libell-internal.la
 am_unit_test_eapol_OBJECTS = unit/test-eapol.$(OBJEXT) \
 	src/crypto.$(OBJEXT) src/ie.$(OBJEXT) src/watchlist.$(OBJEXT) \
-	src/eapol.$(OBJEXT) src/handshake.$(OBJEXT) src/eap.$(OBJEXT) \
+	src/eapol.$(OBJEXT) src/eapolutil.$(OBJEXT) \
+	src/handshake.$(OBJEXT) src/eap.$(OBJEXT) \
 	src/eap-tls.$(OBJEXT) src/eap-ttls.$(OBJEXT) \
 	src/eap-md5.$(OBJEXT) src/util.$(OBJEXT)
 unit_test_eapol_OBJECTS = $(am_unit_test_eapol_OBJECTS)
@@ -331,10 +359,24 @@ unit_test_ssid_to_utf8_DEPENDENCIES = ell/libell-internal.la
 am_unit_test_wsc_OBJECTS = unit/test-wsc.$(OBJEXT) \
 	src/wscutil.$(OBJEXT) src/crypto.$(OBJEXT) src/ie.$(OBJEXT) \
 	src/watchlist.$(OBJEXT) src/eapol.$(OBJEXT) \
-	src/handshake.$(OBJEXT) src/eap.$(OBJEXT) src/util.$(OBJEXT) \
-	src/eap-wsc.$(OBJEXT)
+	src/eapolutil.$(OBJEXT) src/handshake.$(OBJEXT) \
+	src/eap.$(OBJEXT) src/util.$(OBJEXT) src/eap-wsc.$(OBJEXT)
 unit_test_wsc_OBJECTS = $(am_unit_test_wsc_OBJECTS)
 unit_test_wsc_DEPENDENCIES = ell/libell-internal.la
+am__wired_ead_SOURCES_DIST = wired/main.c wired/ethdev.h \
+	wired/ethdev.c wired/network.h wired/network.c wired/dbus.h \
+	wired/dbus.c src/eap.c src/eap.h src/eap-private.h \
+	src/eap-wsc.c src/eap-wsc.h src/eap-md5.c src/eap-tls.c \
+	src/eap-ttls.c src/eap-mschapv2.c src/eap-mschapv2.h \
+	src/eap-sim.c src/eap-aka.c src/eap-peap.c src/eap-gtc.c \
+	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
+	src/ecc.h src/ecc.c src/wscutil.h src/wscutil.c src/simutil.h \
+	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
+	src/watchlist.c
+@WIRED_TRUE@am_wired_ead_OBJECTS = wired/main.$(OBJEXT) \
+@WIRED_TRUE@	wired/ethdev.$(OBJEXT) wired/network.$(OBJEXT) \
+@WIRED_TRUE@	wired/dbus.$(OBJEXT) $(am__objects_2)
+wired_ead_OBJECTS = $(am_wired_ead_OBJECTS)
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
 am__v_P_0 = false
@@ -371,7 +413,7 @@ am__v_CCLD_0 = @echo "  CCLD    " $@;
 am__v_CCLD_1 = 
 SOURCES = $(ell_libell_internal_la_SOURCES) $(client_iwctl_SOURCES) \
 	$(monitor_iwmon_SOURCES) $(src_iwd_SOURCES) \
-	$(tools_hwsim_SOURCES) tools/test-runner.c \
+	$(tools_hwsim_SOURCES) $(tools_test_runner_SOURCES) \
 	$(unit_test_arc4_SOURCES) $(unit_test_client_SOURCES) \
 	$(unit_test_cmac_aes_SOURCES) $(unit_test_crypto_SOURCES) \
 	$(unit_test_eap_mschapv2_SOURCES) $(unit_test_eap_sim_SOURCES) \
@@ -381,11 +423,13 @@ SOURCES = $(ell_libell_internal_la_SOURCES) $(client_iwctl_SOURCES) \
 	$(unit_test_kdf_sha256_SOURCES) $(unit_test_mpdu_SOURCES) \
 	$(unit_test_prf_sha1_SOURCES) $(unit_test_sae_SOURCES) \
 	$(unit_test_ssid_security_SOURCES) \
-	$(unit_test_ssid_to_utf8_SOURCES) $(unit_test_wsc_SOURCES)
+	$(unit_test_ssid_to_utf8_SOURCES) $(unit_test_wsc_SOURCES) \
+	$(wired_ead_SOURCES)
 DIST_SOURCES = $(ell_libell_internal_la_SOURCES) \
 	$(am__client_iwctl_SOURCES_DIST) \
 	$(am__monitor_iwmon_SOURCES_DIST) $(am__src_iwd_SOURCES_DIST) \
-	$(tools_hwsim_SOURCES) tools/test-runner.c \
+	$(am__tools_hwsim_SOURCES_DIST) \
+	$(am__tools_test_runner_SOURCES_DIST) \
 	$(unit_test_arc4_SOURCES) $(unit_test_client_SOURCES) \
 	$(unit_test_cmac_aes_SOURCES) $(unit_test_crypto_SOURCES) \
 	$(unit_test_eap_mschapv2_SOURCES) $(unit_test_eap_sim_SOURCES) \
@@ -395,7 +439,8 @@ DIST_SOURCES = $(ell_libell_internal_la_SOURCES) \
 	$(unit_test_kdf_sha256_SOURCES) $(unit_test_mpdu_SOURCES) \
 	$(unit_test_prf_sha1_SOURCES) $(unit_test_sae_SOURCES) \
 	$(unit_test_ssid_security_SOURCES) \
-	$(unit_test_ssid_to_utf8_SOURCES) $(unit_test_wsc_SOURCES)
+	$(unit_test_ssid_to_utf8_SOURCES) $(unit_test_wsc_SOURCES) \
+	$(am__wired_ead_SOURCES_DIST)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -431,7 +476,8 @@ am__uninstall_files_from_dir = { \
 man1dir = $(mandir)/man1
 NROFF = nroff
 MANS = $(dist_man_MANS)
-am__dist_dbus_data_DATA_DIST = src/iwd-dbus.conf
+am__dist_dbus_data_DATA_DIST = src/iwd-dbus.conf wired/ead-dbus.conf \
+	tools/hwsim-dbus.conf
 DATA = $(dbus_bus_DATA) $(dist_dbus_data_DATA) $(noinst_DATA) \
 	$(systemd_unit_DATA)
 am__tagged_files = $(HEADERS) $(SOURCES) $(TAGS_FILES) \
@@ -773,11 +819,9 @@ top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
 AM_MAKEFLAGS = --no-print-directory
 ACLOCAL_AMFLAGS = -I build-aux
-builtin_modules = $(am__append_4) $(am__append_6)
-builtin_sources = $(am__append_5) $(am__append_7)
+builtin_modules = $(am__append_2) $(am__append_4)
+builtin_sources = $(am__append_3) $(am__append_5)
 noinst_LTLIBRARIES = ell/libell-internal.la
-@DBUS_POLICY_TRUE@dbus_datadir = @DBUS_DATADIR@/dbus-1/system.d
-@DBUS_POLICY_TRUE@dist_dbus_data_DATA = src/iwd-dbus.conf
 ell_sources = ell/ell.h ell/private.h ell/missing.h \
 			ell/util.h ell/util.c \
 			ell/test.h ell/test.c \
@@ -832,54 +876,65 @@ ell_sources = ell/ell.h ell/private.h ell/missing.h \
 			ell/fswatch.h ell/fswatch.c
 
 ell_libell_internal_la_SOURCES = $(ell_sources)
-src_iwd_SOURCES = src/main.c linux/nl80211.h \
-					src/netdev.h src/netdev.c \
-					src/wiphy.h src/wiphy.c \
-					src/device.h src/device.c \
-					src/ie.h src/ie.c \
-					src/dbus.h src/dbus.c \
-					src/crypto.h src/crypto.c \
-					src/mpdu.h src/mpdu.c \
-					src/eapol.h src/eapol.c \
-					src/handshake.h src/handshake.c \
-					src/scan.h src/scan.c \
-					src/util.h src/util.c \
-					src/common.h src/common.c \
-					src/agent.h src/agent.c \
-					src/storage.h src/storage.c \
-					src/network.h src/network.c \
-					src/wscutil.h src/wscutil.c \
-					src/wsc.c \
-					src/eap-wsc.h src/eap-wsc.c \
-					src/eap.h src/eap.c src/eap-private.h \
-					src/eap-md5.c \
-					src/eap-tls.c src/eap-ttls.c \
-					src/eap-mschapv2.c src/eap-mschapv2.h \
-					src/backtrace.h src/backtrace.c \
-					src/knownnetworks.h \
-					src/knownnetworks.c \
-					src/rfkill.h src/rfkill.c \
-					src/watchlist.h src/watchlist.c \
-					src/ftutil.h src/ftutil.c \
-					src/iwd.h src/eap-sim.c src/eap-aka.c \
-					src/simutil.h src/simutil.c \
-					src/ap.h src/ap.c \
-					src/simauth.h src/simauth.c \
-					src/plugin.h src/plugin.c \
-					src/eap-peap.c \
-					src/eap-gtc.c \
-					src/eap-pwd.c \
-					src/ecc.h src/ecc.c \
-					src/adhoc.h src/adhoc.c \
-					src/sae.h src/sae.c \
-					$(builtin_sources)
-
-src_iwd_LDADD = ell/libell-internal.la -ldl
-src_iwd_DEPENDENCIES = ell/libell-internal.la $(am__append_1)
+@DBUS_POLICY_TRUE@dbus_datadir = @DBUS_DATADIR@/dbus-1/system.d
+@DBUS_POLICY_TRUE@dist_dbus_data_DATA = $(am__append_6) \
+@DBUS_POLICY_TRUE@	$(am__append_13) $(am__append_18)
 @SYSTEMD_SERVICE_TRUE@systemd_unitdir = @SYSTEMD_UNITDIR@
-@SYSTEMD_SERVICE_TRUE@systemd_unit_DATA = src/iwd.service
+@SYSTEMD_SERVICE_TRUE@systemd_unit_DATA = $(am__append_8) \
+@SYSTEMD_SERVICE_TRUE@	$(am__append_15)
 @SYSTEMD_SERVICE_TRUE@dbus_busdir = @DBUS_BUSDIR@
-@SYSTEMD_SERVICE_TRUE@dbus_bus_DATA = src/net.connman.iwd.service
+@SYSTEMD_SERVICE_TRUE@dbus_bus_DATA = $(am__append_9) $(am__append_16)
+eap_sources = src/eap.c src/eap.h src/eap-private.h \
+				src/eap-wsc.c src/eap-wsc.h \
+				src/eap-md5.c \
+				src/eap-tls.c \
+				src/eap-ttls.c \
+				src/eap-mschapv2.c src/eap-mschapv2.h \
+				src/eap-sim.c \
+				src/eap-aka.c \
+				src/eap-peap.c \
+				src/eap-gtc.c \
+				src/eap-pwd.c \
+				src/util.h src/util.c \
+				src/crypto.h src/crypto.c \
+				src/ecc.h src/ecc.c \
+				src/wscutil.h src/wscutil.c \
+				src/simutil.h src/simutil.c \
+				src/simauth.h src/simauth.c \
+				src/watchlist.h src/watchlist.c
+
+@DAEMON_TRUE@src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h \
+@DAEMON_TRUE@					src/plugin.h src/plugin.c \
+@DAEMON_TRUE@					src/netdev.h src/netdev.c \
+@DAEMON_TRUE@					src/wiphy.h src/wiphy.c \
+@DAEMON_TRUE@					src/device.h src/device.c \
+@DAEMON_TRUE@					src/station.h src/station.c \
+@DAEMON_TRUE@					src/ie.h src/ie.c \
+@DAEMON_TRUE@					src/dbus.h src/dbus.c \
+@DAEMON_TRUE@					src/mpdu.h src/mpdu.c \
+@DAEMON_TRUE@					src/eapol.h src/eapol.c \
+@DAEMON_TRUE@					src/eapolutil.h src/eapolutil.c \
+@DAEMON_TRUE@					src/handshake.h src/handshake.c \
+@DAEMON_TRUE@					src/scan.h src/scan.c \
+@DAEMON_TRUE@					src/common.h src/common.c \
+@DAEMON_TRUE@					src/agent.h src/agent.c \
+@DAEMON_TRUE@					src/storage.h src/storage.c \
+@DAEMON_TRUE@					src/network.h src/network.c \
+@DAEMON_TRUE@					src/wsc.c \
+@DAEMON_TRUE@					src/backtrace.h src/backtrace.c \
+@DAEMON_TRUE@					src/knownnetworks.h \
+@DAEMON_TRUE@					src/knownnetworks.c \
+@DAEMON_TRUE@					src/rfkill.h src/rfkill.c \
+@DAEMON_TRUE@					src/ftutil.h src/ftutil.c \
+@DAEMON_TRUE@					src/ap.h src/ap.c \
+@DAEMON_TRUE@					src/adhoc.h src/adhoc.c \
+@DAEMON_TRUE@					src/sae.h src/sae.c \
+@DAEMON_TRUE@					$(eap_sources) \
+@DAEMON_TRUE@					$(builtin_sources)
+
+@DAEMON_TRUE@src_iwd_LDADD = ell/libell-internal.la -ldl
+@DAEMON_TRUE@src_iwd_DEPENDENCIES = ell/libell-internal.la \
+@DAEMON_TRUE@	$(am__append_7)
 @CLIENT_TRUE@client_iwctl_SOURCES = client/main.c \
 @CLIENT_TRUE@			client/adapter.c \
 @CLIENT_TRUE@			client/agent.h client/agent.c \
@@ -893,7 +948,7 @@ src_iwd_DEPENDENCIES = ell/libell-internal.la $(am__append_1)
 @CLIENT_TRUE@			client/known-networks.c \
 @CLIENT_TRUE@			client/network.h client/network.c \
 @CLIENT_TRUE@			client/properties.h client/properties.c \
-@CLIENT_TRUE@			client/wsc.c
+@CLIENT_TRUE@			client/wsc.c client/station.c
 
 @CLIENT_TRUE@client_iwctl_LDADD = ell/libell-internal.la -lreadline
 @MONITOR_TRUE@monitor_iwmon_SOURCES = monitor/main.c linux/nl80211.h \
@@ -906,19 +961,25 @@ src_iwd_DEPENDENCIES = ell/libell-internal.la $(am__append_1)
 @MONITOR_TRUE@					src/util.h src/util.c \
 @MONITOR_TRUE@					src/crypto.h src/crypto.c \
 @MONITOR_TRUE@					src/watchlist.h src/watchlist.c \
-@MONITOR_TRUE@					src/eapol.h src/eapol.c \
-@MONITOR_TRUE@					src/handshake.h src/handshake.c \
-@MONITOR_TRUE@					src/eap.h src/eap.c src/eap-private.h \
-@MONITOR_TRUE@					src/eap-tls.c src/eap-ttls.c
+@MONITOR_TRUE@					src/eapolutil.h src/eapolutil.c \
+@MONITOR_TRUE@					src/handshake.h src/handshake.c
 
 @MONITOR_TRUE@monitor_iwmon_LDADD = ell/libell-internal.la
-tools_hwsim_SOURCES = tools/hwsim.c src/mpdu.h \
-					src/util.h src/util.c \
-					src/storage.h src/storage.c \
-					src/common.h src/common.c
+@WIRED_TRUE@wired_ead_SOURCES = wired/main.c wired/ethdev.h wired/ethdev.c \
+@WIRED_TRUE@				wired/network.h wired/network.c \
+@WIRED_TRUE@				wired/dbus.h wired/dbus.c $(eap_sources)
 
-tools_hwsim_LDADD = ell/libell-internal.la
-tools_test_runner_LDADD = ell/libell-internal.la
+@WIRED_TRUE@wired_ead_LDADD = ell/libell-internal.la
+@WIRED_TRUE@wired_ead_DEPENDENCIES = ell/libell-internal.la \
+@WIRED_TRUE@	$(am__append_14)
+@HWSIM_TRUE@tools_hwsim_SOURCES = tools/hwsim.c src/mpdu.h \
+@HWSIM_TRUE@					src/util.h src/util.c \
+@HWSIM_TRUE@					src/storage.h src/storage.c \
+@HWSIM_TRUE@					src/common.h src/common.c
+
+@HWSIM_TRUE@tools_hwsim_LDADD = ell/libell-internal.la
+@TOOLS_TRUE@tools_test_runner_SOURCES = tools/test-runner.c
+@TOOLS_TRUE@tools_test_runner_LDADD = ell/libell-internal.la
 unit_tests = unit/test-cmac-aes \
 		unit/test-hmac-md5 unit/test-hmac-sha1 unit/test-hmac-sha256 \
 		unit/test-prf-sha1 unit/test-kdf-sha256 \
@@ -938,6 +999,7 @@ unit_test_eap_sim_SOURCES = unit/test-eap-sim.c \
 		src/ie.h src/ie.c \
 		src/watchlist.h src/watchlist.c \
 		src/eapol.h src/eapol.c \
+		src/eapolutil.h src/eapolutil.c \
 		src/handshake.h src/handshake.c \
 		src/eap.h src/eap.c src/eap-private.h \
 		src/util.h src/util.c \
@@ -989,6 +1051,7 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 				src/ie.h src/ie.c \
 				src/watchlist.h src/watchlist.c \
 				src/eapol.h src/eapol.c \
+				src/eapolutil.h src/eapolutil.c \
 				src/handshake.h src/handshake.c \
 				src/eap.h src/eap.c src/eap-private.h \
 				src/eap-tls.c src/eap-ttls.c \
@@ -1008,6 +1071,7 @@ unit_test_wsc_SOURCES = unit/test-wsc.c src/wscutil.h src/wscutil.c \
 				src/ie.h src/ie.c \
 				src/watchlist.h src/watchlist.c \
 				src/eapol.h src/eapol.c \
+				src/eapolutil.h src/eapolutil.c \
 				src/handshake.h src/handshake.c \
 				src/eap.h src/eap.c src/eap-private.h \
 				src/util.h src/util.c \
@@ -1044,11 +1108,18 @@ unit_test_sae_LDADD = ell/libell-internal.la
 manual_pages = doc/iwmon.1
 @BUILD_DOCS_TRUE@dist_man_MANS = $(manual_pages)
 EXTRA_DIST = src/genbuiltin src/iwd.service.in src/net.connman.iwd.service \
+			wired/ead.service.in wired/net.connman.ead.service \
 			doc/main.conf $(manual_pages:.1=.txt)
 
 AM_CFLAGS = -fvisibility=hidden
-CLEANFILES = src/iwd.service
-DISTCHECK_CONFIGURE_FLAGS = --disable-dbus-policy --disable-systemd-service
+CLEANFILES = src/iwd.service wired/ead.service
+DISTCHECK_CONFIGURE_FLAGS = --disable-dbus-policy --disable-systemd-service \
+				--enable-sim-hardcoded \
+				--enable-ofono \
+				--enable-wired \
+				--enable-hwsim \
+				--enable-tools
+
 DISTCLEANFILES = $(BUILT_SOURCES) $(unit_tests) $(manual_pages)
 MAINTAINERCLEANFILES = Makefile.in configure config.h.in aclocal.m4
 BUILT_SOURCES = ell/internal src/builtin.h
@@ -1317,6 +1388,8 @@ client/properties.$(OBJEXT): client/$(am__dirstamp) \
 	client/$(DEPDIR)/$(am__dirstamp)
 client/wsc.$(OBJEXT): client/$(am__dirstamp) \
 	client/$(DEPDIR)/$(am__dirstamp)
+client/station.$(OBJEXT): client/$(am__dirstamp) \
+	client/$(DEPDIR)/$(am__dirstamp)
 
 client/iwctl$(EXEEXT): $(client_iwctl_OBJECTS) $(client_iwctl_DEPENDENCIES) $(EXTRA_client_iwctl_DEPENDENCIES) client/$(am__dirstamp)
 	@rm -f client/iwctl$(EXEEXT)
@@ -1350,25 +1423,26 @@ src/crypto.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/watchlist.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
-src/eapol.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/eapolutil.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
 src/handshake.$(OBJEXT): src/$(am__dirstamp) \
-	src/$(DEPDIR)/$(am__dirstamp)
-src/eap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
-src/eap-tls.$(OBJEXT): src/$(am__dirstamp) \
-	src/$(DEPDIR)/$(am__dirstamp)
-src/eap-ttls.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 
 monitor/iwmon$(EXEEXT): $(monitor_iwmon_OBJECTS) $(monitor_iwmon_DEPENDENCIES) $(EXTRA_monitor_iwmon_DEPENDENCIES) monitor/$(am__dirstamp)
 	@rm -f monitor/iwmon$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(monitor_iwmon_OBJECTS) $(monitor_iwmon_LDADD) $(LIBS)
 src/main.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/plugin.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
 src/netdev.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/wiphy.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/device.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
+src/station.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
 src/dbus.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/eapol.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/scan.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/common.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
@@ -1378,12 +1452,6 @@ src/storage.$(OBJEXT): src/$(am__dirstamp) \
 src/network.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/wsc.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
-src/eap-wsc.$(OBJEXT): src/$(am__dirstamp) \
-	src/$(DEPDIR)/$(am__dirstamp)
-src/eap-md5.$(OBJEXT): src/$(am__dirstamp) \
-	src/$(DEPDIR)/$(am__dirstamp)
-src/eap-mschapv2.$(OBJEXT): src/$(am__dirstamp) \
-	src/$(DEPDIR)/$(am__dirstamp)
 src/backtrace.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/knownnetworks.$(OBJEXT): src/$(am__dirstamp) \
@@ -1392,16 +1460,23 @@ src/rfkill.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/ftutil.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
+src/ap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/adhoc.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/sae.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/eap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/eap-wsc.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/eap-md5.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/eap-tls.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/eap-ttls.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/eap-mschapv2.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
 src/eap-sim.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/eap-aka.$(OBJEXT): src/$(am__dirstamp) \
-	src/$(DEPDIR)/$(am__dirstamp)
-src/simutil.$(OBJEXT): src/$(am__dirstamp) \
-	src/$(DEPDIR)/$(am__dirstamp)
-src/ap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
-src/simauth.$(OBJEXT): src/$(am__dirstamp) \
-	src/$(DEPDIR)/$(am__dirstamp)
-src/plugin.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/eap-peap.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
@@ -1410,8 +1485,10 @@ src/eap-gtc.$(OBJEXT): src/$(am__dirstamp) \
 src/eap-pwd.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/ecc.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
-src/adhoc.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
-src/sae.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/simutil.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/simauth.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
 plugins/$(am__dirstamp):
 	@$(MKDIR_P) plugins
 	@: > plugins/$(am__dirstamp)
@@ -1564,6 +1641,24 @@ unit/test-wsc.$(OBJEXT): unit/$(am__dirstamp) \
 unit/test-wsc$(EXEEXT): $(unit_test_wsc_OBJECTS) $(unit_test_wsc_DEPENDENCIES) $(EXTRA_unit_test_wsc_DEPENDENCIES) unit/$(am__dirstamp)
 	@rm -f unit/test-wsc$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(unit_test_wsc_OBJECTS) $(unit_test_wsc_LDADD) $(LIBS)
+wired/$(am__dirstamp):
+	@$(MKDIR_P) wired
+	@: > wired/$(am__dirstamp)
+wired/$(DEPDIR)/$(am__dirstamp):
+	@$(MKDIR_P) wired/$(DEPDIR)
+	@: > wired/$(DEPDIR)/$(am__dirstamp)
+wired/main.$(OBJEXT): wired/$(am__dirstamp) \
+	wired/$(DEPDIR)/$(am__dirstamp)
+wired/ethdev.$(OBJEXT): wired/$(am__dirstamp) \
+	wired/$(DEPDIR)/$(am__dirstamp)
+wired/network.$(OBJEXT): wired/$(am__dirstamp) \
+	wired/$(DEPDIR)/$(am__dirstamp)
+wired/dbus.$(OBJEXT): wired/$(am__dirstamp) \
+	wired/$(DEPDIR)/$(am__dirstamp)
+
+wired/ead$(EXEEXT): $(wired_ead_OBJECTS) $(wired_ead_DEPENDENCIES) $(EXTRA_wired_ead_DEPENDENCIES) wired/$(am__dirstamp)
+	@rm -f wired/ead$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(wired_ead_OBJECTS) $(wired_ead_LDADD) $(LIBS)
 
 mostlyclean-compile:
 	-rm -f *.$(OBJEXT)
@@ -1575,6 +1670,7 @@ mostlyclean-compile:
 	-rm -f src/*.$(OBJEXT)
 	-rm -f tools/*.$(OBJEXT)
 	-rm -f unit/*.$(OBJEXT)
+	-rm -f wired/*.$(OBJEXT)
 
 distclean-compile:
 	-rm -f *.tab.c
@@ -1592,6 +1688,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/main.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/network.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/properties.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/station.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/wsc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/base64.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/checksum.Plo@am__quote@
@@ -1662,6 +1759,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-wsc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eapol.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eapolutil.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ecc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ftutil.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/handshake.Po@am__quote@
@@ -1677,6 +1775,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/scan.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/simauth.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/simutil.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/station.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/storage.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/util.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/watchlist.Po@am__quote@
@@ -1704,6 +1803,10 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-ssid-security.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-ssid-to-utf8.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-wsc.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@wired/$(DEPDIR)/dbus.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@wired/$(DEPDIR)/ethdev.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@wired/$(DEPDIR)/main.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@wired/$(DEPDIR)/network.Po@am__quote@
 
 .c.o:
 @am__fastdepCC_TRUE@	$(AM_V_CC)depbase=`echo $@ | sed 's|[^/]*$$|$(DEPDIR)/&|;s|\.o$$||'`;\
@@ -1740,6 +1843,7 @@ clean-libtool:
 	-rm -rf src/.libs src/_libs
 	-rm -rf tools/.libs tools/_libs
 	-rm -rf unit/.libs unit/_libs
+	-rm -rf wired/.libs wired/_libs
 
 distclean-libtool:
 	-rm -f libtool config.lt
@@ -2414,6 +2518,8 @@ distclean-generic:
 	-rm -f tools/$(am__dirstamp)
 	-rm -f unit/$(DEPDIR)/$(am__dirstamp)
 	-rm -f unit/$(am__dirstamp)
+	-rm -f wired/$(DEPDIR)/$(am__dirstamp)
+	-rm -f wired/$(am__dirstamp)
 	-test -z "$(DISTCLEANFILES)" || rm -f $(DISTCLEANFILES)
 
 maintainer-clean-generic:
@@ -2429,7 +2535,7 @@ clean-am: clean-binPROGRAMS clean-generic clean-libexecPROGRAMS \
 
 distclean: distclean-am
 	-rm -f $(am__CONFIG_DISTCLEAN_FILES)
-	-rm -rf client/$(DEPDIR) ell/$(DEPDIR) monitor/$(DEPDIR) plugins/$(DEPDIR) src/$(DEPDIR) tools/$(DEPDIR) unit/$(DEPDIR)
+	-rm -rf client/$(DEPDIR) ell/$(DEPDIR) monitor/$(DEPDIR) plugins/$(DEPDIR) src/$(DEPDIR) tools/$(DEPDIR) unit/$(DEPDIR) wired/$(DEPDIR)
 	-rm -f Makefile
 distclean-am: clean-am distclean-compile distclean-generic \
 	distclean-hdr distclean-libtool distclean-tags
@@ -2478,7 +2584,7 @@ installcheck-am:
 maintainer-clean: maintainer-clean-am
 	-rm -f $(am__CONFIG_DISTCLEAN_FILES)
 	-rm -rf $(top_srcdir)/autom4te.cache
-	-rm -rf client/$(DEPDIR) ell/$(DEPDIR) monitor/$(DEPDIR) plugins/$(DEPDIR) src/$(DEPDIR) tools/$(DEPDIR) unit/$(DEPDIR)
+	-rm -rf client/$(DEPDIR) ell/$(DEPDIR) monitor/$(DEPDIR) plugins/$(DEPDIR) src/$(DEPDIR) tools/$(DEPDIR) unit/$(DEPDIR) wired/$(DEPDIR)
 	-rm -f Makefile
 maintainer-clean-am: distclean-am maintainer-clean-generic \
 	maintainer-clean-local

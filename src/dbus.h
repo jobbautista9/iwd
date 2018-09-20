@@ -34,6 +34,7 @@
 #define IWD_SIGNAL_AGENT_INTERFACE "net.connman.iwd.SignalLevelAgent"
 #define IWD_AP_INTERFACE "net.connman.iwd.AccessPoint"
 #define IWD_ADHOC_INTERFACE "net.connman.iwd.AdHoc"
+#define IWD_STATION_INTERFACE "net.connman.iwd.Station"
 
 #define IWD_AGENT_MANAGER_PATH "/"
 
@@ -68,6 +69,6 @@ struct l_dbus_message *dbus_error_not_hidden(struct l_dbus_message *msg);
 struct l_dbus_message *dbus_error_from_errno(int err,
 						struct l_dbus_message *msg);
 
-bool dbus_init(bool enable_debug);
-bool dbus_exit(void);
+bool dbus_init(struct l_dbus *dbus);
+void dbus_exit(void);
 void dbus_shutdown(void);

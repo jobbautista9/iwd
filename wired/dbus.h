@@ -1,8 +1,8 @@
 /*
  *
- *  Wireless daemon for Linux
+ *  Ethernet daemon for Linux
  *
- *  Copyright (C) 2013-2016  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2017-2018  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,11 +20,21 @@
  *
  */
 
-#include <stdbool.h>
+enum l_dbus_bus;
+struct l_dbus;
 
-struct wiphy;
-struct netdev;
-struct device;
+struct l_dbus *dbus_app_get(void);
 
-struct device *device_create(struct wiphy *wiphy, struct netdev *netdev);
-void device_remove(struct device *device);
+typedef void (*dbus_app_destroy_func_t) (void *user_data);
+
+struct dbus_app {
+	enum l_dbus_bus bus;
+	const char *name;
+	void (*ready) (struct l_dbus *dbus, void *user_data);
+	void (*shutdown) (struct l_dbus *dbus, void *user_data);
+};
+
+void dbus_app_shutdown_complete(void);
+
+int dbus_app_run(const struct dbus_app *app, void *user_data,
+					dbus_app_destroy_func_t destroy);

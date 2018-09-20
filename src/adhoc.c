@@ -203,8 +203,8 @@ static struct eapol_sm *adhoc_new_sm(struct sta_state *sta, bool authenticator)
 	handshake_state_set_event_func(hs, adhoc_handshake_event, sta);
 	handshake_state_set_ssid(hs, (void *)adhoc->ssid, strlen(adhoc->ssid));
 	/* we dont have the connecting peer rsn info, so just set ap == own */
-	handshake_state_set_ap_rsn(hs, bss_rsne);
-	handshake_state_set_own_rsn(hs, bss_rsne);
+	handshake_state_set_authenticator_rsn(hs, bss_rsne);
+	handshake_state_set_supplicant_rsn(hs, bss_rsne);
 	handshake_state_set_pmk(hs, adhoc->pmk, 32);
 
 	if (authenticator) {
@@ -461,9 +461,6 @@ static void sta_append(void *data, void *user_data)
 	struct l_dbus_message_builder *builder = user_data;
 	const char* macstr;
 
-	if (!sta->addr)
-		return;
-
 	if (!sta->authenticated)
 		return;
 
@@ -529,7 +526,7 @@ static void adhoc_add_interface(struct netdev *netdev)
 	adhoc = l_new(struct adhoc_state, 1);
 	adhoc->netdev = netdev;
 
-	/* setup ap dbus interface */
+	/* setup adhoc dbus interface */
 	l_dbus_object_add_interface(dbus_get_bus(),
 			netdev_get_path(netdev), IWD_ADHOC_INTERFACE, adhoc);
 }

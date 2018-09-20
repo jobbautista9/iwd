@@ -273,53 +273,6 @@ void eapol_key_data_append(struct eapol_key *ek, enum handshake_kde selector,
 	ek->key_data_len = L_CPU_TO_BE16(key_data_len);
 }
 
-const struct eapol_key *eapol_key_validate(const uint8_t *frame, size_t len)
-{
-	const struct eapol_key *ek;
-	uint16_t key_data_len;
-
-	if (len < sizeof(struct eapol_key))
-		return NULL;
-
-	ek = (const struct eapol_key *) frame;
-
-	switch (ek->header.protocol_version) {
-	case EAPOL_PROTOCOL_VERSION_2001:
-	case EAPOL_PROTOCOL_VERSION_2004:
-		break;
-	default:
-		return NULL;
-	}
-
-	if (ek->header.packet_type != 3)
-		return NULL;
-
-	switch (ek->descriptor_type) {
-	case EAPOL_DESCRIPTOR_TYPE_RC4:
-	case EAPOL_DESCRIPTOR_TYPE_80211:
-	case EAPOL_DESCRIPTOR_TYPE_WPA:
-		break;
-	default:
-		return NULL;
-	}
-
-	switch (ek->key_descriptor_version) {
-	case EAPOL_KEY_DESCRIPTOR_VERSION_HMAC_MD5_ARC4:
-	case EAPOL_KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES:
-	case EAPOL_KEY_DESCRIPTOR_VERSION_AES_128_CMAC_AES:
-	case EAPOL_KEY_DESCRIPTOR_VERSION_AKM_DEFINED:
-		break;
-	default:
-		return NULL;
-	}
-
-	key_data_len = L_BE16_TO_CPU(ek->key_data_len);
-	if (len < sizeof(struct eapol_key) + key_data_len)
-		return NULL;
-
-	return ek;
-}
-
 #define VERIFY_PTK_COMMON(ek)	\
 	if (!ek->key_type)	\
 		return false;	\
@@ -941,7 +894,7 @@ static void eapol_handle_ptk_1_of_4(struct eapol_sm *sm,
 	uint8_t mic[16];
 	uint8_t *ies;
 	size_t ies_len;
-	const uint8_t *own_ie = sm->handshake->own_ie;
+	const uint8_t *own_ie = sm->handshake->supplicant_ie;
 	const uint8_t *pmkid;
 	struct ie_rsn_info rsn_info;
 
@@ -1210,8 +1163,9 @@ static void eapol_handle_ptk_2_of_4(struct eapol_sm *sm,
 	 */
 	rsne = eapol_find_rsne(ek->key_data,
 				L_BE16_TO_CPU(ek->key_data_len), NULL);
-	if (!rsne || rsne[1] != sm->handshake->own_ie[1] ||
-			memcmp(rsne + 2, sm->handshake->own_ie + 2, rsne[1])) {
+	if (!rsne || rsne[1] != sm->handshake->supplicant_ie[1] ||
+			memcmp(rsne + 2, sm->handshake->supplicant_ie + 2,
+				rsne[1])) {
 
 		handshake_failed(sm, MMPDU_REASON_CODE_IE_DIFFERENT);
 		return;
@@ -1323,7 +1277,7 @@ static void eapol_handle_ptk_3_of_4(struct eapol_sm *sm,
 	if (!rsne)
 		goto error_ie_different;
 
-	if (!handshake_util_ap_ie_matches(rsne, sm->handshake->ap_ie,
+	if (!handshake_util_ap_ie_matches(rsne, sm->handshake->authenticator_ie,
 						sm->handshake->wpa_ie))
 		goto error_ie_different;
 

@@ -331,3 +331,40 @@ Wireless daemon
 
   Priority: Low
   Complexity: C8
+
+- iwctl should register the agent even in non-interactive mode
+
+  When iwctl is started in non-interactive mode it currently does not register
+  the agent.  This can lead to a .NoAgent error being reported when issuing
+  commands through iwctl in this mode.  This behavior is generally okay for PSK
+  networks that only require the agent on the first connection.  For 802.1x
+  networks the Agent can be used to obtain username/password/passphrase details
+  and thus used much more often.  Make sure that iwctl supports this possibility
+  even in non-interactive mode.
+
+  Priority: High
+  Complexity: C1
+
+- Implement GTK & corresponding group cipher suite options for AP / Adhoc.
+
+  Right now both AP & Ad-Hoc modes use "Group addressed traffic not allowed"
+  cipher suite.  This can confuse other implementations.  Instead implement
+  a basic GTK support where a randomly or pseudo-randomly generated GTK is
+  used and no GTK Rekey is implemented.
+
+  Priority: Medium
+  Complexity: C2
+
+- Implement EAP Authenticator certificate element matching
+
+  With TLS based EAP methods it is possible for certain Man-In-The-Middle
+  attacks to be performed by having a trusted CA issue a certificate for an
+  unrelated domain and then have an adversary utilize that certificate to spoof
+  trusted Access Points for a certain SSID.  To prevent this it is possible
+  for clients to further limit what certificates they accept by utilizing
+  dNSName sub-element of SubjectAltName in the X.509 certificate (or
+  alternatively the SubjectName CN) of the Authenticator.  This matching can
+  be done by suffix, an exact match, or perhaps even glob matching.
+
+  Priority: Medium
+  Complexity: C8

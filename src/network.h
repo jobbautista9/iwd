@@ -25,6 +25,7 @@
 
 enum security;
 struct device;
+struct station;
 struct network;
 struct scan_bss;
 
@@ -32,11 +33,10 @@ void network_connected(struct network *network);
 void network_disconnected(struct network *network);
 bool network_rankmod(const struct network *network, double *rankmod);
 
-struct network *network_create(struct device *device, const char *ssid,
+struct network *network_create(struct station *station, const char *ssid,
 				enum security security);
 
 const char *network_get_ssid(const struct network *network);
-struct device *network_get_device(const struct network *network);
 const char *network_get_path(const struct network *network);
 enum security network_get_security(const struct network *network);
 const uint8_t *network_get_psk(const struct network *network);
@@ -62,7 +62,7 @@ bool network_register(struct network *network, const char *path);
 void network_remove(struct network *network, int reason);
 
 int network_rank_compare(const void *a, const void *b, void *user);
-void network_rank_update(struct network *network);
+void network_rank_update(struct network *network, bool connected);
 
 void network_connect_new_hidden_network(struct network *network,
 						struct l_dbus_message *message);
