@@ -1,0 +1,30 @@
+From: Andreas Henriksson <andreas@fatal.se>
+Subject: ell: use new struct member name after kernel api break
+
+Apparently kernel headers broke api compat to avoid using C++ reserved word.
+https://lore.kernel.org/lkml/1735b3a4-2792-0ce4-3bf4-94fee5b50ff6@infradead.org/
+
+Fix up the fallback definition in similar fashion and then fix up the
+initialization to use the new name.
+
+
+--- a/ell/key.c
++++ b/ell/key.c
+@@ -42,7 +42,7 @@
+ #define KEYCTL_DH_COMPUTE 23
+ 
+ struct keyctl_dh_params {
+-	int32_t private;
++	int32_t dh_private;
+ 	int32_t prime;
+ 	int32_t base;
+ };
+@@ -202,7 +202,7 @@
+ {
+ 	long result;
+ 
+-	struct keyctl_dh_params params = { .private = private,
++	struct keyctl_dh_params params = { .dh_private = private,
+ 					   .prime = prime,
+ 					   .base = base };
+ 
