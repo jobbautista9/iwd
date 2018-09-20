@@ -1,8 +1,8 @@
 /*
  *
- *  Wireless daemon for Linux
+ *  Ethernet daemon for Linux
  *
- *  Copyright (C) 2013-2016  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2017-2018  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,11 +20,7 @@
  *
  */
 
-#include <stdbool.h>
+struct ethdev;
 
-struct wiphy;
-struct netdev;
-struct device;
-
-struct device *device_create(struct wiphy *wiphy, struct netdev *netdev);
-void device_remove(struct device *device);
+bool ethdev_init(const char *whitelist, const char *blacklist);
+void ethdev_exit(void);

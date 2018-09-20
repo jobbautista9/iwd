@@ -1,7 +1,10 @@
 /* config.h.in.  Generated from configure.ac by autoheader.  */
 
-/* Configuration directory */
-#undef CONFIGDIR
+/* Directory for Wireless daemon configuration */
+#undef DAEMON_CONFIGDIR
+
+/* Directory for Wireless daemon storage files */
+#undef DAEMON_STORAGEDIR
 
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #undef HAVE_DLFCN_H
@@ -76,8 +79,8 @@
 /* Define to 1 if you have the ANSI C header files. */
 #undef STDC_HEADERS
 
-/* Directory for the storage files */
-#undef STORAGEDIR
-
 /* Version number of package */
 #undef VERSION
+
+/* Directory for Ethernet daemon storage files */
+#undef WIRED_STORAGEDIR

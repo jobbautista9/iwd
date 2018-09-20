@@ -361,30 +361,29 @@ static void eap_peap_phase2_handle_request(struct eap_state *eap,
 								size_t len)
 {
 	struct eap_peap_state *peap = eap_get_data(eap);
+	uint8_t id;
+
+	if (len > 4 && pkt[4] == EAP_TYPE_EXTENSIONS) {
+		uint16_t pkt_len;
+		uint8_t code = pkt[0];
+
+		if (code != EAP_CODE_REQUEST)
+			return;
+
+		pkt_len = l_get_be16(pkt + 2);
+		if (pkt_len != len)
+			return;
+
+		id = pkt[1];
+
+		eap_extensions_handle_request(eap, id,
+				pkt + EAP_EXTENSIONS_HEADER_LEN,
+				len - EAP_EXTENSIONS_HEADER_LEN);
+
+		return;
+	}
 
 	if (peap->version == PEAP_VERSION_0) {
-		uint8_t id;
-
-		if (len > 4 && pkt[4] == EAP_TYPE_EXTENSIONS) {
-			uint16_t pkt_len;
-			uint8_t code = pkt[0];
-
-			if (code != EAP_CODE_REQUEST)
-				return;
-
-			pkt_len = l_get_be16(pkt + 2);
-			if (pkt_len != len)
-				return;
-
-			id = pkt[1];
-
-			eap_extensions_handle_request(eap, id,
-					pkt + EAP_EXTENSIONS_HEADER_LEN,
-					len - EAP_EXTENSIONS_HEADER_LEN);
-
-			return;
-		}
-
 		if (len < 1)
 			return;
 
@@ -555,7 +554,7 @@ static bool eap_peap_tunnel_init(struct eap_state *eap)
 
 	if (!l_tls_set_auth_data(peap->tunnel, peap->client_cert,
 					peap->client_key, NULL)) {
-		l_error("Failed to set authentication data.");
+		l_error("PEAP: Failed to set authentication data.");
 		return false;
 	}
 
@@ -584,44 +583,68 @@ static void eap_peap_handle_payload(struct eap_state *eap,
 	peap->plain_buf = NULL;
 }
 
-static bool eap_peap_init_request_assembly(struct eap_state *eap,
+static int eap_peap_init_request_assembly(struct eap_state *eap,
 						const uint8_t *pkt, size_t len,
 						uint8_t flags) {
 	struct eap_peap_state *peap = eap_get_data(eap);
 
 	if (peap->rx_pdu_buf || len < 4)
-		return false;
+		return -EINVAL;
 
 	/*
-	 * Some of the PEAP server implementations brake the protocol and do not
+	 * Some of the PEAP server implementations break the protocol and do not
 	 * set the M flag for the first packet during the fragmented
 	 * transmission. To stay compatible with such devices, we have relaxed
 	 * this requirement in iwd.
 	 */
 	if (!(flags & PEAP_FLAG_M))
-		l_warn("Server has failed to set the M flag in the first packet"
-					" of the fragmented transmission.");
+		l_warn("PEAP: Server has failed to set the M flag in the first"
+				" packet of the fragmented transmission.");
 
 	peap->rx_pdu_buf_len = l_get_be32(pkt);
+	len -= 4;
 
 	if (!peap->rx_pdu_buf_len || peap->rx_pdu_buf_len > PEAP_PDU_MAX_LEN) {
-		l_warn("Fragmented pkt size is outside of alowed boundaries "
-					"[1, %u]", PEAP_PDU_MAX_LEN);
+		l_warn("PEAP: Fragmented pkt size is outside of alowed"
+				" boundaries [1, %u]", PEAP_PDU_MAX_LEN);
 
-		return false;
+		return -EINVAL;
+	}
+
+	if (peap->rx_pdu_buf_len == len) {
+		/*
+		 * PEAPv1: draft-josefsson-pppext-eap-tls-eap-05, Section 3.2:
+		 * "The L bit (length included) is set to indicate the presence
+		 * of the four octet TLS Message Length field, and MUST be set
+		 * for the first fragment of a fragmented TLS message or set of
+		 * messages."
+		 *
+		 * TTLSv0: RFC 5281, Section 9.2.2:
+		 * "Unfragmented messages MAY have the L bit set and include
+		 * the length of the message (though this information is
+		 * redundant)."
+		 *
+		 * Some of the PEAP server implementations set the L flag along
+		 * with redundant TLS Message Length field for the un-fragmented
+		 * packets.
+		 */
+		l_warn("PEAP: Server has set the redundant TLS Message Length "
+					"field for the un-fragmented packet.");
+
+		return -ENOMSG;
 	}
 
 	if (peap->rx_pdu_buf_len < len) {
-		l_warn("Fragmented pkt size is smaller than the received "
+		l_warn("PEAP: Fragmented pkt size is smaller than the received "
 								"packet");
 
-		return false;
+		return -EINVAL;
 	}
 
 	peap->rx_pdu_buf = l_malloc(peap->rx_pdu_buf_len);
 	peap->rx_pdu_buf_offset = 0;
 
-	return true;
+	return 0;
 }
 
 static void eap_peap_send_fragmented_request_ack(struct eap_state *eap)
@@ -680,9 +703,10 @@ static int eap_peap_handle_fragmented_request(struct eap_state *eap,
 	size_t pdu_len;
 
 	if (flags_version & PEAP_FLAG_L) {
-		if (!eap_peap_init_request_assembly(eap, pkt, len,
-								flags_version))
-			return -EINVAL;
+		int r = eap_peap_init_request_assembly(eap, pkt, len,
+								flags_version);
+		if (r)
+			return r;
 
 		rx_header_offset = 4;
 	}
@@ -693,7 +717,7 @@ static int eap_peap_handle_fragmented_request(struct eap_state *eap,
 	pdu_len = len - rx_header_offset;
 
 	if (peap->rx_pdu_buf_len < peap->rx_pdu_buf_offset + pdu_len) {
-		l_error("Request fragment pkt size mismatch");
+		l_error("PEAP: Request fragment pkt size mismatch");
 		return -EINVAL;
 	}
 
@@ -748,11 +772,22 @@ static void eap_peap_handle_request(struct eap_state *eap,
 		if (r == -EAGAIN)
 			return;
 
+		if (r == -ENOMSG) {
+			/*
+			 * Redundant usage of the L flag, no packet reassembly
+			 * is required.
+			 */
+			pkt += 4;
+			len -= 4;
+
+			goto proceed;
+		}
+
 		if (r < 0)
 			goto error;
 
 		if (peap->rx_pdu_buf_len != peap->rx_pdu_buf_offset) {
-			l_error("Request fragment pkt size mismatch");
+			l_error("PEAP: Request fragment pkt size mismatch");
 			goto error;
 		}
 
@@ -760,6 +795,7 @@ static void eap_peap_handle_request(struct eap_state *eap,
 		len = peap->rx_pdu_buf_len;
 	}
 
+proceed:
 	/*
 	 * tx_pdu_buf is used for the retransmission and needs to be cleared on
 	 * a new request
@@ -884,7 +920,7 @@ static int eap_peap_check_settings(struct l_settings *settings,
 	if (client_cert) {
 		cert = l_pem_load_certificate(client_cert, &size);
 		if (!cert) {
-			l_error("Failed to load %s", client_cert);
+			l_error("PEAP: Failed to load %s", client_cert);
 			return -EIO;
 		}
 

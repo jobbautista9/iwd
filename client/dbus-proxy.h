@@ -32,6 +32,7 @@ struct property_value_options;
 #define IWD_KNOWN_NETWORK_INTREFACE    "net.connman.iwd.KnownNetwork"
 #define IWD_NETWORK_INTERFACE          "net.connman.iwd.Network"
 #define IWD_WSC_INTERFACE              "net.connman.iwd.WiFiSimpleConfiguration"
+#define IWD_STATION_INTERFACE          "net.connman.iwd.Station"
 
 typedef bool (*proxy_property_match_func_t) (const void *a, const void *b);
 
@@ -49,10 +50,6 @@ struct proxy_interface_property {
 struct proxy_interface_type_ops {
 	void *(*create)(void);
 	void (*destroy)(void *data);
-	bool (*bind_interface)(const struct proxy_interface *proxy,
-				const struct proxy_interface *dependency);
-	bool (*unbind_interface)(const struct proxy_interface *proxy,
-				const struct proxy_interface *dependency);
 	const char *(*identity)(void *data);
 	void (*display)(const char *margin, const void *data);
 };
@@ -93,10 +90,12 @@ void proxy_properties_display(const struct proxy_interface *proxy,
 char *proxy_property_str_completion(const struct proxy_interface_type *type,
 					proxy_property_match_func_t function,
 					const char *property_name,
-					const void *value, int state);
+					const void *value, int state,
+					const char *extra_interface);
 
 void *proxy_interface_get_data(const struct proxy_interface *proxy);
 const char *proxy_interface_get_interface(const struct proxy_interface *proxy);
+const char *proxy_interface_get_path(const struct proxy_interface *proxy);
 const char *proxy_interface_get_identity_str(
 					const struct proxy_interface *proxy);
 

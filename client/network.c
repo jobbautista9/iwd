@@ -55,6 +55,28 @@ bool network_is_connected(const char *path)
 	return network->connected;
 }
 
+const char *network_get_type(const char *path)
+{
+	const struct network *network;
+	const struct proxy_interface *proxy =
+			proxy_interface_find(IWD_NETWORK_INTERFACE, path);
+
+	network = proxy_interface_get_data(proxy);
+
+	return network->type;
+}
+
+const char *network_get_name(const char *path)
+{
+	const struct network *network;
+	const struct proxy_interface *proxy =
+			proxy_interface_find(IWD_NETWORK_INTERFACE, path);
+
+	network = proxy_interface_get_data(proxy);
+
+	return network->name;
+}
+
 void network_connect(const struct proxy_interface *proxy)
 {
 	if (!proxy)
@@ -225,7 +247,7 @@ char *network_name_completion(const struct proxy_interface *device,
 
 	return proxy_property_str_completion(&network_interface_type,
 						match_by_partial_name, "Name",
-						&params, state);
+						&params, state, NULL);
 }
 
 struct network_search_parameters {
