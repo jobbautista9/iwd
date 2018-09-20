@@ -1,9 +1,10 @@
-iwd (0.8-1) UNRELEASED; urgency=medium
+iwd (0.8-1) unstable; urgency=medium
 
   * Properly escape libexecdir path configure argument
   * New upstream release.
+  * Add debian/patches/dh_private.patch to fix build
 
- -- Andreas Henriksson <andreas@fatal.se>  Thu, 20 Sep 2018 21:14:53 +0200
+ -- Andreas Henriksson <andreas@fatal.se>  Thu, 20 Sep 2018 21:52:21 +0200
 
 iwd (0.7-2) unstable; urgency=medium
 
