@@ -1,30 +1,35 @@
-From: Andreas Henriksson <andreas@fatal.se>
-Subject: ell: use new struct member name after kernel api break
+From 409111695e76e14a6a86b21068e270a8527302a8 Mon Sep 17 00:00:00 2001
+From: Mat Martineau <mathew.j.martineau@linux.intel.com>
+Date: Thu, 20 Sep 2018 16:14:05 -0700
+Subject: key: Change initialization of struct keyctl_dh_params
 
-Apparently kernel headers broke api compat to avoid using C++ reserved word.
+Using a designated initializer with struct keyctl_dh_params has broken
+due to a kernel header file change to one of the member names,
+introduced in kernel v4.19-rc3:
+
 https://lore.kernel.org/lkml/1735b3a4-2792-0ce4-3bf4-94fee5b50ff6@infradead.org/
 
-Fix up the fallback definition in similar fashion and then fix up the
-initialization to use the new name.
+If the member names are dropped from the initializer then the code will
+compile and work correctly before or after the kernel header change.
+---
+ ell/key.c | 4 +---
+ 1 file changed, 1 insertion(+), 3 deletions(-)
 
-
+diff --git a/ell/key.c b/ell/key.c
+index 6b16e55..b45ebc6 100644
 --- a/ell/key.c
 +++ b/ell/key.c
-@@ -42,7 +42,7 @@
- #define KEYCTL_DH_COMPUTE 23
- 
- struct keyctl_dh_params {
--	int32_t private;
-+	int32_t dh_private;
- 	int32_t prime;
- 	int32_t base;
- };
-@@ -202,7 +202,7 @@
+@@ -202,9 +202,7 @@ static long kernel_dh_compute(int32_t private, int32_t prime, int32_t base,
  {
  	long result;
  
 -	struct keyctl_dh_params params = { .private = private,
-+	struct keyctl_dh_params params = { .dh_private = private,
- 					   .prime = prime,
- 					   .base = base };
+-					   .prime = prime,
+-					   .base = base };
++	struct keyctl_dh_params params = { private, prime, base };
  
+ 	result = syscall(__NR_keyctl, KEYCTL_DH_COMPUTE, &params, payload, len,
+ 			NULL);
+-- 
+cgit 1.2-0.3.lf.el7
+
