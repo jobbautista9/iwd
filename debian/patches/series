@@ -1,3 +1,2 @@
-dh_private.patch
 lfs.patch
 disable-sae-test.patch
