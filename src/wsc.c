@@ -444,7 +444,7 @@ static void wsc_connect(struct wsc *wsc)
 		if (l_dbus_message_get_arguments(wsc->pending, "s", &pin)) {
 			enum wsc_device_password_id dpid;
 
-			if (wsc_pin_is_checksum_valid(pin))
+			if (strlen(pin) == 4 || wsc_pin_is_checksum_valid(pin))
 				dpid = WSC_DEVICE_PASSWORD_ID_DEFAULT;
 			else
 				dpid = WSC_DEVICE_PASSWORD_ID_USER_SPECIFIED;
@@ -958,7 +958,7 @@ static struct l_dbus_message *wsc_start_pin(struct l_dbus *dbus,
 	if (!wsc_pin_is_valid(pin))
 		return dbus_error_invalid_format(message);
 
-	if (wsc_pin_is_checksum_valid(pin))
+	if (strlen(pin) == 4 || wsc_pin_is_checksum_valid(pin))
 		dpid = WSC_DEVICE_PASSWORD_ID_DEFAULT;
 	else
 		dpid = WSC_DEVICE_PASSWORD_ID_USER_SPECIFIED;
@@ -1080,11 +1080,6 @@ static void wsc_remove_interface(struct netdev *netdev)
 static void wsc_netdev_watch(struct netdev *netdev,
 				enum netdev_watch_event event, void *userdata)
 {
-	struct device *device = netdev_get_device(netdev);
-
-	if (!device)
-		return;
-
 	switch (event) {
 	case NETDEV_WATCH_EVENT_UP:
 	case NETDEV_WATCH_EVENT_NEW:

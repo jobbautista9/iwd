@@ -81,6 +81,7 @@ bool eapol_calculate_mic(enum ie_rsn_akm_suite akm, const uint8_t *kck,
 	case EAPOL_KEY_DESCRIPTOR_VERSION_AKM_DEFINED:
 		switch (akm) {
 		case IE_RSN_AKM_SUITE_SAE_SHA256:
+		case IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256:
 			return cmac_aes(kck, 16, frame, frame_len, mic, 16);
 		default:
 			return false;
@@ -123,6 +124,7 @@ bool eapol_verify_mic(enum ie_rsn_akm_suite akm, const uint8_t *kck,
 	case EAPOL_KEY_DESCRIPTOR_VERSION_AKM_DEFINED:
 		switch (akm) {
 		case IE_RSN_AKM_SUITE_SAE_SHA256:
+		case IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256:
 			checksum = l_checksum_new_cmac_aes(kck, 16);
 			break;
 		default:
@@ -167,7 +169,7 @@ uint8_t *eapol_decrypt_key_data(enum ie_rsn_akm_suite akm, const uint8_t *kek,
 		 * type this will need to be expanded to handle the AKM types in
 		 * its own switch.
 		 */
-		if (akm != IE_RSN_AKM_SUITE_SAE_SHA256)
+		if (!IE_AKM_IS_SAE(akm))
 			return NULL;
 
 		/* Fall through */
@@ -1051,8 +1053,11 @@ static void eapol_send_ptk_3_of_4(struct eapol_sm *sm)
 	size_t key_data_len;
 	enum crypto_cipher cipher = ie_rsn_cipher_suite_to_cipher(
 				sm->handshake->pairwise_cipher);
+	enum crypto_cipher group_cipher = ie_rsn_cipher_suite_to_cipher(
+				sm->handshake->group_cipher);
 	const struct crypto_ptk *ptk = (struct crypto_ptk *) sm->handshake->ptk;
 	struct ie_rsn_info rsn;
+	uint8_t *rsne;
 
 	sm->replay_counter++;
 
@@ -1071,12 +1076,9 @@ static void eapol_send_ptk_3_of_4(struct eapol_sm *sm)
 	ek->key_length = L_CPU_TO_BE16(crypto_cipher_key_len(cipher));
 	ek->key_replay_counter = L_CPU_TO_BE64(sm->replay_counter);
 	memcpy(ek->key_nonce, sm->handshake->anonce, sizeof(ek->key_nonce));
-	/*
-	 * We don't currently handle group traffic, to support that we'd need
-	 * to provide the NL80211_ATTR_KEY_SEQ value from NL80211_CMD_GET_KEY
-	 * here.
-	 */
-	l_put_be64(1, ek->key_rsc);
+	memcpy(ek->key_rsc, sm->handshake->gtk_rsc, 6);
+	ek->key_rsc[6] = 0;
+	ek->key_rsc[7] = 0;
 
 	/*
 	 * Just one RSNE in Key Data as we only set one cipher in ap->ciphers
@@ -1086,13 +1088,26 @@ static void eapol_send_ptk_3_of_4(struct eapol_sm *sm)
 	memset(&rsn, 0, sizeof(rsn));
 	rsn.akm_suites = IE_RSN_AKM_SUITE_PSK;
 	rsn.pairwise_ciphers = sm->handshake->pairwise_cipher;
-	rsn.group_cipher = IE_RSN_CIPHER_SUITE_NO_GROUP_TRAFFIC;
+	rsn.group_cipher = sm->handshake->group_cipher;
 
-	if (!ie_build_rsne(&rsn, key_data_buf))
+	rsne = key_data_buf;
+	if (!ie_build_rsne(&rsn, rsne))
 		return;
 
+	key_data_len = rsne[1] + 2;
+
+	if (group_cipher) {
+		uint8_t *gtk_kde = key_data_buf + key_data_len;
+
+		handshake_util_build_gtk_kde(group_cipher,
+						sm->handshake->gtk,
+						sm->handshake->gtk_index,
+						gtk_kde);
+		key_data_len += gtk_kde[1] + 2;
+	}
+
 	if (!eapol_encrypt_key_data(ptk->kek, key_data_buf,
-					2 + key_data_buf[1], ek))
+					key_data_len, ek))
 		return;
 
 	key_data_len = L_BE16_TO_CPU(ek->key_data_len);

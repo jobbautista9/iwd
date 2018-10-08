@@ -358,45 +358,6 @@ void station_set_scan_results(struct station *station, struct l_queue *bss_list,
 	l_queue_destroy(old_bss_list, bss_free);
 }
 
-static enum ie_rsn_akm_suite select_akm_suite(struct network *network,
-						struct scan_bss *bss,
-						struct ie_rsn_info *info)
-{
-	enum security security = network_get_security(network);
-
-	/*
-	 * If FT is available, use FT authentication to keep the door open
-	 * for fast transitions.  Otherwise use SHA256 version if present.
-	 */
-
-	if (security == SECURITY_8021X) {
-		if ((info->akm_suites & IE_RSN_AKM_SUITE_FT_OVER_8021X) &&
-				bss->rsne && bss->mde_present)
-			return IE_RSN_AKM_SUITE_FT_OVER_8021X;
-
-		if (info->akm_suites & IE_RSN_AKM_SUITE_8021X_SHA256)
-			return IE_RSN_AKM_SUITE_8021X_SHA256;
-
-		if (info->akm_suites & IE_RSN_AKM_SUITE_8021X)
-			return IE_RSN_AKM_SUITE_8021X;
-	} else if (security == SECURITY_PSK) {
-		if (info->akm_suites & IE_RSN_AKM_SUITE_SAE_SHA256)
-			return IE_RSN_AKM_SUITE_SAE_SHA256;
-
-		if ((info->akm_suites & IE_RSN_AKM_SUITE_FT_USING_PSK) &&
-				bss->rsne && bss->mde_present)
-			return IE_RSN_AKM_SUITE_FT_USING_PSK;
-
-		if (info->akm_suites & IE_RSN_AKM_SUITE_PSK_SHA256)
-			return IE_RSN_AKM_SUITE_PSK_SHA256;
-
-		if (info->akm_suites & IE_RSN_AKM_SUITE_PSK)
-			return IE_RSN_AKM_SUITE_PSK;
-	}
-
-	return 0;
-}
-
 static void station_handshake_event(struct handshake_state *hs,
 					enum handshake_event event,
 					void *event_data, void *user_data)
@@ -428,25 +389,19 @@ static void station_handshake_event(struct handshake_state *hs,
 	}
 }
 
-static struct handshake_state *station_handshake_setup(struct station *station,
-							struct network *network,
-							struct scan_bss *bss)
+static int station_build_handshake_rsn(struct handshake_state *hs,
+					struct wiphy *wiphy,
+					struct network *network,
+					struct scan_bss *bss)
 {
 	enum security security = network_get_security(network);
-	struct wiphy *wiphy = station->wiphy;
-	struct handshake_state *hs;
 	bool add_mde = false;
-
-	hs = netdev_handshake_state_new(station->netdev);
-
-	handshake_state_set_event_func(hs, station_handshake_event, station);
 
 	if (security == SECURITY_PSK || security == SECURITY_8021X) {
 		const struct l_settings *settings = iwd_get_config();
 		struct ie_rsn_info bss_info;
 		uint8_t rsne_buf[256];
 		struct ie_rsn_info info;
-		const char *ssid;
 		uint32_t mfp_setting;
 
 		memset(&info, 0, sizeof(info));
@@ -454,7 +409,7 @@ static struct handshake_state *station_handshake_setup(struct station *station,
 		memset(&bss_info, 0, sizeof(bss_info));
 		scan_bss_get_rsn_info(bss, &bss_info);
 
-		info.akm_suites = select_akm_suite(network, bss, &bss_info);
+		info.akm_suites = wiphy_select_akm(wiphy, bss);
 
 		if (!info.akm_suites)
 			goto not_supported;
@@ -505,9 +460,6 @@ static struct handshake_state *station_handshake_setup(struct station *station,
 		if (bss_info.mfpr && !info.mfpc)
 			goto not_supported;
 
-		ssid = network_get_ssid(network);
-		handshake_state_set_ssid(hs, (void *) ssid, strlen(ssid));
-
 		/* RSN takes priority */
 		if (bss->rsne) {
 			ie_build_rsne(&info, rsne_buf);
@@ -518,18 +470,6 @@ static struct handshake_state *station_handshake_setup(struct station *station,
 			handshake_state_set_authenticator_wpa(hs, bss->wpa);
 			handshake_state_set_supplicant_wpa(hs, rsne_buf);
 		}
-
-		if (security == SECURITY_PSK) {
-			/* SAE will generate/set the PMK */
-			if (info.akm_suites == IE_RSN_AKM_SUITE_SAE_SHA256)
-				handshake_state_set_passphrase(hs,
-					network_get_passphrase(network));
-			else
-				handshake_state_set_pmk(hs,
-						network_get_psk(network), 32);
-		} else
-			handshake_state_set_8021x_config(hs,
-						network_get_settings(network));
 
 		if (info.akm_suites & (IE_RSN_AKM_SUITE_FT_OVER_8021X |
 					IE_RSN_AKM_SUITE_FT_USING_PSK |
@@ -551,6 +491,43 @@ static struct handshake_state *station_handshake_setup(struct station *station,
 
 		handshake_state_set_mde(hs, mde);
 	}
+
+	return 0;
+
+not_supported:
+	return -ENOTSUP;
+}
+
+static struct handshake_state *station_handshake_setup(struct station *station,
+							struct network *network,
+							struct scan_bss *bss)
+{
+	enum security security = network_get_security(network);
+	struct wiphy *wiphy = station->wiphy;
+	struct handshake_state *hs;
+	const char *ssid;
+
+	hs = netdev_handshake_state_new(station->netdev);
+
+	handshake_state_set_event_func(hs, station_handshake_event, station);
+
+	if (station_build_handshake_rsn(hs, wiphy, network, bss) < 0)
+		goto not_supported;
+
+	ssid = network_get_ssid(network);
+	handshake_state_set_ssid(hs, (void *) ssid, strlen(ssid));
+
+	if (security == SECURITY_PSK) {
+		/* SAE will generate/set the PMK */
+		if (IE_AKM_IS_SAE(hs->akm_suite))
+			handshake_state_set_passphrase(hs,
+				network_get_passphrase(network));
+		else
+			handshake_state_set_pmk(hs,
+					network_get_psk(network), 32);
+	} else
+		handshake_state_set_8021x_config(hs,
+					network_get_settings(network));
 
 	return hs;
 
@@ -952,16 +929,14 @@ static void station_transition_start(struct station *station,
 
 	/* Can we use Fast Transition? */
 	if (hs->mde && bss->mde_present && l_get_le16(bss->mde) == mdid) {
-		/*
-		 * There's no need to regenerate the RSNE because neither
-		 * the AKM nor cipher suite can change:
-		 *
-		 * 12.5.2: "If the FTO selects a pairwise cipher suite in
-		 * the RSNE that is different from the ones used in the
-		 * Initial mobility domain association, then the AP shall
-		 * reject the Authentication Request with status code 19
-		 * (i.e., Invalid Pairwise Cipher)."
-		 */
+		/* Rebuild handshake RSN for target AP */
+		if (station_build_handshake_rsn(hs, station->wiphy,
+				station->connected_network, bss) < 0) {
+			l_error("rebuilding handshake rsne failed");
+			station_roam_failed(station);
+			return;
+		}
+
 		if (netdev_fast_transition(station->netdev, bss,
 					station_fast_transition_cb) < 0) {
 			station_roam_failed(station);
@@ -2197,7 +2172,7 @@ struct station *station_find(uint32_t ifindex)
 	return NULL;
 }
 
-struct station *station_create(struct wiphy *wiphy, struct netdev *netdev)
+static struct station *station_create(struct netdev *netdev)
 {
 	struct station *station;
 	struct l_dbus *dbus = dbus_get_bus();
@@ -2212,7 +2187,7 @@ struct station *station_create(struct wiphy *wiphy, struct netdev *netdev)
 				(l_hashmap_compare_func_t) strcmp);
 	station->networks_sorted = l_queue_new();
 
-	station->wiphy = wiphy;
+	station->wiphy = netdev_get_wiphy(netdev);
 	station->netdev = netdev;
 
 	l_queue_push_head(station_list, station);
@@ -2225,12 +2200,15 @@ struct station *station_create(struct wiphy *wiphy, struct netdev *netdev)
 	return station;
 }
 
-void station_free(struct station *station)
+static void station_free(struct station *station)
 {
 	l_debug("");
 
 	if (!l_queue_remove(station_list, station))
 		return;
+
+	if (station->connected_bss)
+		netdev_disconnect(station->netdev, NULL, NULL);
 
 	periodic_scan_stop(station);
 
@@ -2302,14 +2280,12 @@ static void station_destroy_interface(void *user_data)
 static void station_netdev_watch(struct netdev *netdev,
 				enum netdev_watch_event event, void *userdata)
 {
-	struct device *device = netdev_get_device(netdev);
-
-	if (!device)
-		return;
-
 	switch (event) {
 	case NETDEV_WATCH_EVENT_UP:
 	case NETDEV_WATCH_EVENT_NEW:
+		if (netdev_get_iftype(netdev) == NETDEV_IFTYPE_STATION &&
+				netdev_get_is_up(netdev))
+			station_create(netdev);
 		break;
 	case NETDEV_WATCH_EVENT_DOWN:
 	case NETDEV_WATCH_EVENT_DEL:

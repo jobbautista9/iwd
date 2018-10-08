@@ -361,7 +361,8 @@ int netdev_set_powered(struct netdev *netdev, bool powered,
 			netdev_command_cb_t callback, void *user_data,
 			netdev_destroy_func_t destroy)
 {
-	if (netdev->set_powered_cmd_id)
+	if (netdev->set_powered_cmd_id ||
+			netdev->set_interface_cmd_id)
 		return -EBUSY;
 
 	netdev->set_powered_cmd_id =
@@ -1128,12 +1129,6 @@ static struct l_genl_msg *netdev_build_cmd_new_key_group(struct netdev *netdev,
 	l_genl_msg_append_attr(msg, NL80211_ATTR_KEY_DATA, key_len, key);
 	l_genl_msg_append_attr(msg, NL80211_ATTR_KEY_CIPHER, 4, &cipher);
 	l_genl_msg_append_attr(msg, NL80211_ATTR_KEY_SEQ, ctr_len, ctr);
-
-	l_genl_msg_enter_nested(msg, NL80211_ATTR_KEY_DEFAULT_TYPES);
-	l_genl_msg_append_attr(msg, NL80211_KEY_DEFAULT_TYPE_MULTICAST,
-				0, NULL);
-	l_genl_msg_leave_nested(msg);
-
 	l_genl_msg_append_attr(msg, NL80211_ATTR_KEY_IDX, 1, &key_id);
 	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &netdev->index);
 
@@ -2292,6 +2287,8 @@ static void netdev_sae_complete(uint16_t status, void *user_data)
 {
 	struct netdev *netdev = user_data;
 	struct l_genl_msg *msg;
+	struct iovec iov[3];
+	int iov_elems = 0;
 
 	if (status != 0) {
 		l_error("SAE exchange failed on %u result %u",
@@ -2302,9 +2299,17 @@ static void netdev_sae_complete(uint16_t status, void *user_data)
 
 	msg = netdev_build_cmd_associate_common(netdev);
 
-	l_genl_msg_append_attr(msg, NL80211_ATTR_IE,
-					netdev->handshake->supplicant_ie[1] + 2,
-					netdev->handshake->supplicant_ie);
+	iov[iov_elems].iov_base = netdev->handshake->supplicant_ie;
+	iov[iov_elems].iov_len = netdev->handshake->supplicant_ie[1] + 2;
+	iov_elems++;
+
+	if (netdev->handshake->mde) {
+		iov[iov_elems].iov_base = netdev->handshake->mde;
+		iov[iov_elems].iov_len = netdev->handshake->mde[1] + 2;
+		iov_elems++;
+	}
+
+	l_genl_msg_append_attrv(msg, NL80211_ATTR_IE, iov, iov_elems);
 
 	/* netdev_cmd_connect_cb can be reused */
 	netdev->connect_cmd_id = l_genl_family_send(nl80211, msg,
@@ -2510,7 +2515,7 @@ int netdev_connect(struct netdev *netdev, struct scan_bss *bss,
 	if (netdev->connected)
 		return -EISCONN;
 
-	if (hs->akm_suite == IE_RSN_AKM_SUITE_SAE_SHA256) {
+	if (IE_AKM_IS_SAE(hs->akm_suite)) {
 		netdev->sae_sm = sae_sm_new(hs, netdev_tx_sae_frame,
 						netdev_sae_complete, netdev);
 	} else {
@@ -4156,6 +4161,9 @@ static void netdev_newlink_notify(const struct ifinfomsg *ifi, int bytes)
 		}
 	}
 
+	if (!netdev->device) /* Did we send NETDEV_WATCH_EVENT_NEW yet? */
+		return;
+
 	new_up = netdev_get_is_up(netdev);
 
 	if (old_up != new_up)
@@ -4196,7 +4204,9 @@ static void netdev_initial_up_cb(int error, uint16_t type, const void *data,
 
 	netdev->set_powered_cmd_id = 0;
 
-	if (error != 0) {
+	if (!error)
+		netdev->ifi_flags |= IFF_UP;
+	else {
 		l_error("Error bringing interface %i up: %s", netdev->index,
 			strerror(-error));
 
@@ -4226,7 +4236,9 @@ static void netdev_initial_down_cb(int error, uint16_t type, const void *data,
 {
 	struct netdev *netdev = user_data;
 
-	if (error != 0) {
+	if (!error)
+		netdev->ifi_flags &= ~IFF_UP;
+	else {
 		l_error("Error taking interface %i down: %s", netdev->index,
 			strerror(-error));
 

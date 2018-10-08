@@ -540,15 +540,11 @@ static void adhoc_remove_interface(struct netdev *netdev)
 static void adhoc_netdev_watch(struct netdev *netdev,
 				enum netdev_watch_event event, void *userdata)
 {
-	struct device *device = netdev_get_device(netdev);
-
-	if (!device)
-		return;
-
 	switch (event) {
 	case NETDEV_WATCH_EVENT_UP:
 	case NETDEV_WATCH_EVENT_NEW:
-		if (netdev_get_iftype(netdev) == NETDEV_IFTYPE_ADHOC)
+		if (netdev_get_iftype(netdev) == NETDEV_IFTYPE_ADHOC &&
+				netdev_get_is_up(netdev))
 			adhoc_add_interface(netdev);
 		break;
 	case NETDEV_WATCH_EVENT_DOWN:

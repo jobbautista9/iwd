@@ -145,7 +145,7 @@ int watch_add(int fd, uint32_t events, watch_event_cb_t callback,
 	err = epoll_ctl(epoll_fd, EPOLL_CTL_ADD, data->fd, &ev);
 	if (err < 0) {
 		l_free(data);
-		return err;
+		return -errno;
 	}
 
 	watch_list[fd] = data;
@@ -178,17 +178,16 @@ int watch_modify(int fd, uint32_t events, bool force)
 
 	err = epoll_ctl(epoll_fd, EPOLL_CTL_MOD, data->fd, &ev);
 	if (err < 0)
-		return err;
+		return -errno;
 
 	data->events = events;
 
 	return 0;
 }
 
-int watch_remove(int fd)
+int watch_clear(int fd)
 {
 	struct watch_data *data;
-	int err;
 
 	if (unlikely(fd < 0))
 		return -EINVAL;
@@ -202,8 +201,6 @@ int watch_remove(int fd)
 
 	watch_list[fd] = NULL;
 
-	err = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, data->fd, NULL);
-
 	if (data->destroy)
 		data->destroy(data->user_data);
 
@@ -211,6 +208,20 @@ int watch_remove(int fd)
 		data->flags |= WATCH_FLAG_DESTROYED;
 	else
 		l_free(data);
+
+	return 0;
+}
+
+int watch_remove(int fd)
+{
+	int err = watch_clear(fd);
+
+	if (err < 0)
+		return err;
+
+	err = epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+	if (err < 0)
+		return -errno;
 
 	return err;
 }
