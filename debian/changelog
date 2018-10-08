@@ -1,3 +1,9 @@
+iwd (0.9-1) UNRELEASED; urgency=medium
+
+  * New upstream release.
+
+ -- Andreas Henriksson <andreas@fatal.se>  Mon, 08 Oct 2018 16:19:51 +0200
+
 iwd (0.8-2) unstable; urgency=medium
 
   * Replace d/p/dh_private.patch with upstream version
