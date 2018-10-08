@@ -471,6 +471,9 @@ static void newlink_notify(const struct ifinfomsg *ifi, int bytes)
 		l_dbus_object_add_interface(dbus_app_get(), dev->path,
 						ADAPTER_INTERFACE, dev);
 
+		l_dbus_object_add_interface(dbus_app_get(), dev->path,
+					L_DBUS_INTERFACE_PROPERTIES, NULL);
+
 		l_queue_push_tail(ethdev_list, dev);
 
 		lower_changed = true;
@@ -488,6 +491,12 @@ static void newlink_notify(const struct ifinfomsg *ifi, int bytes)
 	}
 
 	if (lower_up != dev->lower_up) {
+		if (!lower_up) {
+			dev->auth_done = false;
+			l_dbus_property_changed(dbus_app_get(), dev->path,
+					ADAPTER_INTERFACE, PROP_AUTHENTICATED);
+		}
+
 		dev->lower_up = lower_up;
 		l_dbus_property_changed(dbus_app_get(), dev->path,
 					ADAPTER_INTERFACE, PROP_CONNECTED);

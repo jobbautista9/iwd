@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2013-2014  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2013-2018  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -29,9 +29,280 @@
 #include <errno.h>
 #include <ell/ell.h>
 #include <ell/tls-private.h>
+#include <ell/private.h>
 
 #include "eap.h"
 #include "eap-private.h"
+#include "eap-tls-common.h"
+
+#define TTLS_AVP_HEADER_LEN 8
+#define TTLS_AVP_LEN_MASK 0xFFFFFF
+
+enum ttls_avp_flag {
+	TTLS_AVP_FLAG_M =	0x40,
+	TTLS_AVP_FLAG_V =	0x80,
+	TTLS_AVP_FLAG_MASK =	0xFF,
+};
+
+enum radius_attr {
+	RADIUS_ATTR_USER_NAME			= 1,
+	RADIUS_ATTR_USER_PASSWORD		= 2,
+	RADIUS_ATTR_CHAP_PASSWORD		= 3,
+	RADIUS_ATTR_CHAP_CHALLENGE		= 60,
+	RADIUS_ATTR_EAP_MESSAGE			= 79,
+};
+
+struct avp_builder {
+	uint32_t capacity;
+	uint8_t *buf;
+	uint32_t pos;
+	uint8_t *avp_start;
+};
+
+static uint8_t *avp_builder_reserve(struct avp_builder *builder,
+					uint32_t alignment, size_t len)
+{
+	size_t aligned_pos = align_len(builder->pos, alignment);
+	size_t end = aligned_pos + len;
+
+	if (end > builder->capacity) {
+		builder->buf = l_realloc(builder->buf, end);
+		builder->capacity = end;
+	}
+
+	if (aligned_pos - builder->pos > 0)
+		memset(builder->buf + builder->pos, 0,
+						aligned_pos - builder->pos);
+
+	builder->pos = end;
+
+	return builder->buf + aligned_pos;
+}
+
+static bool avp_builder_finalize_avp(struct avp_builder *builder)
+{
+	uint8_t *p;
+	uint32_t len;
+
+	if (!builder->avp_start)
+		return false;
+
+	p = builder->buf + builder->pos;
+
+	len = l_get_be32(builder->avp_start + 4);
+	len |= p - builder->avp_start;
+	l_put_be32(len, builder->avp_start + 4);
+
+	builder->avp_start = 0;
+
+	return true;
+}
+
+static bool avp_builder_start_avp(struct avp_builder *builder,
+					enum radius_attr type,
+					bool mandatory, uint32_t vendor_id)
+{
+	uint32_t flags;
+
+	if (builder->avp_start)
+		return false;
+
+	builder->avp_start = avp_builder_reserve(builder, 4,
+							TTLS_AVP_HEADER_LEN +
+							(vendor_id ? 4 : 0));
+
+	l_put_be32(type, builder->avp_start);
+
+	flags = 0;
+
+	if (mandatory)
+		flags |= TTLS_AVP_FLAG_M;
+
+	if (vendor_id) {
+		flags |= TTLS_AVP_FLAG_V;
+		l_put_be32(vendor_id, builder->avp_start + TTLS_AVP_HEADER_LEN);
+	}
+
+	l_put_be32(flags << 24, builder->avp_start + 4);
+
+	return true;
+}
+
+static struct avp_builder *avp_builder_new(size_t capacity)
+{
+	struct avp_builder *builder;
+
+	if (!capacity)
+		return NULL;
+
+	builder = l_new(struct avp_builder, 1);
+
+	builder->buf = l_malloc(capacity);
+	memset(builder->buf, 0, capacity);
+
+	builder->capacity = capacity;
+
+	return builder;
+}
+
+static uint8_t *avp_builder_free(struct avp_builder *builder, bool free_data,
+							size_t *out_size)
+{
+	uint8_t *ret;
+
+	if (free_data) {
+		l_free(builder->buf);
+		builder->buf = NULL;
+	}
+
+	ret = builder->buf;
+
+	if (out_size)
+		*out_size = builder->pos;
+
+	l_free(builder);
+
+	return ret;
+}
+
+static void build_avp_user_name(struct avp_builder *builder,
+							const char *user_name)
+{
+	size_t len = strlen(user_name);
+	uint8_t *to;
+
+	avp_builder_start_avp(builder, RADIUS_ATTR_USER_NAME, true, 0);
+
+	to = avp_builder_reserve(builder, 1, len);
+	memcpy(to, user_name, len);
+
+	avp_builder_finalize_avp(builder);
+}
+
+static void build_avp_user_password(struct avp_builder *builder,
+						const char *user_password)
+{
+	size_t len = strlen(user_password);
+	uint8_t *to;
+
+	avp_builder_start_avp(builder, RADIUS_ATTR_USER_PASSWORD, true, 0);
+
+	/*
+	 * Null-pad the password to a multiple of 16 octets, to obfuscate
+	 * its length
+	 */
+	to = avp_builder_reserve(builder, 1, align_len(len, 16));
+	memcpy(to, user_password, len);
+
+	avp_builder_finalize_avp(builder);
+}
+
+#define CHAP_IDENT_LEN		1
+#define CHAP_CHALLENGE_LEN	16
+#define CHAP_PASSWORD_LEN	16
+
+static void build_avp_chap_challenge(struct avp_builder *builder,
+						const uint8_t *challenge)
+{
+	avp_builder_start_avp(builder, RADIUS_ATTR_CHAP_CHALLENGE, true, 0);
+	memcpy(avp_builder_reserve(builder, 1, CHAP_CHALLENGE_LEN), challenge,
+							CHAP_CHALLENGE_LEN);
+	avp_builder_finalize_avp(builder);
+}
+
+static void build_avp_chap_password(struct avp_builder *builder,
+					const uint8_t *ident,
+					const uint8_t *password_hash)
+{
+	avp_builder_start_avp(builder, RADIUS_ATTR_CHAP_PASSWORD, true, 0);
+
+	memcpy(avp_builder_reserve(builder, 1, CHAP_IDENT_LEN), ident,
+							CHAP_IDENT_LEN);
+	memcpy(avp_builder_reserve(builder, 1, CHAP_PASSWORD_LEN),
+					password_hash, CHAP_PASSWORD_LEN);
+	avp_builder_finalize_avp(builder);
+}
+
+struct avp_iter {
+	enum radius_attr type;
+	uint8_t flags;
+	uint32_t len;
+	uint32_t vendor_id;
+	const uint8_t *data;
+	const uint8_t *buf;
+	size_t buf_len;
+	size_t offset;
+};
+
+static void avp_iter_init(struct avp_iter *iter, const uint8_t *buf, size_t len)
+{
+	iter->buf = buf;
+	iter->buf_len = len;
+	iter->offset = 0;
+}
+
+static bool avp_iter_next(struct avp_iter *iter)
+{
+	const uint8_t *start = iter->buf + iter->offset;
+	const uint8_t *end = iter->buf + iter->buf_len;
+	enum radius_attr type;
+	uint32_t len;
+	uint8_t flags;
+	uint8_t pad_len;
+
+	/* Make sure we have at least the header fields */
+	if (iter->offset + TTLS_AVP_HEADER_LEN >= iter->buf_len)
+		return false;
+
+	type = l_get_be32(start);
+	start += 4;
+
+	len = l_get_be32(start);
+	start += 4;
+
+	flags = (len >> 24) & TTLS_AVP_FLAG_MASK;
+	len &= TTLS_AVP_LEN_MASK;
+
+	len -= TTLS_AVP_HEADER_LEN;
+
+	if (start + len > end)
+		return false;
+
+	if (flags & TTLS_AVP_FLAG_V) {
+		if (len < 4)
+			return false;
+
+		iter->vendor_id = l_get_be32(start);
+		start += 4;
+		len -= 4;
+	} else {
+		iter->vendor_id = 0;
+	}
+
+	iter->type = type;
+	iter->flags = flags;
+	iter->len = len;
+	iter->data = start;
+
+	if (len & 3)
+		pad_len = 4 - (len & 3);
+	else
+		pad_len = 0;
+
+	iter->offset = start + len + pad_len - iter->buf;
+
+	return true;
+}
+
+struct phase2_method {
+	void *state;
+	bool (*init)(struct eap_state *eap);
+	bool (*handle_avp)(struct eap_state *eap, enum radius_attr type,
+				uint32_t vendor_id, const uint8_t *data,
+								size_t len);
+	void (*destroy)(void *state);
+	bool (*reset)(void *state);
+};
 
 struct eap_ttls_state {
 	char *ca_cert;
@@ -44,17 +315,15 @@ struct eap_ttls_state {
 	size_t rx_pkt_received, rx_pkt_len;
 	uint8_t *tx_pkt_buf;
 	size_t tx_pkt_len, tx_pkt_capacity, tx_pkt_offset;
-	uint8_t *avp_buf;
-	size_t avp_received, avp_capacity;
-	bool phase1_completed;
+	struct databuf *avp_buf;
 	bool completed;
-	struct eap_state *phase2_eap;
 	uint8_t negotiated_version;
+
+	struct phase2_method *phase2;
 };
 
 static void __eap_ttls_reset_state(struct eap_ttls_state *ttls)
 {
-	ttls->phase1_completed = false;
 	ttls->completed = false;
 
 	l_free(ttls->rx_pkt_buf);
@@ -68,10 +337,8 @@ static void __eap_ttls_reset_state(struct eap_ttls_state *ttls)
 	ttls->tx_pkt_len = 0;
 	ttls->tx_pkt_offset = 0;
 
-	l_free(ttls->avp_buf);
+	databuf_free(ttls->avp_buf);
 	ttls->avp_buf = NULL;
-	ttls->avp_received = 0;
-	ttls->avp_capacity = 0;
 
 	if (ttls->tls) {
 		l_tls_free(ttls->tls);
@@ -83,13 +350,11 @@ static bool eap_ttls_reset_state(struct eap_state *eap)
 {
 	struct eap_ttls_state *ttls = eap_get_data(eap);
 
-	if (!ttls->phase2_eap)
-		return false;
-
-	if (!eap_reset(ttls->phase2_eap))
-		return false;
+	if (ttls->phase2->reset)
+		ttls->phase2->reset(ttls->phase2->state);
 
 	__eap_ttls_reset_state(ttls);
+
 	return true;
 }
 
@@ -98,6 +363,11 @@ static void eap_ttls_free(struct eap_state *eap)
 	struct eap_ttls_state *ttls = eap_get_data(eap);
 
 	__eap_ttls_reset_state(ttls);
+
+	if (ttls->phase2->destroy) {
+		ttls->phase2->destroy(ttls->phase2->state);
+		ttls->phase2->state = NULL;
+	}
 
 	eap_set_data(eap, NULL);
 
@@ -110,11 +380,6 @@ static void eap_ttls_free(struct eap_state *eap)
 		l_free(ttls->passphrase);
 	}
 
-	if (ttls->phase2_eap) {
-		eap_free(ttls->phase2_eap);
-		ttls->phase2_eap = NULL;
-	}
-
 	l_free(ttls);
 }
 
@@ -125,6 +390,268 @@ static void eap_ttls_free(struct eap_state *eap)
 #define EAP_TTLS_FLAG_S	(1 << 5)
 #define EAP_TTLS_FLAG_MASK	\
 	(EAP_TTLS_FLAG_L | EAP_TTLS_FLAG_M | EAP_TTLS_FLAG_S)
+
+struct phase2_credentials {
+	char *username;
+	char *password;
+};
+
+static void eap_ttls_phase2_credentials_destroy(void *state)
+{
+	struct phase2_credentials *credentials = state;
+
+	if (!credentials)
+		return;
+
+	l_free(credentials->username);
+
+	memset(credentials->password, 0, strlen(credentials->password));
+	l_free(credentials->password);
+
+	l_free(credentials);
+}
+
+static bool eap_ttls_phase2_non_eap_load_settings(struct phase2_method *phase2,
+						struct l_settings *settings,
+						const char *prefix)
+{
+	struct phase2_credentials *credentials;
+	char setting[64];
+
+	credentials = l_new(struct phase2_credentials, 1);
+
+	snprintf(setting, sizeof(setting), "%sIdentity", prefix);
+	credentials->username =
+			l_settings_get_string(settings, "Security", setting);
+
+	if (!credentials->username) {
+		l_error("Phase 2 Identity is missing.");
+		goto error;
+	}
+
+	snprintf(setting, sizeof(setting), "%sPassword", prefix);
+	credentials->password =
+			l_settings_get_string(settings, "Security", setting);
+
+	if (!credentials->password) {
+		l_error("Phase 2 Password is missing.");
+		goto error;
+	}
+
+	phase2->state = credentials;
+
+	return true;
+
+error:
+	l_free(credentials->username);
+	l_free(credentials->password);
+	l_free(credentials);
+
+	return false;
+}
+
+static void eap_ttls_phase2_chap_generate_challenge(struct l_tls *tunnel,
+							uint8_t *challenge,
+							size_t challenge_len)
+{
+	uint8_t seed[64];
+
+	memcpy(seed +  0, tunnel->pending.client_random, 32);
+	memcpy(seed + 32, tunnel->pending.server_random, 32);
+
+	tls_prf_get_bytes(tunnel, L_CHECKSUM_SHA256, 32,
+				tunnel->pending.master_secret,
+				sizeof(tunnel->pending.master_secret),
+				"ttls challenge", seed, 64,
+				challenge, challenge_len);
+
+	memset(seed, 0, 64);
+}
+
+static bool eap_ttls_phase2_chap_init(struct eap_state *eap)
+{
+	struct eap_ttls_state *ttls = eap_get_data(eap);
+	struct phase2_credentials *credentials = ttls->phase2->state;
+	struct avp_builder *builder;
+	uint8_t challenge[CHAP_CHALLENGE_LEN + CHAP_IDENT_LEN];
+	uint8_t password_hash[CHAP_PASSWORD_LEN];
+	uint8_t ident;
+	struct l_checksum *hash;
+	uint8_t *data;
+	size_t data_len;
+
+	eap_ttls_phase2_chap_generate_challenge(ttls->tls, challenge,
+							CHAP_CHALLENGE_LEN +
+							CHAP_IDENT_LEN);
+
+	ident = challenge[CHAP_CHALLENGE_LEN];
+
+	hash = l_checksum_new(L_CHECKSUM_MD5);
+	if (!hash) {
+		l_error("Can't create the MD5 checksum");
+		return false;
+	}
+
+	l_checksum_update(hash, &ident, CHAP_IDENT_LEN);
+	l_checksum_update(hash, credentials->password,
+						strlen(credentials->password));
+	l_checksum_update(hash, challenge, CHAP_CHALLENGE_LEN);
+
+	l_checksum_get_digest(hash, password_hash, CHAP_PASSWORD_LEN);
+	l_checksum_free(hash);
+
+	builder = avp_builder_new(512);
+
+	build_avp_user_name(builder, credentials->username);
+	build_avp_chap_challenge(builder, challenge);
+	build_avp_chap_password(builder, &ident, password_hash);
+
+	data = avp_builder_free(builder, false, &data_len);
+
+	l_tls_write(ttls->tls, data, data_len);
+	l_free(data);
+
+	return true;
+}
+
+static struct phase2_method phase2_chap = {
+	.init = eap_ttls_phase2_chap_init,
+	.destroy = eap_ttls_phase2_credentials_destroy,
+};
+
+static bool eap_ttls_phase2_pap_init(struct eap_state *eap)
+{
+	struct eap_ttls_state *ttls = eap_get_data(eap);
+	struct phase2_credentials *state = ttls->phase2->state;
+	struct avp_builder *builder;
+	uint8_t *buf;
+	size_t buf_len;
+
+	builder = avp_builder_new(512);
+
+	build_avp_user_name(builder, state->username);
+	build_avp_user_password(builder, state->password);
+
+	buf = avp_builder_free(builder, false, &buf_len);
+
+	l_tls_write(ttls->tls, buf, buf_len);
+	l_free(buf);
+
+	return true;
+}
+
+static struct phase2_method phase2_pap = {
+	.init = eap_ttls_phase2_pap_init,
+	.destroy = eap_ttls_phase2_credentials_destroy,
+};
+
+static void eap_ttls_phase2_eap_send_response(const uint8_t *data, size_t len,
+								void *user_data)
+{
+	struct eap_state *eap = user_data;
+	struct eap_ttls_state *ttls = eap_get_data(eap);
+	struct avp_builder *builder;
+	uint8_t *msg_data;
+	size_t msg_data_len;
+
+	builder = avp_builder_new(TTLS_AVP_HEADER_LEN + len);
+
+	avp_builder_start_avp(builder, RADIUS_ATTR_EAP_MESSAGE, true, 0);
+	memcpy(avp_builder_reserve(builder, 1, len), data, len);
+	avp_builder_finalize_avp(builder);
+
+	msg_data = avp_builder_free(builder, false, &msg_data_len);
+
+	l_tls_write(ttls->tls, msg_data, msg_data_len);
+	l_free(msg_data);
+}
+
+static void eap_ttls_phase2_eap_complete(enum eap_result result,
+								void *user_data)
+{
+	struct eap_state *eap = user_data;
+	struct eap_ttls_state *ttls = eap_get_data(eap);
+
+	ttls->completed = true;
+}
+
+static bool eap_ttls_phase2_eap_load_settings(struct eap_state *eap,
+						struct l_settings *settings,
+						const char *prefix)
+{
+	struct eap_ttls_state *ttls = eap_get_data(eap);
+
+	ttls->phase2->state = eap_new(eap_ttls_phase2_eap_send_response,
+						eap_ttls_phase2_eap_complete,
+						eap);
+	if (!ttls->phase2->state) {
+		l_error("Could not create the TTLS Phase 2 EAP instance");
+		return false;
+	}
+
+	if (!eap_load_settings(ttls->phase2->state, settings, prefix)) {
+		eap_free(ttls->phase2->state);
+		return false;
+	}
+
+	return true;
+}
+
+static bool eap_ttls_phase2_eap_init(struct eap_state *eap)
+{
+	struct eap_ttls_state *ttls = eap_get_data(eap);
+	uint8_t packet[5] = { EAP_CODE_REQUEST, 0, 0, 5, EAP_TYPE_IDENTITY };
+
+	if (!ttls->phase2->state)
+		return false;
+	/*
+	 * Consume a fake Request/Identity packet so that the EAP instance
+	 * starts with its Response/Identity right away.
+	 */
+	eap_rx_packet(ttls->phase2->state, packet, sizeof(packet));
+
+	return true;
+}
+
+static bool eap_ttls_phase2_eap_handle_avp(struct eap_state *eap,
+						enum radius_attr type,
+						uint32_t vendor_id,
+						const uint8_t *data,
+						size_t len)
+{
+	struct eap_ttls_state *ttls = eap_get_data(eap);
+
+	if (type != RADIUS_ATTR_EAP_MESSAGE)
+		return false;
+
+	eap_rx_packet(ttls->phase2->state, data, len);
+
+	return true;
+}
+
+static void eap_ttls_phase2_eap_destroy(void *state)
+{
+	if (!state)
+		return;
+
+	eap_reset(state);
+	eap_free(state);
+}
+
+static bool eap_ttls_phase2_eap_reset(void *state)
+{
+	if (!state)
+		return false;
+
+	return eap_reset(state);
+}
+
+static struct phase2_method phase2_eap = {
+	.init = eap_ttls_phase2_eap_init,
+	.handle_avp = eap_ttls_phase2_eap_handle_avp,
+	.destroy = eap_ttls_phase2_eap_destroy,
+	.reset = eap_ttls_phase2_eap_reset,
+};
 
 static uint8_t *eap_ttls_tx_buf_reserve(struct eap_ttls_state *ttls,
 					size_t size)
@@ -151,186 +678,16 @@ static void eap_ttls_tx_cb(const uint8_t *data, size_t len, void *user_data)
 	memcpy(eap_ttls_tx_buf_reserve(ttls, len), data, len);
 }
 
-struct eap_ttls_avp {
-	__be32 avp_code;
-	uint8_t avp_flags;
-	uint8_t avp_len[3];
-	uint8_t data[0];
-} __attribute__ ((packed));
-
-#define EAP_TTLS_AVP_FLAG_V	(1 << 7)
-#define EAP_TTLS_AVP_FLAG_M	(1 << 6)
-
-#define RADIUS_AVP_EAP_MESSAGE	79
-
-static bool eap_ttls_handle_avp(struct eap_state *eap, struct eap_ttls_avp *avp)
-{
-	struct eap_ttls_state *ttls = eap_get_data(eap);
-	uint8_t *data;
-	uint64_t code;
-	size_t data_len;
-
-	data = avp->data;
-	data_len = ((avp->avp_len[0] << 16) |
-		(avp->avp_len[1] << 8) |
-		(avp->avp_len[2] << 0)) - sizeof(struct eap_ttls_avp);
-
-	code = l_get_be32(&avp->avp_code);
-
-	if (avp->avp_flags & EAP_TTLS_AVP_FLAG_V) {
-		if (data_len < 4)
-			goto avp_err;
-
-		code |= (uint64_t) l_get_be32(data) << 32;
-		data += 4;
-		data_len -= 4;
-	}
-
-	switch (code) {
-	/* EAP-Message attribute, actually defined in RFC2869 5.13 */
-	case RADIUS_AVP_EAP_MESSAGE:
-		if (!ttls->phase2_eap)
-			goto avp_err;
-
-		/* TODO: split if necessary */
-		eap_rx_packet(ttls->phase2_eap, data, data_len);
-
-		break;
-
-	default:
-		if (avp->avp_flags & EAP_TTLS_AVP_FLAG_M)
-			goto avp_err;
-
-		break;
-	}
-
-	return true;
-
-avp_err:
-	l_tls_close(ttls->tls);
-
-	return false;
-}
-
-static size_t avp_min_len(const uint8_t *buf, size_t len)
-{
-	struct eap_ttls_avp *avp;
-
-	if (len < sizeof(struct eap_ttls_avp))
-		return sizeof(struct eap_ttls_avp);
-
-	avp = (struct eap_ttls_avp *) buf;
-
-	return (((avp->avp_len[0] << 16) |
-		(avp->avp_len[1] << 8) |
-		(avp->avp_len[2] << 0)) + 3) & ~3;
-}
-
-static void eap_ttls_data_cb(const uint8_t *data, size_t len, void *user_data)
-{
-	struct eap_state *eap = user_data;
-	struct eap_ttls_state *ttls = eap_get_data(eap);
-	struct eap_ttls_avp *avp;
-	size_t avp_len, chunk_len;
-
-	/* Continue assembling the AVP that we have buffered */
-	while (ttls->avp_received) {
-		avp_len = avp_min_len(ttls->avp_buf, ttls->avp_received);
-		chunk_len = avp_len - ttls->avp_received;
-
-		if (chunk_len > len)
-			chunk_len = len;
-
-		if (ttls->avp_received + chunk_len > ttls->avp_capacity) {
-			ttls->avp_capacity = avp_len;
-			ttls->avp_buf = l_realloc(ttls->avp_buf,
-							ttls->avp_capacity);
-		}
-
-		memcpy(ttls->avp_buf + ttls->avp_received, data, chunk_len);
-		ttls->avp_received += chunk_len;
-
-		if (avp_len > ttls->avp_received) /* Wait for more data */
-			return;
-
-		/* Do we have a full AVP or just the header */
-		if (ttls->avp_received - chunk_len >=
-				sizeof(struct eap_ttls_avp)) {
-			ttls->avp_received = 0;
-
-			avp = (struct eap_ttls_avp *) ttls->avp_buf;
-
-			if (!eap_ttls_handle_avp(eap, avp))
-				return;
-
-			data += chunk_len;
-			len -= chunk_len;
-		}
-	}
-
-	/* Handle all the AVPs fully contained in the newly received data */
-	while (len) {
-		avp_len = avp_min_len(data, len);
-		if (len < avp_len || len < sizeof(struct eap_ttls_avp))
-			break;
-
-		avp = (struct eap_ttls_avp *) data;
-
-		if (!eap_ttls_handle_avp(eap, avp))
-			return;
-
-		data += avp_len;
-		len -= avp_len;
-	}
-
-	if (!len)
-		return;
-
-	/* Store the remaining bytes */
-	if (ttls->avp_capacity < len) {
-		ttls->avp_capacity = avp_len;
-		ttls->avp_buf = l_realloc(ttls->avp_buf, ttls->avp_capacity);
-	}
-
-	memcpy(ttls->avp_buf, data, len);
-	ttls->avp_received = len;
-}
-
-static void eap_ttls_eap_tx_packet(const uint8_t *eap_data, size_t len,
-					void *user_data)
-{
-	struct eap_state *eap = user_data;
-	struct eap_ttls_state *ttls = eap_get_data(eap);
-	uint8_t buf[sizeof(struct eap_ttls_avp) + len + 3];
-	struct eap_ttls_avp *avp = (struct eap_ttls_avp *) buf;
-	size_t avp_len = sizeof(struct eap_ttls_avp) + len;
-
-	l_put_be32(RADIUS_AVP_EAP_MESSAGE, &avp->avp_code);
-
-	avp->avp_flags = EAP_TTLS_AVP_FLAG_M;
-
-	avp->avp_len[0] = avp_len >> 16;
-	avp->avp_len[1] = avp_len >>  8;
-	avp->avp_len[2] = avp_len >>  0;
-
-	memcpy(avp->data, eap_data, len);
-
-	if (avp_len & 3)
-		memset(avp->data + len, 0, 4 - (avp_len & 3));
-
-	l_tls_write(ttls->tls, buf, (avp_len + 3) & ~3);
-}
-
-static void eap_ttls_eap_complete(enum eap_result result, void *user_data)
+static void eap_ttls_data_cb(const uint8_t *data, size_t data_len,
+								void *user_data)
 {
 	struct eap_state *eap = user_data;
 	struct eap_ttls_state *ttls = eap_get_data(eap);
 
-	/*
-	 * TODO: We currently do not implement chaining per Section 11.3,
-	 * so simply set completed to true
-	 */
-	ttls->completed = true;
+	if (!ttls->avp_buf)
+		ttls->avp_buf = databuf_new(data_len);
+
+	databuf_append(ttls->avp_buf, data, data_len);
 }
 
 static void eap_ttls_ready_cb(const char *peer_identity, void *user_data)
@@ -339,11 +696,8 @@ static void eap_ttls_ready_cb(const char *peer_identity, void *user_data)
 	struct eap_ttls_state *ttls = eap_get_data(eap);
 	uint8_t msk_emsk[128];
 	uint8_t seed[64];
-	uint8_t packet[5] = { EAP_CODE_REQUEST, 0, 0, 5, EAP_TYPE_IDENTITY };
 
 	/* TODO: if we have a CA certificate require non-NULL peer_identity */
-
-	ttls->phase1_completed = true;
 
 	/*
 	 * TTLSv0 seems to assume that the TLS handshake phase authenticates
@@ -369,15 +723,11 @@ static void eap_ttls_ready_cb(const char *peer_identity, void *user_data)
 	eap_set_key_material(eap, msk_emsk + 0, 64, msk_emsk + 64, 64,
 				NULL, 0);
 
-	/* Start the EAP negotiation */
-	if (!ttls->phase2_eap)
+	if (!ttls->phase2->state)
 		goto err;
 
-	/*
-	 * Consume a fake Request/Identity packet so that the EAP instance
-	 * starts with its Response/Identity right away.
-	 */
-	eap_rx_packet(ttls->phase2_eap, packet, sizeof(packet));
+	if (ttls->phase2->init)
+		ttls->phase2->init(eap);
 
 	return;
 err:
@@ -391,6 +741,37 @@ static void eap_ttls_disconnect_cb(enum l_tls_alert_desc reason,
 	struct eap_ttls_state *ttls = eap_get_data(eap);
 
 	ttls->completed = true;
+}
+
+static void eap_ttls_handle_payload(struct eap_state *eap,
+						const uint8_t *pkt,
+						size_t pkt_len)
+{
+	struct eap_ttls_state *ttls = eap_get_data(eap);
+	struct avp_iter iter;
+
+	l_tls_handle_rx(ttls->tls, pkt, pkt_len);
+
+	if (!ttls->phase2->handle_avp)
+		return;
+
+	/* Plaintext phase two data is stored into ttls->avp_buf */
+	if (!ttls->avp_buf)
+		return;
+
+	avp_iter_init(&iter, ttls->avp_buf->data, ttls->avp_buf->len);
+
+	while (avp_iter_next(&iter)) {
+		if (ttls->phase2->handle_avp(eap, iter.type, iter.vendor_id,
+							iter.data, iter.len))
+			continue;
+
+		if (iter.flags & TTLS_AVP_FLAG_M)
+			l_tls_close(ttls->tls);
+	}
+
+	databuf_free(ttls->avp_buf);
+	ttls->avp_buf = NULL;
 }
 
 static void eap_ttls_handle_request(struct eap_state *eap,
@@ -563,16 +944,8 @@ static void eap_ttls_handle_request(struct eap_state *eap,
 		len = 0;
 	}
 
-	/*
-	 * Here we take advantage of knowing that ell will send all the
-	 * records corresponding to the current handshake step from within
-	 * the l_tls_handle_rx call because it doesn't use any other context
-	 * such as timers - basic TLS specifies no timeouts.  Otherwise we
-	 * would need to analyze the record types in eap_ttls_tx_cb to decide
-	 * when we're ready to send out a response.
-	 */
 	if (len)
-		l_tls_handle_rx(ttls->tls, pkt, len);
+		eap_ttls_handle_payload(eap, pkt, len);
 
 	if (ttls->rx_pkt_buf) {
 		l_free(ttls->rx_pkt_buf);
@@ -621,9 +994,9 @@ static void eap_ttls_handle_request(struct eap_state *eap,
 		l_tls_free(ttls->tls);
 		ttls->tls = NULL;
 
-		if (ttls->phase2_eap) {
-			eap_free(ttls->phase2_eap);
-			ttls->phase2_eap = NULL;
+		if (ttls->phase2->destroy) {
+			ttls->phase2->destroy(ttls->phase2->state);
+			ttls->phase2->state = NULL;
 		}
 	}
 
@@ -638,6 +1011,61 @@ err:
 	eap_method_error(eap);
 }
 
+static const struct {
+	const char *name;
+	struct phase2_method *method;
+} tunneled_non_eap_methods[] = {
+	{ "Tunneled-CHAP", &phase2_chap },
+	{ "Tunneled-PAP", &phase2_pap },
+	{ }
+};
+
+static int eap_ttls_check_tunneled_auth_settings(struct l_settings *settings,
+						struct l_queue *secrets,
+						const char *prefix,
+						struct l_queue **out_missing)
+{
+	const struct eap_secret_info *secret;
+	char identity_key[64];
+	char password_key[64];
+
+	L_AUTO_FREE_VAR(char *, identity);
+	L_AUTO_FREE_VAR(char *, password) = NULL;
+
+	snprintf(identity_key, sizeof(identity_key), "%sIdentity", prefix);
+	snprintf(password_key, sizeof(password_key), "%sPassword", prefix);
+
+	identity = l_settings_get_string(settings, "Security", identity_key);
+
+	if (!identity) {
+		secret = l_queue_find(secrets, eap_secret_info_match,
+								identity_key);
+		if (!secret) {
+			eap_append_secret(out_missing,
+					EAP_SECRET_REMOTE_USER_PASSWORD,
+					identity_key, password_key, NULL,
+					EAP_CACHE_TEMPORARY);
+		}
+
+		return 0;
+	}
+
+	password = l_settings_get_string(settings, "Security", password_key);
+
+	if (!password) {
+		secret = l_queue_find(secrets, eap_secret_info_match,
+								password_key);
+		if (!secret) {
+			eap_append_secret(out_missing,
+					EAP_SECRET_REMOTE_PASSWORD,
+					password_key, NULL, identity,
+					EAP_CACHE_TEMPORARY);
+		}
+	}
+
+	return 0;
+}
+
 static int eap_ttls_check_settings(struct l_settings *settings,
 					struct l_queue *secrets,
 					const char *prefix,
@@ -649,6 +1077,8 @@ static int eap_ttls_check_settings(struct l_settings *settings,
 	L_AUTO_FREE_VAR(char *, passphrase) = NULL;
 	uint8_t *cert;
 	size_t size;
+	const char *phase2_method;
+	uint8_t i;
 
 	snprintf(setting, sizeof(setting), "%sTTLS-CACert", prefix);
 	path = l_settings_get_string(settings, "Security", setting);
@@ -747,7 +1177,19 @@ static int eap_ttls_check_settings(struct l_settings *settings,
 		return -ENOENT;
 	}
 
+	snprintf(setting, sizeof(setting), "%sTTLS-Phase2-Method", prefix);
+	phase2_method = l_settings_get_value(settings, "Security", setting);
+
 	snprintf(setting, sizeof(setting), "%sTTLS-Phase2-", prefix);
+
+	for (i = 0; tunneled_non_eap_methods[i].name; i++) {
+		if (strcmp(tunneled_non_eap_methods[i].name, phase2_method))
+			continue;
+
+		return eap_ttls_check_tunneled_auth_settings(settings, secrets,
+								setting,
+								out_missing);
+	}
 
 	return __eap_check_settings(settings, secrets, setting, false,
 					out_missing);
@@ -758,7 +1200,9 @@ static bool eap_ttls_load_settings(struct eap_state *eap,
 					const char *prefix)
 {
 	struct eap_ttls_state *ttls;
+	const char *phase2_method;
 	char setting[64];
+	uint8_t i;
 
 	ttls = l_new(struct eap_ttls_state, 1);
 
@@ -776,25 +1220,38 @@ static bool eap_ttls_load_settings(struct eap_state *eap,
 			prefix);
 	ttls->passphrase = l_settings_get_string(settings, "Security", setting);
 
-	ttls->phase2_eap = eap_new(eap_ttls_eap_tx_packet,
-				eap_ttls_eap_complete, eap);
-	if (!ttls->phase2_eap) {
-		l_error("Could not create the TTLS inner EAP instance");
-		goto err;
-	}
+	snprintf(setting, sizeof(setting), "%sTTLS-Phase2-Method", prefix);
+	phase2_method = l_settings_get_value(settings, "Security", setting);
 
 	snprintf(setting, sizeof(setting), "%sTTLS-Phase2-", prefix);
 
-	if (!eap_load_settings(ttls->phase2_eap, settings, setting)) {
-		eap_free(ttls->phase2_eap);
-		goto err;
+	eap_set_data(eap, ttls);
+
+	for (i = 0; tunneled_non_eap_methods[i].name; i++) {
+		if (strcmp(tunneled_non_eap_methods[i].name, phase2_method))
+			continue;
+
+		ttls->phase2 = tunneled_non_eap_methods[i].method;
+
+		if (!eap_ttls_phase2_non_eap_load_settings(ttls->phase2,
+								settings,
+								setting))
+			goto err;
+
+		break;
 	}
 
-	eap_set_data(eap, ttls);
+	if (!ttls->phase2) {
+		ttls->phase2 = &phase2_eap;
+
+		if (!eap_ttls_phase2_eap_load_settings(eap, settings, setting))
+			goto err;
+	}
 
 	return true;
 
 err:
+	eap_set_data(eap, NULL);
 	l_free(ttls->ca_cert);
 	l_free(ttls->client_cert);
 	l_free(ttls->client_key);

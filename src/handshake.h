@@ -26,6 +26,7 @@
 #include <linux/types.h>
 
 struct handshake_state;
+enum crypto_cipher;
 
 /* 802.11-2016 Table 12-6 in section 12.7.2 */
 enum handshake_kde {
@@ -109,6 +110,9 @@ struct handshake_state {
 	uint8_t r0khid[48];
 	size_t r0khid_len;
 	uint8_t r1khid[6];
+	uint8_t gtk[32];
+	uint8_t gtk_rsc[6];
+	unsigned int gtk_index;
 	void *user_data;
 
 	void (*free)(struct handshake_state *s);
@@ -179,6 +183,9 @@ bool handshake_state_get_pmkid(struct handshake_state *s, uint8_t *out_pmkid);
 bool handshake_decode_fte_key(struct handshake_state *s, const uint8_t *wrapped,
 				size_t key_len, uint8_t *key_out);
 
+void handshake_state_set_gtk(struct handshake_state *s, const uint8_t *key,
+				unsigned int key_index, const uint8_t *rsc);
+
 bool handshake_util_ap_ie_matches(const uint8_t *msg_ie,
 					const uint8_t *scan_ie, bool is_wpa);
 
@@ -188,6 +195,8 @@ const uint8_t *handshake_util_find_igtk_kde(const uint8_t *data,
 					size_t data_len, size_t *out_igtk_len);
 const uint8_t *handshake_util_find_pmkid_kde(const uint8_t *data,
 					size_t data_len);
+void handshake_util_build_gtk_kde(enum crypto_cipher cipher, const uint8_t *key,
+					unsigned int key_index, uint8_t *to);
 
 void handshake_event(struct handshake_state *hs, enum handshake_event event,
 		void *event_data);

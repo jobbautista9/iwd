@@ -232,7 +232,8 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
 	src/ecc.h src/ecc.c src/wscutil.h src/wscutil.c src/simutil.h \
 	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
-	src/watchlist.c plugins/sim_hardcoded.c plugins/ofono.c
+	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c \
+	plugins/sim_hardcoded.c plugins/ofono.c
 am__objects_2 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
 	src/eap-md5.$(OBJEXT) src/eap-tls.$(OBJEXT) \
 	src/eap-ttls.$(OBJEXT) src/eap-mschapv2.$(OBJEXT) \
@@ -240,7 +241,8 @@ am__objects_2 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
 	src/eap-peap.$(OBJEXT) src/eap-gtc.$(OBJEXT) \
 	src/eap-pwd.$(OBJEXT) src/util.$(OBJEXT) src/crypto.$(OBJEXT) \
 	src/ecc.$(OBJEXT) src/wscutil.$(OBJEXT) src/simutil.$(OBJEXT) \
-	src/simauth.$(OBJEXT) src/watchlist.$(OBJEXT)
+	src/simauth.$(OBJEXT) src/watchlist.$(OBJEXT) \
+	src/eap-tls-common.$(OBJEXT)
 @DAEMON_TRUE@@SIM_HARDCODED_TRUE@am__objects_3 = plugins/sim_hardcoded.$(OBJEXT)
 @DAEMON_TRUE@@OFONO_TRUE@am__objects_4 = plugins/ofono.$(OBJEXT)
 am__objects_5 = $(am__objects_3) $(am__objects_4)
@@ -308,7 +310,8 @@ am_unit_test_eapol_OBJECTS = unit/test-eapol.$(OBJEXT) \
 	src/eapol.$(OBJEXT) src/eapolutil.$(OBJEXT) \
 	src/handshake.$(OBJEXT) src/eap.$(OBJEXT) \
 	src/eap-tls.$(OBJEXT) src/eap-ttls.$(OBJEXT) \
-	src/eap-md5.$(OBJEXT) src/util.$(OBJEXT)
+	src/eap-md5.$(OBJEXT) src/util.$(OBJEXT) \
+	src/eap-tls-common.$(OBJEXT)
 unit_test_eapol_OBJECTS = $(am_unit_test_eapol_OBJECTS)
 unit_test_eapol_DEPENDENCIES = ell/libell-internal.la
 am_unit_test_ecc_OBJECTS = unit/test-ecc.$(OBJEXT) src/ecc.$(OBJEXT)
@@ -372,7 +375,7 @@ am__wired_ead_SOURCES_DIST = wired/main.c wired/ethdev.h \
 	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
 	src/ecc.h src/ecc.c src/wscutil.h src/wscutil.c src/simutil.h \
 	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
-	src/watchlist.c
+	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c
 @WIRED_TRUE@am_wired_ead_OBJECTS = wired/main.$(OBJEXT) \
 @WIRED_TRUE@	wired/ethdev.$(OBJEXT) wired/network.$(OBJEXT) \
 @WIRED_TRUE@	wired/dbus.$(OBJEXT) $(am__objects_2)
@@ -901,7 +904,8 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 				src/wscutil.h src/wscutil.c \
 				src/simutil.h src/simutil.c \
 				src/simauth.h src/simauth.c \
-				src/watchlist.h src/watchlist.c
+				src/watchlist.h src/watchlist.c \
+				src/eap-tls-common.h src/eap-tls-common.c
 
 @DAEMON_TRUE@src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h \
 @DAEMON_TRUE@					src/plugin.h src/plugin.c \
@@ -1055,7 +1059,8 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 				src/handshake.h src/handshake.c \
 				src/eap.h src/eap.c src/eap-private.h \
 				src/eap-tls.c src/eap-ttls.c \
-				src/eap-md5.c src/util.c
+				src/eap-md5.c src/util.c \
+				src/eap-tls-common.h src/eap-tls-common.c
 
 unit_test_eapol_LDADD = ell/libell-internal.la
 unit_test_ssid_to_utf8_SOURCES = src/util.h src/util.c \
@@ -1489,6 +1494,8 @@ src/simutil.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/simauth.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
+src/eap-tls-common.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
 plugins/$(am__dirstamp):
 	@$(MKDIR_P) plugins
 	@: > plugins/$(am__dirstamp)
@@ -1754,6 +1761,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-peap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-pwd.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-sim.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-tls-common.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-tls.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-ttls.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-wsc.Po@am__quote@

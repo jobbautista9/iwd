@@ -1,8 +1,8 @@
 /*
  *
- *  Ethernet daemon for Linux
+ *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017-2018  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2018  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,9 +20,14 @@
  *
  */
 
-struct l_settings;
+struct databuf {
+	uint8_t *data;
+	size_t len;
+	size_t capacity;
+};
 
-bool network_init(void);
-void network_exit(void);
-
-struct l_settings *network_lookup_security(const char *network);
+struct databuf;
+struct databuf *databuf_new(size_t capacity);
+void databuf_append(struct databuf *databuf, const uint8_t *data,
+							size_t data_len);
+void databuf_free(struct databuf *databuf);

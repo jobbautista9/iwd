@@ -445,6 +445,21 @@ bool handshake_state_get_pmkid(struct handshake_state *s, uint8_t *out_pmkid)
 					use_sha256);
 }
 
+void handshake_state_set_gtk(struct handshake_state *s, const uint8_t *key,
+				unsigned int key_index, const uint8_t *rsc)
+{
+	enum crypto_cipher cipher =
+		ie_rsn_cipher_suite_to_cipher(s->group_cipher);
+	int key_len = crypto_cipher_key_len(cipher);
+
+	if (!key_len)
+		return;
+
+	memcpy(s->gtk, key, key_len);
+	s->gtk_index = key_index;
+	memcpy(s->gtk_rsc, rsc, 6);
+}
+
 /*
  * This function performs a match of the RSN/WPA IE obtained from the scan
  * results vs the RSN/WPA IE obtained as part of the 4-way handshake.  If they
@@ -538,7 +553,7 @@ bool handshake_util_ap_ie_matches(const uint8_t *msg_ie,
 }
 
 static const uint8_t *find_kde(const uint8_t *data, size_t data_len,
-				size_t *out_len, const unsigned char *oui)
+				size_t *out_len, enum handshake_kde selector)
 {
 	struct ie_tlv_iter iter;
 	const uint8_t *result;
@@ -556,7 +571,7 @@ static const uint8_t *find_kde(const uint8_t *data, size_t data_len,
 
 		/* Check OUI */
 		result = ie_tlv_iter_get_data(&iter);
-		if (memcmp(result, oui, 4))
+		if (l_get_be32(result) != selector)
 			continue;
 
 		if (out_len)
@@ -571,9 +586,9 @@ static const uint8_t *find_kde(const uint8_t *data, size_t data_len,
 const uint8_t *handshake_util_find_gtk_kde(const uint8_t *data, size_t data_len,
 						size_t *out_gtk_len)
 {
-	static const unsigned char gtk_oui[] = { 0x00, 0x0f, 0xac, 0x01 };
 	size_t gtk_len;
-	const uint8_t *gtk = find_kde(data, data_len, &gtk_len, gtk_oui);
+	const uint8_t *gtk = find_kde(data, data_len, &gtk_len,
+					HANDSHAKE_KDE_GTK);
 
 	if (!gtk)
 		return NULL;
@@ -598,9 +613,9 @@ const uint8_t *handshake_util_find_igtk_kde(const uint8_t *data,
 						size_t data_len,
 						size_t *out_igtk_len)
 {
-	static const unsigned char igtk_oui[] = { 0x00, 0x0f, 0xac, 0x09 };
 	size_t igtk_len;
-	const uint8_t *igtk = find_kde(data, data_len, &igtk_len, igtk_oui);
+	const uint8_t *igtk = find_kde(data, data_len, &igtk_len,
+					HANDSHAKE_KDE_IGTK);
 
 	if (!igtk)
 		return NULL;
@@ -624,16 +639,30 @@ const uint8_t *handshake_util_find_igtk_kde(const uint8_t *data,
 const uint8_t *handshake_util_find_pmkid_kde(const uint8_t *data,
 						size_t data_len)
 {
-	static const unsigned char pmkid_oui[] = { 0x00, 0x0f, 0xac, 0x04 };
 	const uint8_t *pmkid;
 	size_t pmkid_len;
 
-	pmkid = find_kde(data, data_len, &pmkid_len, pmkid_oui);
+	pmkid = find_kde(data, data_len, &pmkid_len, HANDSHAKE_KDE_PMKID);
 
 	if (pmkid && pmkid_len != 16)
 		return NULL;
 
 	return pmkid;
+}
+
+/* Defined in 802.11-2016 12.7.2 j), Figure 12-34 */
+void handshake_util_build_gtk_kde(enum crypto_cipher cipher, const uint8_t *key,
+					unsigned int key_index, uint8_t *to)
+{
+	size_t key_len = crypto_cipher_key_len(cipher);
+
+	*to++ = IE_TYPE_VENDOR_SPECIFIC;
+	*to++ = 6 + key_len;
+	l_put_be32(HANDSHAKE_KDE_GTK, to);
+	to += 4;
+	*to++ = key_index;
+	*to++ = 0;
+	memcpy(to, key, key_len);
 }
 
 /*
