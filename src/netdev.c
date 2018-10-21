@@ -56,6 +56,7 @@
 #include "src/util.h"
 #include "src/watchlist.h"
 #include "src/sae.h"
+#include "src/nl80211util.h"
 
 #ifndef ENOTSUPP
 #define ENOTSUPP 524
@@ -94,6 +95,7 @@ struct netdev {
 	uint32_t join_adhoc_cmd_id;
 	uint32_t leave_adhoc_cmd_id;
 	uint32_t set_interface_cmd_id;
+	uint32_t rekey_offload_cmd_id;
 	enum netdev_result result;
 	struct l_timeout *neighbor_report_timeout;
 	struct l_timeout *sa_query_timeout;
@@ -159,16 +161,10 @@ static void do_debug(const char *str, void *user_data)
 	l_info("%s%s", prefix, str);
 }
 
-static void netdev_handshake_state_free(struct handshake_state *hs)
+/* Cancels ongoing GTK/IGTK related commands (if any) */
+static void netdev_handshake_state_cancel_rekey(
+					struct netdev_handshake_state *nhs)
 {
-	struct netdev_handshake_state *nhs =
-			container_of(hs, struct netdev_handshake_state, super);
-
-	if (nhs->pairwise_new_key_cmd_id) {
-		l_genl_family_cancel(nl80211, nhs->pairwise_new_key_cmd_id);
-		nhs->pairwise_new_key_cmd_id = 0;
-	}
-
 	if (nhs->group_new_key_cmd_id) {
 		l_genl_family_cancel(nl80211, nhs->group_new_key_cmd_id);
 		nhs->group_new_key_cmd_id = 0;
@@ -179,12 +175,30 @@ static void netdev_handshake_state_free(struct handshake_state *hs)
 					nhs->group_management_new_key_cmd_id);
 		nhs->group_management_new_key_cmd_id = 0;
 	}
+}
+
+static void netdev_handshake_state_cancel_all(
+					struct netdev_handshake_state *nhs)
+{
+	if (nhs->pairwise_new_key_cmd_id) {
+		l_genl_family_cancel(nl80211, nhs->pairwise_new_key_cmd_id);
+		nhs->pairwise_new_key_cmd_id = 0;
+	}
+
+	netdev_handshake_state_cancel_rekey(nhs);
 
 	if (nhs->set_station_cmd_id) {
 		l_genl_family_cancel(nl80211, nhs->set_station_cmd_id);
 		nhs->set_station_cmd_id = 0;
 	}
+}
 
+static void netdev_handshake_state_free(struct handshake_state *hs)
+{
+	struct netdev_handshake_state *nhs =
+			container_of(hs, struct netdev_handshake_state, super);
+
+	netdev_handshake_state_cancel_all(nhs);
 	l_free(nhs);
 }
 
@@ -612,9 +626,16 @@ static void netdev_free(void *data)
 		netdev->set_powered_cmd_id = 0;
 	}
 
-	WATCHLIST_NOTIFY(&netdev_watches, netdev_watch_func_t,
-				netdev, NETDEV_WATCH_EVENT_DEL);
-	device_remove(netdev->device);
+	if (netdev->rekey_offload_cmd_id) {
+		l_genl_family_cancel(nl80211, netdev->rekey_offload_cmd_id);
+		netdev->rekey_offload_cmd_id = 0;
+	}
+
+	if (netdev->device) {
+		WATCHLIST_NOTIFY(&netdev_watches, netdev_watch_func_t,
+					netdev, NETDEV_WATCH_EVENT_DEL);
+		device_remove(netdev->device);
+	}
 
 	watchlist_destroy(&netdev->frame_watches);
 	watchlist_destroy(&netdev->station_watches);
@@ -1006,21 +1027,17 @@ static void netdev_setting_keys_failed(struct netdev_handshake_state *nhs,
 	 * 1. new_key(ptk)
 	 * 2. new_key(gtk) [optional]
 	 * 3. new_key(igtk) [optional]
-	 * 4. set_station
+	 * 4. rekey offload [optional]
+	 * 5. set_station
 	 *
 	 * Cancel all pending commands, then de-authenticate
 	 */
-	l_genl_family_cancel(nl80211, nhs->pairwise_new_key_cmd_id);
-	nhs->pairwise_new_key_cmd_id = 0;
+	netdev_handshake_state_cancel_all(nhs);
 
-	l_genl_family_cancel(nl80211, nhs->group_new_key_cmd_id);
-	nhs->group_new_key_cmd_id = 0;
-
-	l_genl_family_cancel(nl80211, nhs->group_management_new_key_cmd_id);
-	nhs->group_management_new_key_cmd_id = 0;
-
-	l_genl_family_cancel(nl80211, nhs->set_station_cmd_id);
-	nhs->set_station_cmd_id = 0;
+	if (netdev->rekey_offload_cmd_id) {
+		l_genl_family_cancel(nl80211, netdev->rekey_offload_cmd_id);
+		netdev->rekey_offload_cmd_id = 0;
+	}
 
 	netdev->result = NETDEV_RESULT_KEY_SETTING_FAILED;
 
@@ -1069,25 +1086,6 @@ done:
 	netdev_connect_ok(netdev);
 }
 
-static struct l_genl_msg *netdev_build_cmd_set_station(struct netdev *netdev,
-							const uint8_t *sta)
-{
-	struct l_genl_msg *msg;
-	struct nl80211_sta_flag_update flags;
-
-	flags.mask = 1 << NL80211_STA_FLAG_AUTHORIZED;
-	flags.set = flags.mask;
-
-	msg = l_genl_msg_new_sized(NL80211_CMD_SET_STATION, 512);
-
-	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &netdev->index);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_MAC, ETH_ALEN, sta);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_STA_FLAGS2,
-				sizeof(struct nl80211_sta_flag_update), &flags);
-
-	return msg;
-}
-
 static void netdev_new_group_key_cb(struct l_genl_msg *msg, void *data)
 {
 	struct netdev_handshake_state *nhs = data;
@@ -1115,24 +1113,6 @@ static void netdev_new_group_management_key_cb(struct l_genl_msg *msg,
 				netdev->index);
 		netdev_setting_keys_failed(nhs, MMPDU_REASON_CODE_UNSPECIFIED);
 	}
-}
-
-static struct l_genl_msg *netdev_build_cmd_new_key_group(struct netdev *netdev,
-					uint32_t cipher, uint8_t key_id,
-					const uint8_t *key, size_t key_len,
-					const uint8_t *ctr, size_t ctr_len)
-{
-	struct l_genl_msg *msg;
-
-	msg = l_genl_msg_new_sized(NL80211_CMD_NEW_KEY, 512);
-
-	l_genl_msg_append_attr(msg, NL80211_ATTR_KEY_DATA, key_len, key);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_KEY_CIPHER, 4, &cipher);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_KEY_SEQ, ctr_len, ctr);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_KEY_IDX, 1, &key_id);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &netdev->index);
-
-	return msg;
 }
 
 static bool netdev_copy_tk(uint8_t *tk_buf, const uint8_t *tk,
@@ -1185,6 +1165,12 @@ static bool netdev_copy_tk(uint8_t *tk_buf, const uint8_t *tk,
 	return true;
 }
 
+static const uint8_t *netdev_choose_key_address(
+					struct netdev_handshake_state *nhs)
+{
+	return (nhs->super.authenticator) ? nhs->super.spa : nhs->super.aa;
+}
+
 static void netdev_set_gtk(struct handshake_state *hs, uint8_t key_index,
 				const uint8_t *gtk, uint8_t gtk_len,
 				const uint8_t *rsc, uint8_t rsc_len,
@@ -1195,6 +1181,8 @@ static void netdev_set_gtk(struct handshake_state *hs, uint8_t key_index,
 	struct netdev *netdev = nhs->netdev;
 	uint8_t gtk_buf[32];
 	struct l_genl_msg *msg;
+	const uint8_t *addr = (netdev->type == NL80211_IFTYPE_ADHOC) ?
+				nhs->super.aa : NULL;
 
 	l_debug("%d", netdev->index);
 
@@ -1211,9 +1199,9 @@ static void netdev_set_gtk(struct handshake_state *hs, uint8_t key_index,
 		return;
 	}
 
-	msg = netdev_build_cmd_new_key_group(netdev, cipher, key_index,
-						gtk_buf, gtk_len,
-						rsc, rsc_len);
+	msg = nl80211_build_new_key_group(netdev->index, cipher, key_index,
+					gtk_buf, gtk_len, rsc, rsc_len, addr);
+
 	nhs->group_new_key_cmd_id =
 		l_genl_family_send(nl80211, msg, netdev_new_group_key_cb,
 						nhs, NULL);
@@ -1256,9 +1244,9 @@ static void netdev_set_igtk(struct handshake_state *hs, uint8_t key_index,
 		return;
 	}
 
-	msg = netdev_build_cmd_new_key_group(netdev, cipher, key_index,
-						igtk_buf, igtk_len,
-						ipn, ipn_len);
+	msg = nl80211_build_new_key_group(netdev->index, cipher, key_index,
+					igtk_buf, igtk_len, ipn, ipn_len, NULL);
+
 	nhs->group_management_new_key_cmd_id =
 			l_genl_family_send(nl80211, msg,
 				netdev_new_group_management_key_cb,
@@ -1269,24 +1257,6 @@ static void netdev_set_igtk(struct handshake_state *hs, uint8_t key_index,
 
 	l_genl_msg_unref(msg);
 	netdev_setting_keys_failed(nhs, MMPDU_REASON_CODE_UNSPECIFIED);
-}
-
-static const uint8_t *netdev_choose_key_address(
-					struct netdev_handshake_state *nhs)
-{
-	switch (nhs->netdev->type) {
-	case NL80211_IFTYPE_STATION:
-		return nhs->super.aa;
-	case NL80211_IFTYPE_AP:
-		return nhs->super.spa;
-	case NL80211_IFTYPE_ADHOC:
-		if (nhs->super.authenticator)
-			return nhs->super.spa;
-		else
-			return nhs->super.aa;
-	default:
-		return NULL;
-	}
 }
 
 static void netdev_new_pairwise_key_cb(struct l_genl_msg *msg, void *data)
@@ -1308,7 +1278,7 @@ static void netdev_new_pairwise_key_cb(struct l_genl_msg *msg, void *data)
 	 * we're already operational, it will not hurt during re-keying
 	 * and is necessary after an FT.
 	 */
-	msg = netdev_build_cmd_set_station(netdev, addr);
+	msg = nl80211_build_set_station_authorized(netdev->index, addr);
 
 	nhs->set_station_cmd_id =
 		l_genl_family_send(nl80211, msg, netdev_set_station_cb,
@@ -1418,12 +1388,19 @@ static void hardware_rekey_cb(struct l_genl_msg *msg, void *data)
 	struct netdev *netdev = data;
 	int err;
 
+	netdev->rekey_offload_cmd_id = 0;
+
 	err = l_genl_msg_get_error(msg);
 	if (err < 0) {
 		if (err == -EOPNOTSUPP) {
 			l_error("hardware_rekey not supported");
 			netdev->rekey_offload_support = false;
 		}
+
+		/*
+		 * TODO: Ignore all other errors for now, until WoWLAN is
+		 * supported properly
+		 */
 	}
 }
 
@@ -1471,10 +1448,10 @@ static void netdev_set_rekey_offload(uint32_t ifindex,
 		return;
 
 	l_debug("%d", netdev->index);
-	msg = netdev_build_cmd_replay_counter(netdev, kek, kck,
-					replay_counter);
-	l_genl_family_send(nl80211, msg, hardware_rekey_cb, netdev, NULL);
-
+	msg = netdev_build_cmd_replay_counter(netdev, kek, kck, replay_counter);
+	netdev->rekey_offload_cmd_id = l_genl_family_send(nl80211, msg,
+							hardware_rekey_cb,
+							netdev, NULL);
 }
 
 /*
@@ -2971,6 +2948,11 @@ int netdev_fast_transition(struct netdev *netdev, struct scan_bss *target_bss,
 		l_genl_family_cancel(nl80211,
 			nhs->group_management_new_key_cmd_id);
 		nhs->group_management_new_key_cmd_id = 0;
+	}
+
+	if (netdev->rekey_offload_cmd_id) {
+		l_genl_family_cancel(nl80211, netdev->rekey_offload_cmd_id);
+		netdev->rekey_offload_cmd_id = 0;
 	}
 
 	netdev_rssi_polling_update(netdev);
