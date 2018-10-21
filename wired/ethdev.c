@@ -153,7 +153,11 @@ static void eap_tx_packet(const uint8_t *eap_data, size_t len, void *user_data)
 	l_put_be16(len, frame + 2);
 	memcpy(frame + 4, eap_data, len);
 
-	pae_write(eapol->dev, eapol->addr, frame, len + 4);
+	/*
+	 * The supplicant / client always uses the PAE group address for
+	 * sending the EAP packets.
+	 */
+	pae_write(eapol->dev, pae_group_addr, frame, len + 4);
 }
 
 static void eap_complete(enum eap_result result, void *user_data)
@@ -176,19 +180,42 @@ static void eap_complete(enum eap_result result, void *user_data)
 	eapol_free(eapol);
 }
 
+static void eap_key_material(const uint8_t *msk_data, size_t msk_len,
+				const uint8_t *emsk_data, size_t emsk_len,
+				const uint8_t *iv, size_t iv_len,
+				void *user_data)
+{
+	l_debug("EAP key material received");
+}
+
+static void eap_event(unsigned int event, const void *event_data,
+							void *user_data)
+{
+	l_debug("event %u", event);
+}
+
 static void rx_packet(struct ethdev *dev, const uint8_t *addr,
 					const void *frame, size_t len)
 {
 	const struct eapol_hdr *hdr = frame;
 	struct eapol *eapol;
+	uint16_t pkt_len;
 
 	if (len < 4) {
 		l_error("Too short EAPoL packet with %zu bytes", len);
 		return;
 	}
 
-	if (L_BE16_TO_CPU(hdr->pkt_len) != len - 4) {
-		l_error("Length mismatch with EAPoL packet");
+	pkt_len = L_BE16_TO_CPU(hdr->pkt_len);
+
+	/*
+	 * EAPoL packet frames might contain padding at the end and so just
+	 * ensure that at least packet body length worth of packet body is
+	 * actually present.
+	 */
+	if (len - 4 < pkt_len) {
+		l_error("Missing %zu bytes from EAPoL packet",
+							pkt_len - (len - 4));
 		return;
 	}
 
@@ -213,8 +240,11 @@ static void rx_packet(struct ethdev *dev, const uint8_t *addr,
 
 			eapol->cred = network_lookup_security("default");
 			eap_load_settings(eapol->eap, eapol->cred, "EAP-");
+
+			eap_set_key_material_func(eapol->eap, eap_key_material);
+			eap_set_event_func(eapol->eap, eap_event);
 		}
-		eap_rx_packet(eapol->eap, frame + 4, len - 4);
+		eap_rx_packet(eapol->eap, frame + 4, pkt_len);
 		break;
 	}
 }
@@ -253,10 +283,17 @@ static bool pae_read(struct l_io *io, void *user_data)
 		return false;
 	}
 
+	if (sll.sll_hatype != ARPHRD_ETHER)
+		return true;
+
 	if (sll.sll_halen != ETH_ALEN)
 		return true;
 
 	if (ntohs(sll.sll_protocol) != ETH_P_PAE)
+		return true;
+
+	if (sll.sll_pkttype != PACKET_HOST &&
+					sll.sll_pkttype != PACKET_MULTICAST)
 		return true;
 
 	dev = ethdev_lookup(sll.sll_ifindex);
@@ -347,11 +384,31 @@ static char *read_devtype_from_uevent(const char *ifname)
 	return devtype;
 }
 
+static int modify_membership(struct ethdev *dev, int optname)
+{
+	struct packet_mreq mreq;
+	int fd;
+
+	fd = l_io_get_fd(pae_io);
+	if (fd < 0)
+		return -1;
+
+	memset(&mreq, 0, sizeof(mreq));
+	mreq.mr_ifindex = dev->index;
+	mreq.mr_type = PACKET_MR_MULTICAST;
+	mreq.mr_alen = ETH_ALEN;
+	memcpy(mreq.mr_address, pae_group_addr, ETH_ALEN);
+
+	return setsockopt(fd, SOL_PACKET, optname, &mreq, sizeof(mreq));
+}
+
 static void ethdev_free(void *data)
 {
 	struct ethdev *dev = data;
 
 	l_debug("Freeing device %s", dev->ifname);
+
+	modify_membership(dev, PACKET_DROP_MEMBERSHIP);
 
 	l_queue_destroy(dev->eapol_sessions, eapol_free);
 
@@ -467,6 +524,8 @@ static void newlink_notify(const struct ifinfomsg *ifi, int bytes)
 								dev->index);
 
 		l_debug("Creating device %u", dev->index);
+
+		modify_membership(dev, PACKET_ADD_MEMBERSHIP);
 
 		l_dbus_object_add_interface(dbus_app_get(), dev->path,
 						ADAPTER_INTERFACE, dev);

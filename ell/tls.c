@@ -38,21 +38,35 @@
 #include "key.h"
 #include "asn1-private.h"
 
-void tls10_prf(const uint8_t *secret, size_t secret_len,
+void tls10_prf(const void *secret, size_t secret_len,
 		const char *label,
-		const uint8_t *seed, size_t seed_len,
+		const void *seed, size_t seed_len,
 		uint8_t *out, size_t out_len)
 {
 	uint8_t p_hash2[out_len];
 	uint8_t l_s1 = (secret_len + 1) / 2;
 	unsigned int i;
 
+	/*
+	 * RFC2246 section 5:
+	 * S1 and S2 are the two halves of the secret, and each is the same
+	 * length.  S1 is taken from the first half of the secret, S2 from the
+	 * second half.  Their length is created by rounding up the length of
+	 * the overall secret, divided by two; thus, if the original secret is
+	 * an odd number of bytes long, the last byte of S1 will be the same as
+	 * the first byte of S2.
+	 */
+
 	tls12_prf(L_CHECKSUM_MD5, 16,
 			secret, l_s1,
 			label, seed, seed_len,
 			out, out_len);
+
+	if (secret_len > 0)
+		secret += secret_len - l_s1;
+
 	tls12_prf(L_CHECKSUM_SHA1, 20,
-			secret + secret_len - l_s1, l_s1,
+			secret, l_s1,
 			label, seed, seed_len,
 			p_hash2, out_len);
 
@@ -61,9 +75,9 @@ void tls10_prf(const uint8_t *secret, size_t secret_len,
 }
 
 void tls12_prf(enum l_checksum_type type, size_t hash_len,
-		const uint8_t *secret, size_t secret_len,
+		const void *secret, size_t secret_len,
 		const char *label,
-		const uint8_t *seed, size_t seed_len,
+		const void *seed, size_t seed_len,
 		uint8_t *out, size_t out_len)
 {
 	struct l_checksum *hmac = l_checksum_new_hmac(type, secret, secret_len);
@@ -100,9 +114,9 @@ void tls12_prf(enum l_checksum_type type, size_t hash_len,
 
 void tls_prf_get_bytes(struct l_tls *tls,
 				enum l_checksum_type type, size_t hash_len,
-				const uint8_t *secret, size_t secret_len,
+				const void *secret, size_t secret_len,
 				const char *label,
-				const uint8_t *seed, size_t seed_len,
+				const void *seed, size_t seed_len,
 				uint8_t *buf, size_t len)
 {
 	if (tls->negotiated_version >= TLS_V12)
@@ -110,6 +124,32 @@ void tls_prf_get_bytes(struct l_tls *tls,
 				seed, seed_len, buf, len);
 	else
 		tls10_prf(secret, secret_len, label, seed, seed_len, buf, len);
+}
+
+LIB_EXPORT bool l_tls_prf_get_bytes(struct l_tls *tls,
+				enum l_checksum_type type,
+				size_t hash_len, bool use_master_secret,
+				const char *label, uint8_t *buf, size_t len)
+{
+	uint8_t seed[64];
+
+	if (unlikely(!tls))
+		return false;
+
+	memcpy(seed +  0, tls->pending.client_random, 32);
+	memcpy(seed + 32, tls->pending.server_random, 32);
+
+	if (use_master_secret)
+		tls_prf_get_bytes(tls, type, hash_len,
+						tls->pending.master_secret, 48,
+						label, seed, 64, buf, len);
+	else
+		tls_prf_get_bytes(tls, type, hash_len, "", 0,
+						label, seed, 64, buf, len);
+
+	memset(seed, 0, 64);
+
+	return true;
 }
 
 static void tls_write_random(uint8_t *buf)

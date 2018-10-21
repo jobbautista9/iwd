@@ -36,7 +36,6 @@
 #include "key.h"
 #include "string.h"
 #include "random.h"
-#include "key-private.h"
 
 #ifndef KEYCTL_DH_COMPUTE
 #define KEYCTL_DH_COMPUTE 23
@@ -748,7 +747,8 @@ LIB_EXPORT void l_keyring_free_norevoke(struct l_keyring *keyring)
 	l_free(keyring);
 }
 
-bool l_keyring_link(struct l_keyring *keyring, const struct l_key *key)
+LIB_EXPORT bool l_keyring_link(struct l_keyring *keyring,
+							const struct l_key *key)
 {
 	long error;
 
@@ -760,7 +760,8 @@ bool l_keyring_link(struct l_keyring *keyring, const struct l_key *key)
 	return error == 0;
 }
 
-bool l_keyring_unlink(struct l_keyring *keyring, const struct l_key *key)
+LIB_EXPORT bool l_keyring_unlink(struct l_keyring *keyring,
+							const struct l_key *key)
 {
 	long error;
 
@@ -772,7 +773,7 @@ bool l_keyring_unlink(struct l_keyring *keyring, const struct l_key *key)
 	return error == 0;
 }
 
-bool l_key_is_supported(uint32_t features)
+LIB_EXPORT bool l_key_is_supported(uint32_t features)
 {
 	long result;
 

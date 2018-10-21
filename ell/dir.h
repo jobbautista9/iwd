@@ -2,7 +2,7 @@
  *
  *  Embedded Linux library
  *
- *  Copyright (C) 2018  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2017  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,26 +20,35 @@
  *
  */
 
-#ifndef __ELL_FSWATCH_H
-#define __ELL_FSWATCH_H
+#ifndef __ELL_DIR_H
+#define __ELL_DIR_H
 
-struct l_fswatch;
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-enum l_fswatch_event {
-	L_FSWATCH_EVENT_CREATE,
-	L_FSWATCH_EVENT_MOVE,
-	L_FSWATCH_EVENT_MODIFY,
-	L_FSWATCH_EVENT_DELETE,
-	L_FSWATCH_EVENT_ATTRIB,
+struct l_dir_watch;
+
+enum l_dir_watch_event {
+        L_DIR_WATCH_EVENT_CREATED,
+	L_DIR_WATCH_EVENT_REMOVED,
+	L_DIR_WATCH_EVENT_MODIFIED,
+	L_DIR_WATCH_EVENT_ACCESSED,
 };
 
-typedef void (*l_fswatch_cb_t) (struct l_fswatch *watch, const char *filename,
-				enum l_fswatch_event event, void *user_data);
-typedef void (*l_fswatch_destroy_cb_t) (void *user_data);
+typedef void (*l_dir_watch_event_func_t) (const char *filename,
+						enum l_dir_watch_event event,
+						void *user_data);
+typedef void (*l_dir_watch_destroy_func_t) (void *user_data);
 
-struct l_fswatch *l_fswatch_new(const char *path, l_fswatch_cb_t cb,
-				void *user_data,
-				l_fswatch_destroy_cb_t destroy);
-void l_fswatch_destroy(struct l_fswatch *watch);
+struct l_dir_watch *l_dir_watch_new(const char *pathname,
+					l_dir_watch_event_func_t function,
+					void *user_data,
+					l_dir_watch_destroy_func_t destroy);
+void l_dir_watch_destroy(struct l_dir_watch *watch);
 
-#endif /* __ELL_FSWATCH_H */
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __ELL_DIR_H */
