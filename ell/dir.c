@@ -24,8 +24,10 @@
 #include <config.h>
 #endif
 
+#define _GNU_SOURCE
 #include <unistd.h>
 #include <dirent.h>
+#include <limits.h>
 #include <sys/inotify.h>
 
 #include "private.h"

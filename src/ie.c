@@ -25,11 +25,12 @@
 #endif
 
 #include <errno.h>
-#include <ell/ell.h>
-#include "util.h"
-#include "crypto.h"
 
-#include "ie.h"
+#include <ell/ell.h>
+
+#include "src/util.h"
+#include "src/crypto.h"
+#include "src/ie.h"
 
 static const uint8_t ieee_oui[3] = { 0x00, 0x0f, 0xac };
 static const uint8_t microsoft_oui[3] = { 0x00, 0x50, 0xf2 };
@@ -1370,8 +1371,7 @@ int ie_parse_supported_rates(struct ie_tlv_iter *iter,
 
 	len = ie_tlv_iter_get_length(iter);
 
-	if (ie_tlv_iter_get_tag(iter) == IE_TYPE_SUPPORTED_RATES &&
-			(len == 0 || len > 8))
+	if (ie_tlv_iter_get_tag(iter) == IE_TYPE_SUPPORTED_RATES && len == 0)
 		return -EINVAL;
 
 	rates = ie_tlv_iter_get_data(iter);

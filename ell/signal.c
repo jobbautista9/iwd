@@ -28,10 +28,13 @@
 #include <errno.h>
 #include <unistd.h>
 #include <string.h>
+#include <signal.h>
 #include <sys/epoll.h>
 #include <sys/signalfd.h>
 
 #include "util.h"
+#include "io.h"
+#include "queue.h"
 #include "signal.h"
 #include "private.h"
 
@@ -48,146 +51,172 @@
  * Opague object representing the signal.
  */
 struct l_signal {
-	int fd;
-	sigset_t mask;
+	struct signal_desc *desc;
 	l_signal_notify_cb_t callback;
-	l_signal_destroy_cb_t destroy;
 	void *user_data;
+	l_signal_destroy_cb_t destroy;
 };
 
-static int masked_signals[_NSIG] = { };
+struct signal_desc {
+	uint32_t signo;
+	struct l_queue *callbacks;
+};
 
-static void signal_destroy(void *user_data)
+static struct l_io *signalfd_io = NULL;
+static struct l_queue *signal_list = NULL;
+static sigset_t signal_mask;
+
+static void handle_callback(struct signal_desc *desc)
 {
-	struct l_signal *signal = user_data;
+	const struct l_queue_entry *entry;
 
-	close(signal->fd);
-	signal->fd = -1;
+	for (entry = l_queue_get_entries(desc->callbacks); entry;
+							entry = entry->next) {
+		struct l_signal *signal = entry->data;
 
-	if (signal->destroy)
-		signal->destroy(signal->user_data);
+		if (signal->callback)
+			signal->callback(signal->user_data);
+	}
 }
 
-static void signal_callback(int fd, uint32_t events, void *user_data)
+static bool desc_match_signo(const void *a, const void *b)
 {
-	struct l_signal *signal = user_data;
+	const struct signal_desc *desc = a;
+	uint32_t signo = L_PTR_TO_UINT(b);
+
+	return (desc->signo == signo);
+}
+
+static bool signalfd_read_cb(struct l_io *io, void *user_data)
+{
+	int fd = l_io_get_fd(io);
+	struct signal_desc *desc;
 	struct signalfd_siginfo si;
 	ssize_t result;
 
-	result = read(signal->fd, &si, sizeof(si));
+	result = read(fd, &si, sizeof(si));
 	if (result != sizeof(si))
+		return true;
+
+	desc = l_queue_find(signal_list, desc_match_signo,
+						L_UINT_TO_PTR(si.ssi_signo));
+	if (desc)
+		handle_callback(desc);
+
+	return true;
+}
+
+static bool signalfd_add(int signo)
+{
+	int fd;
+
+	if (!signalfd_io) {
+		fd = -1;
+		sigemptyset(&signal_mask);
+	} else
+		fd = l_io_get_fd(signalfd_io);
+
+	sigaddset(&signal_mask, signo);
+
+	fd = signalfd(fd, &signal_mask, SFD_CLOEXEC);
+	if (fd < 0)
+		return false;
+
+	if (signalfd_io)
+		return true;
+
+	signalfd_io = l_io_new(fd);
+	if (!signalfd_io) {
+		close(fd);
+		return false;
+	}
+
+	l_io_set_close_on_destroy(signalfd_io, true);
+
+	if (!l_io_set_read_handler(signalfd_io, signalfd_read_cb, NULL, NULL)) {
+		l_io_destroy(signalfd_io);
+		return false;
+	}
+
+	signal_list = l_queue_new();
+
+	return true;
+}
+
+static void signalfd_remove(int signo)
+{
+	if (!signalfd_io)
 		return;
 
-	if (signal->callback)
-		signal->callback(signal, si.ssi_signo, signal->user_data);
-}
+	sigdelset(&signal_mask, signo);
 
-static int masked_signals_add(const sigset_t *mask)
-{
-	sigset_t set;
-	int i, err, count = 0;
-
-	sigemptyset(&set);
-
-	for (i = 0; i < _NSIG; i++) {
-		if (sigismember(mask, i)) {
-			masked_signals[i]++;
-			if (masked_signals[i] == 1) {
-				sigaddset(&set, i);
-				count++;
-			}
-		}
+	if (!sigisemptyset(&signal_mask)) {
+		signalfd(l_io_get_fd(signalfd_io), &signal_mask, SFD_CLOEXEC);
+		return;
 	}
 
-	if (!count)
-		return 0;
+	l_io_destroy(signalfd_io);
+	signalfd_io = NULL;
 
-	err = sigprocmask(SIG_BLOCK, &set, NULL);
-	if (err < 0) {
-		for (i = 0; i < _NSIG; i++) {
-			if (sigismember(mask, i))
-				masked_signals[i]--;
-		}
-	}
-
-	return err;
-}
-
-static int masked_signals_del(const sigset_t *mask)
-{
-	sigset_t set;
-	int i, count = 0;
-
-	sigemptyset(&set);
-
-	for (i = 0; i < _NSIG; i++) {
-		if (sigismember(mask, i)) {
-			masked_signals[i]--;
-			if (masked_signals[i] == 0) {
-				sigaddset(&set, i);
-				count++;
-			}
-		}
-	}
-
-	if (!count)
-		return 0;
-
-	return sigprocmask(SIG_UNBLOCK, &set, NULL);
+	l_queue_destroy(signal_list, NULL);
+	signal_list = NULL;
 }
 
 /**
  * l_signal_create:
- * @mask: set of signal mask
  * @callback: signal callback function
  * @user_data: user data provided to signal callback function
  * @destroy: destroy function for user data
  *
  * Create new signal callback handling for a given set of signals.
  *
- * From now on every signal from the set is reported via @callback function
- * indicating the Unix signal number that triggered it.
- *
  * Returns: a newly allocated #l_signal object
  **/
-LIB_EXPORT struct l_signal *l_signal_create(const sigset_t *mask,
-			l_signal_notify_cb_t callback,
-			void *user_data, l_signal_destroy_cb_t destroy)
+LIB_EXPORT struct l_signal *l_signal_create(uint32_t signo,
+				l_signal_notify_cb_t callback,
+				void *user_data, l_signal_destroy_cb_t destroy)
 {
 	struct l_signal *signal;
-	int err;
+	struct signal_desc *desc;
+	sigset_t mask, oldmask;
 
-	if (unlikely(!mask || !callback))
+	if (signo <= 1 || signo >= _NSIG)
 		return NULL;
 
 	signal = l_new(struct l_signal, 1);
-
 	signal->callback = callback;
 	signal->destroy = destroy;
 	signal->user_data = user_data;
-	memcpy(&signal->mask, mask, sizeof(sigset_t));
 
-	if (masked_signals_add(mask) < 0) {
+	desc = l_queue_find(signal_list, desc_match_signo,
+						L_UINT_TO_PTR(signo));
+	if (desc)
+		goto done;
+
+	sigemptyset(&mask);
+	sigaddset(&mask, signo);
+
+	if (sigprocmask(SIG_BLOCK, &mask, &oldmask) < 0) {
 		l_free(signal);
 		return NULL;
 	}
 
-	signal->fd = signalfd(-1, mask, SFD_NONBLOCK | SFD_CLOEXEC);
-	if (signal->fd < 0)
-		goto error;
+	if (!signalfd_add(signo)) {
+		sigprocmask(SIG_SETMASK, &oldmask, NULL);
+		l_free(signal);
+		return NULL;
+	}
 
-	err = watch_add(signal->fd, EPOLLIN, signal_callback,
-			signal, signal_destroy);
+	desc = l_new(struct signal_desc, 1);
+	desc->signo = signo;
+	desc->callbacks = l_queue_new();
 
-	if (err < 0)
-		goto error;
+	l_queue_push_tail(signal_list, desc);
 
+done:
+	l_queue_push_tail(desc->callbacks, signal);
+	signal->desc = desc;
 	return signal;
-
-error:
-	masked_signals_del(mask);
-	l_free(signal);
-	return NULL;
 }
 
 /**
@@ -198,11 +227,42 @@ error:
  **/
 LIB_EXPORT void l_signal_remove(struct l_signal *signal)
 {
-	if (unlikely(!signal))
+	struct signal_desc *desc;
+	sigset_t mask;
+
+	if (!signal)
 		return;
 
-	watch_remove(signal->fd);
-	masked_signals_del(&signal->mask);
+	desc = signal->desc;
+	l_queue_remove(desc->callbacks, signal);
+
+	/*
+	 * As long as the signal descriptor has callbacks registered, it is
+	 * still needed to be active.
+	 */
+	if (!l_queue_isempty(desc->callbacks))
+		goto done;
+
+	if (!l_queue_remove(signal_list, desc))
+		goto done;
+
+	sigemptyset(&mask);
+	sigaddset(&mask, desc->signo);
+
+	/*
+	 * When the number of signals goes to zero, then this will close
+	 * the signalfd file descriptor, otherwise it will only adjust the
+	 * signal mask to account for the removed signal.
+	 *
+	 */
+	signalfd_remove(desc->signo);
+	sigprocmask(SIG_UNBLOCK, &mask, NULL);
+	l_queue_destroy(desc->callbacks, NULL);
+	l_free(desc);
+
+done:
+	if (signal->destroy)
+		signal->destroy(signal->user_data);
 
 	l_free(signal);
 }

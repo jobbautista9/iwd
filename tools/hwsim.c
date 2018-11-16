@@ -27,6 +27,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <getopt.h>
+#include <signal.h>
+#include <time.h>
+#include <sys/time.h>
 #include <linux/if_ether.h>
 #include <linux/rtnetlink.h>
 #include <net/if_arp.h>
@@ -80,6 +83,9 @@ enum {
 	HWSIM_ATTR_RADIO_NAME,
 	HWSIM_ATTR_NO_VIF,
 	HWSIM_ATTR_FREQ,
+	HWSIM_ATTR_PAD,
+	HWSIM_ATTR_TX_INFO_FLAGS,
+	HWSIM_ATTR_PERM_ADDR,
 	__HWSIM_ATTR_MAX,
 };
 #define HWSIM_ATTR_MAX (__HWSIM_ATTR_MAX - 1)
@@ -1433,7 +1439,8 @@ static void unicast_handler(struct l_genl_msg *msg, void *user_data)
 			break;
 
 		default:
-			l_warn("Unhandled attribute type: %u", type);
+			if (type >= __HWSIM_ATTR_MAX)
+				l_warn("Unknown attribute type: %u", type);
 			break;
 		}
 	}
@@ -2366,7 +2373,7 @@ static void hwsim_ready(void *user_data)
 		l_genl_family_set_watches(nl80211, nl80211_ready, NULL,
 						NULL, NULL);
 
-		if (!l_genl_set_unicast_handler(genl, unicast_handler,
+		if (!l_genl_family_set_unicast_handler(hwsim, unicast_handler,
 						NULL, NULL)) {
 			l_error("Failed to set unicast handler");
 			goto error;
@@ -2387,8 +2394,7 @@ static void hwsim_disappeared(void *user_data)
 	l_main_quit();
 }
 
-static void signal_handler(struct l_signal *signal, uint32_t signo,
-							void *user_data)
+static void signal_handler(uint32_t signo, void *user_data)
 {
 	switch (signo) {
 	case SIGINT:
@@ -2427,8 +2433,6 @@ static const struct option main_options[] = {
 
 int main(int argc, char *argv[])
 {
-	struct l_signal *signal;
-	sigset_t mask;
 	int actions = 0;
 
 	for (;;) {
@@ -2499,12 +2503,6 @@ int main(int argc, char *argv[])
 	if (!l_main_init())
 		return EXIT_FAILURE;
 
-	sigemptyset(&mask);
-	sigaddset(&mask, SIGINT);
-	sigaddset(&mask, SIGTERM);
-
-	signal = l_signal_create(&mask, signal_handler, NULL, NULL);
-
 	l_log_set_stderr();
 
 	printf("Wireless simulator ver %s\n", VERSION);
@@ -2539,9 +2537,7 @@ int main(int argc, char *argv[])
 	l_genl_family_set_watches(hwsim, hwsim_ready, hwsim_disappeared,
 					NULL, NULL);
 
-	exit_status = EXIT_SUCCESS;
-
-	l_main_run();
+	exit_status = l_main_run_with_signal(signal_handler, NULL);
 
 	l_genl_family_unref(hwsim);
 	l_genl_family_unref(nl80211);
@@ -2557,7 +2553,6 @@ int main(int argc, char *argv[])
 	l_netlink_destroy(rtnl);
 
 done:
-	l_signal_remove(signal);
 	l_main_exit();
 
 	return exit_status;

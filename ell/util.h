@@ -41,11 +41,11 @@ extern "C" {
 #define L_STRINGIFY(val) L_STRINGIFY_ARG(val)
 #define L_STRINGIFY_ARG(contents) #contents
 
-#define L_WARN_ON(condition) ({						\
+#define L_WARN_ON(condition) __extension__ ({				\
 		bool r = !!(condition);					\
 		if (unlikely(r))					\
 			l_warn("WARNING: %s:%s() condition %s failed",	\
-				__FILE__, __PRETTY_FUNCTION__,		\
+				__FILE__, __func__,			\
 				#condition);				\
 		unlikely(r);						\
 	})
@@ -56,19 +56,19 @@ extern "C" {
 #define L_PTR_TO_INT(p) ((int) ((intptr_t) (p)))
 #define L_INT_TO_PTR(u) ((void *) ((intptr_t) (u)))
 
-#define L_GET_UNALIGNED(ptr)			\
+#define L_GET_UNALIGNED(ptr) __extension__	\
 ({						\
 	struct __attribute__((packed)) {	\
-		typeof(*(ptr)) __v;		\
-	} *__p = (typeof(__p)) (ptr);		\
+            __typeof__(*(ptr)) __v;		\
+	} *__p = (__typeof__(__p)) (ptr);	\
 	__p->__v;				\
 })
 
 #define L_PUT_UNALIGNED(val, ptr)		\
 do {						\
 	struct __attribute__((packed)) {	\
-		typeof(*(ptr)) __v;		\
-	} *__p = (typeof(__p)) (ptr);		\
+		__typeof__(*(ptr)) __v;		\
+	} *__p = (__typeof__(__p)) (ptr);	\
 	__p->__v = (val);			\
 } while(0)
 
@@ -114,47 +114,47 @@ static inline void l_put_u8(uint8_t val, void *ptr)
 
 static inline uint16_t l_get_u16(const void *ptr)
 {
-	return *((const uint16_t *) ptr);
+	return L_GET_UNALIGNED((const uint16_t *) ptr);
 }
 
 static inline void l_put_u16(uint16_t val, void *ptr)
 {
-	*((uint16_t *) ptr) = val;
+	L_PUT_UNALIGNED(val, (uint16_t *) ptr);
 }
 
 static inline uint32_t l_get_u32(const void *ptr)
 {
-	return *((const uint32_t *) ptr);
+	return L_GET_UNALIGNED((const uint32_t *) ptr);
 }
 
 static inline void l_put_u32(uint32_t val, void *ptr)
 {
-	*((uint32_t *) ptr) = val;
+	L_PUT_UNALIGNED(val, (uint32_t *) ptr);
 }
 
 static inline uint64_t l_get_u64(const void *ptr)
 {
-	return *((const uint64_t *) ptr);
+	return L_GET_UNALIGNED((const uint64_t *) ptr);
 }
 
 static inline void l_put_u64(uint64_t val, void *ptr)
 {
-	*((uint64_t *) ptr) = val;
+	L_PUT_UNALIGNED(val, (uint64_t *) ptr);
 }
 
 static inline int16_t l_get_s16(const void *ptr)
 {
-	return *((const int16_t *) ptr);
+	return L_GET_UNALIGNED((const int16_t *) ptr);
 }
 
 static inline int32_t l_get_s32(const void *ptr)
 {
-	return *((const int32_t *) ptr);
+	return L_GET_UNALIGNED((const int32_t *) ptr);
 }
 
 static inline int64_t l_get_s64(const void *ptr)
 {
-	return *((const int64_t *) ptr);
+	return L_GET_UNALIGNED((const int64_t *) ptr);
 }
 
 static inline uint16_t l_get_le16(const void *ptr)
@@ -258,21 +258,14 @@ static inline void auto_free(void *a)
 
 char *l_strdup(const char *str);
 char *l_strndup(const char *str, size_t max);
-char *l_strdup_printf(const char *format, ...);
+char *l_strdup_printf(const char *format, ...)
+			__attribute__((format(printf, 1, 2)));
 char *l_strdup_vprintf(const char *format, va_list args);
-void l_strfreev(char **strlist);
-char **l_strsplit(const char *str, const char sep);
-char **l_strsplit_set(const char *str, const char *separators);
-char *l_strjoinv(char **str_array, const char delim);
-void l_strv_free(char **str_array);
-unsigned int l_strv_length(char **str_array);
-bool l_strv_contains(char **str_array, const char *item);
-char **l_strv_append(char **str_array, const char *str);
+
+size_t l_strlcpy(char* dst, const char *src, size_t len);
 
 bool l_str_has_prefix(const char *str, const char *prefix);
 bool l_str_has_suffix(const char *str, const char *suffix);
-
-size_t l_strlcpy(char* dst, const char *src, size_t len);
 
 char *l_util_hexstring(const unsigned char *buf, size_t len);
 unsigned char *l_util_from_hexstring(const char *str, size_t *out_len);
@@ -288,7 +281,8 @@ void l_util_hexdumpv(bool in, const struct iovec *iov, size_t n_iov,
 					l_util_hexdump_func_t function,
 					void *user_data);
 void l_util_debug(l_util_hexdump_func_t function, void *user_data,
-						const char *format, ...);
+						const char *format, ...)
+			__attribute__((format(printf, 3, 4)));
 
 const char *l_util_get_debugfs_path(void);
 

@@ -99,6 +99,8 @@ static void eap_tls_free(struct eap_state *eap)
 #define EAP_TLS_FLAG_L (1 << 7)
 #define EAP_TLS_FLAG_M (1 << 6)
 #define EAP_TLS_FLAG_S (1 << 5)
+#define EAP_TLS_FLAG_LM_MASK	\
+	(EAP_TLS_FLAG_L | EAP_TLS_FLAG_M)
 
 static uint8_t *eap_tls_tx_buf_reserve(struct eap_tls_state *tls, size_t size)
 {
@@ -161,6 +163,11 @@ static void eap_tls_disconnect_cb(enum l_tls_alert_desc reason,
 	tls->completed = true;
 }
 
+static void eap_tls_debug_cb(const char *str, void *user_data)
+{
+	l_info("EAP-TLS %s", str);
+}
+
 static void eap_tls_handle_request(struct eap_state *eap,
 					const uint8_t *pkt, size_t len)
 {
@@ -219,6 +226,13 @@ static void eap_tls_handle_request(struct eap_state *eap,
 		goto err;
 	}
 
+	/* Sanity check that first fragmented request has L flag set */
+	if ((flags & EAP_TLS_FLAG_LM_MASK) == EAP_TLS_FLAG_M &&
+			!tls->rx_pkt_buf) {
+		l_error("EAP-TLS request 1st fragment with no length");
+		goto err;
+	}
+
 	if (flags & EAP_TLS_FLAG_L) {
 		if (len < 7) {
 			l_error("EAP-TLS request with L flag too short");
@@ -229,7 +243,19 @@ static void eap_tls_handle_request(struct eap_state *eap,
 		pkt += 4;
 		len -= 4;
 
-		if (tls->rx_pkt_buf && total_len != tls->rx_pkt_len) {
+		if ((flags & EAP_TLS_FLAG_M) && !tls->rx_pkt_buf) {
+			if (total_len > 512 * 1024) {
+				l_error("EAP-TLS Message too long");
+				goto err;
+			}
+
+			tls->rx_pkt_buf = l_malloc(total_len);
+			tls->rx_pkt_len = total_len;
+			tls->rx_pkt_received = 0;
+		}
+
+		if ((tls->rx_pkt_buf && total_len != tls->rx_pkt_len) ||
+				(!tls->rx_pkt_buf && total_len != len)) {
 			l_error("EAP-TLS request length mismatch");
 
 			l_free(tls->rx_pkt_buf);
@@ -237,18 +263,6 @@ static void eap_tls_handle_request(struct eap_state *eap,
 
 			goto err;
 		}
-	}
-
-	if (!tls->rx_pkt_buf && (flags & EAP_TLS_FLAG_M)) {
-		if (!(flags & EAP_TLS_FLAG_L)) {
-			l_error("EAP-TLS request 1st fragment with no length");
-
-			goto err;
-		}
-
-		tls->rx_pkt_buf = l_malloc(total_len);
-		tls->rx_pkt_len = total_len;
-		tls->rx_pkt_received = 0;
 	}
 
 	if (tls->rx_pkt_buf) {
@@ -299,6 +313,9 @@ static void eap_tls_handle_request(struct eap_state *eap,
 			l_error("Creating a TLS instance failed");
 			goto err;
 		}
+
+		if (getenv("IWD_TLS_DEBUG"))
+			l_tls_set_debug(tls->tls, eap_tls_debug_cb, NULL, NULL);
 
 		l_tls_set_auth_data(tls->tls, tls->client_cert, tls->client_key,
 					tls->passphrase);

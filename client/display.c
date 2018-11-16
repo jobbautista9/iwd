@@ -24,10 +24,13 @@
 #include <config.h>
 #endif
 
-#include <ell/ell.h>
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <signal.h>
+
 #include <readline/history.h>
 #include <readline/readline.h>
-#include <stdio.h>
+#include <ell/ell.h>
 
 #include "agent.h"
 #include "command.h"
@@ -165,8 +168,9 @@ void display_refresh_set_cmd(const char *family, const char *entity,
 		display_refresh.argc = argc;
 
 		display_refresh.argv = l_new(char *, argc + 1);
+
 		for (i = 0; i < argc; i++)
-			display_refresh.argv[i] = argv[i];
+			display_refresh.argv[i] = l_strdup(argv[i]);
 
 		l_queue_clear(display_refresh.redo_entries, l_free);
 
@@ -181,8 +185,23 @@ void display_refresh_set_cmd(const char *family, const char *entity,
 		L_AUTO_FREE_VAR(char *, args);
 		char *prompt;
 
-		for (i = 0; i < argc; i++)
-			l_string_append_printf(buf, "'%s' ", argv[i]);
+		for (i = 0; i < argc; i++) {
+			bool needs_quotes = false;
+			char *p = argv[i];
+
+			for (p = argv[i]; *p != '\0'; p++) {
+				if (*p != ' ')
+					continue;
+
+				needs_quotes = true;
+				break;
+			}
+
+			if (needs_quotes)
+				l_string_append_printf(buf, "\"%s\" ", argv[i]);
+			else
+				l_string_append_printf(buf, "%s ", argv[i]);
+		}
 
 		args = l_string_unwrap(buf);
 
@@ -322,14 +341,14 @@ void display_table_footer(void)
 void display_command_line(const char *command_family,
 						const struct command *cmd)
 {
-	char *cmd_line = l_strdup_printf("%s%s%s%s%s %s",
+	char *cmd_line = l_strdup_printf("%s%s%s%s%s%s%s",
 				command_family ? : "",
 				command_family ? " " : "",
 				cmd->entity ? : "",
 				cmd->entity  ? " " : "",
 				cmd->cmd,
-				cmd->arg ? : "",
-				cmd->arg ? " " : "");
+				cmd->arg ? " " : "",
+				cmd->arg ? : "");
 
 	display(MARGIN "%-*s%s\n", 50, cmd_line, cmd->desc ? : "");
 
@@ -564,10 +583,6 @@ void display_agent_prompt_release(const char *label)
 	agent_saved_input = NULL;
 
 	rl_set_prompt(IWD_PROMPT);
-
-	rl_forced_update_display();
-
-	display("\r");
 }
 
 void display_quit(void)
@@ -577,29 +592,19 @@ void display_quit(void)
 	rl_crlf();
 }
 
-static void signal_handler(struct l_signal *signal, uint32_t signo,
-								void *user_data)
+static void signal_handler(void *user_data)
 {
-	switch (signo) {
-	case SIGWINCH:
-		if (display_refresh.cmd)
-			display_refresh_reset();
-		break;
-	}
+	if (display_refresh.cmd)
+		display_refresh_reset();
 }
 
 void display_init(void)
 {
-	sigset_t mask;
-
 	display_refresh.redo_entries = l_queue_new();
 
 	setlinebuf(stdout);
 
-	sigemptyset(&mask);
-	sigaddset(&mask, SIGWINCH);
-
-	resize_signal = l_signal_create(&mask, signal_handler, NULL, NULL);
+	resize_signal = l_signal_create(SIGWINCH, signal_handler, NULL, NULL);
 
 	rl_attempted_completion_function = command_completion;
 	rl_completion_display_matches_hook = display_completion_matches;

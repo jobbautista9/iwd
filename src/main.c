@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <getopt.h>
+#include <signal.h>
 #include <ell/ell.h>
 
 #include "linux/nl80211.h"
@@ -46,8 +47,8 @@
 
 #include "src/backtrace.h"
 
-struct l_genl *genl;
-struct l_genl_family *nl80211;
+static struct l_genl *genl;
+static struct l_genl_family *nl80211;
 static struct l_settings *iwd_config;
 static struct l_timeout *timeout;
 static const char *interfaces;
@@ -83,8 +84,7 @@ static void iwd_shutdown(void)
 	timeout = l_timeout_create(1, main_loop_quit, NULL, NULL);
 }
 
-static void signal_handler(struct l_signal *signal, uint32_t signo,
-							void *user_data)
+static void signal_handler(uint32_t signo, void *user_data)
 {
 	switch (signo) {
 	case SIGINT:
@@ -324,6 +324,25 @@ static int check_crypto()
 		l_hashmap_insert(options, "CONFIG_KEY_DH_OPERATIONS", &r);
 	}
 
+	if (!l_key_is_supported(L_KEY_FEATURE_RESTRICT)) {
+		l_warn("No keyring restrictions support found.");
+		l_hashmap_insert(options, "CONFIG_KEYS", &r);
+	}
+
+	if (!l_key_is_supported(L_KEY_FEATURE_CRYPTO)) {
+		l_warn("No asymmetric key support found.");
+		l_warn("TLS based WPA-Enterprise authentication methods will"
+				" not function.");
+		l_warn("Kernel 4.20+ is required for this feature.");
+		l_hashmap_insert(options, "CONFIG_ASYMMETRIC_KEY_TYPE", &r);
+		l_hashmap_insert(options,
+				"CONFIG_ASYMMETRIC_PUBLIC_KEY_SUBTYPE", &r);
+		l_hashmap_insert(options, "CONFIG_X509_CERTIFICATE_PARSER", &r);
+		l_hashmap_insert(options, "CONFIG_PKCS7_MESSAGE_PARSER", &r);
+		l_hashmap_insert(options,
+					"CONFIG_PKCS8_PRIVATE_KEY_PARSER", &r);
+	};
+
 	if (l_hashmap_isempty(options))
 		goto done;
 
@@ -337,8 +356,11 @@ static int check_crypto()
 
 	l_hashmap_foreach(options, print_koption, NULL);
 
-	l_info("The following optimized implementations might be available:");
-	l_hashmap_foreach(optional, print_koption, NULL);
+	if (!l_hashmap_isempty(optional)) {
+		l_info("The following optimized implementations might be "
+			"available:");
+		l_hashmap_foreach(optional, print_koption, NULL);
+	}
 
 done:
 	l_hashmap_destroy(options, NULL);
@@ -350,8 +372,6 @@ done:
 int main(int argc, char *argv[])
 {
 	bool enable_dbus_debug = false;
-	struct l_signal *signal;
-	sigset_t mask;
 	int exit_status;
 	struct l_dbus *dbus;
 	char *config_path;
@@ -422,16 +442,10 @@ int main(int argc, char *argv[])
 	if (!l_main_init())
 		return EXIT_FAILURE;
 
-	sigemptyset(&mask);
-	sigaddset(&mask, SIGINT);
-	sigaddset(&mask, SIGTERM);
-
-	signal = l_signal_create(&mask, signal_handler, NULL, NULL);
-
 	if (debugopt)
 		l_debug_enable(debugopt);
 
-#ifdef __GLIBC__
+#ifdef HAVE_EXECINFO_H
 	__iwd_backtrace_init();
 #endif
 
@@ -485,8 +499,7 @@ int main(int argc, char *argv[])
 	sim_auth_init();
 	plugin_init(plugins, noplugins);
 
-	exit_status = EXIT_SUCCESS;
-	l_main_run();
+	exit_status = l_main_run_with_signal(signal_handler, NULL);
 
 	plugin_exit();
 	sim_auth_exit();
@@ -509,7 +522,6 @@ fail_netdev:
 fail_dbus:
 	l_settings_free(iwd_config);
 
-	l_signal_remove(signal);
 	l_timeout_remove(timeout);
 
 	l_main_exit();

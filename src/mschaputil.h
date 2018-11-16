@@ -1,8 +1,8 @@
 /*
  *
- *  Embedded Linux library
+ *  Wireless daemon for Linux
  *
- *  Copyright (C) 2011-2014  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2018  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,26 +20,9 @@
  *
  */
 
-#ifndef __ELL_SIGNAL_H
-#define __ELL_SIGNAL_H
+#define NT_CHALLENGE_RESPONSE_LEN 24
 
-#include <stdint.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-struct l_signal;
-
-typedef void (*l_signal_notify_cb_t) (void *user_data);
-typedef void (*l_signal_destroy_cb_t) (void *user_data);
-
-struct l_signal *l_signal_create(uint32_t signo, l_signal_notify_cb_t callback,
-				void *user_data, l_signal_destroy_cb_t destroy);
-void l_signal_remove(struct l_signal *signal);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* __ELL_SIGNAL_H */
+bool mschap_challenge_response(const uint8_t *challenge,
+						const uint8_t *password_hash,
+						uint8_t *response);
+bool mschap_nt_password_hash(const char *password, uint8_t *password_hash);
