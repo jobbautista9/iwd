@@ -24,7 +24,9 @@
 #include <config.h>
 #endif
 
+#define _GNU_SOURCE
 #include <stdio.h>
+#include <string.h>
 #include <ell/ell.h>
 #include <readline/readline.h>
 
@@ -507,8 +509,14 @@ void command_process_prompt(char **argv, int argc)
 		return;
 
 	if (!interactive_mode) {
+		if (command_match_misc_commands(argv, argc)) {
+			exit_status = EXIT_SUCCESS;
+			goto quit;
+		}
+
 		display_error("Invalid command\n");
 		exit_status = EXIT_FAILURE;
+quit:
 		l_main_quit();
 		return;
 	}

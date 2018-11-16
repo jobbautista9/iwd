@@ -30,6 +30,7 @@
 #include <ell/ell.h>
 
 #include "util.h"
+#include "mschaputil.h"
 #include "eap.h"
 #include "eap-private.h"
 #include "eap-tls-common.h"
@@ -47,6 +48,7 @@ enum radius_attr {
 	RADIUS_ATTR_USER_NAME			= 1,
 	RADIUS_ATTR_USER_PASSWORD		= 2,
 	RADIUS_ATTR_CHAP_PASSWORD		= 3,
+	RADIUS_ATTR_MS_CHAP_CHALLENGE		= 11,
 	RADIUS_ATTR_CHAP_CHALLENGE		= 60,
 	RADIUS_ATTR_EAP_MESSAGE			= 79,
 };
@@ -222,6 +224,58 @@ static void build_avp_chap_password(struct avp_builder *builder,
 	avp_builder_finalize_avp(builder);
 }
 
+#define RADIUS_VENDOR_ID_MICROSOFT 311
+#define RADIUS_ATTR_MS_CHAP_RESPONSE 1
+
+#define MS_CHAP_CHALLENGE_LEN	8
+#define MS_CHAP_LM_RESPONSE_LEN 24
+#define MS_CHAP_NT_RESPONSE_LEN 24
+
+static void build_avp_ms_chap_challenge(struct avp_builder *builder,
+						const uint8_t *challenge)
+{
+	avp_builder_start_avp(builder, RADIUS_ATTR_MS_CHAP_CHALLENGE, true,
+						RADIUS_VENDOR_ID_MICROSOFT);
+	memcpy(avp_builder_reserve(builder, 1, MS_CHAP_CHALLENGE_LEN),
+					challenge, MS_CHAP_CHALLENGE_LEN);
+	avp_builder_finalize_avp(builder);
+}
+
+static void build_avp_ms_chap_response(struct avp_builder *builder,
+					const uint8_t *ident,
+					const uint8_t *challenge,
+					const uint8_t *password_hash)
+{
+	uint8_t *flags;
+	uint8_t nt_challenge_response[NT_CHALLENGE_RESPONSE_LEN];
+
+	avp_builder_start_avp(builder, RADIUS_ATTR_MS_CHAP_RESPONSE, true,
+						RADIUS_VENDOR_ID_MICROSOFT);
+
+	memcpy(avp_builder_reserve(builder, 1, CHAP_IDENT_LEN),
+							ident, CHAP_IDENT_LEN);
+
+	/*
+	 * RFC 2548: Section 2.1.3
+	 *
+	 * The Flags field is set to one (0x01), the NT-Response field is to
+	 * be used in preference to the LM-Response field for authentication.
+	 */
+	flags = avp_builder_reserve(builder, 1, 1);
+	*flags = 1;
+
+	/* The LM-Response field is left empty */
+	avp_builder_reserve(builder, 1, MS_CHAP_LM_RESPONSE_LEN);
+
+	mschap_challenge_response(challenge, password_hash,
+							nt_challenge_response);
+
+	memcpy(avp_builder_reserve(builder, 1, NT_CHALLENGE_RESPONSE_LEN),
+			nt_challenge_response, NT_CHALLENGE_RESPONSE_LEN);
+
+	avp_builder_finalize_avp(builder);
+}
+
 struct avp_iter {
 	enum radius_attr type;
 	uint8_t flags;
@@ -389,6 +443,8 @@ static void eap_ttls_free(struct eap_state *eap)
 #define EAP_TTLS_FLAG_S	(1 << 5)
 #define EAP_TTLS_FLAG_MASK	\
 	(EAP_TTLS_FLAG_L | EAP_TTLS_FLAG_M | EAP_TTLS_FLAG_S)
+#define EAP_TTLS_FLAG_LM_MASK	\
+	(EAP_TTLS_FLAG_L | EAP_TTLS_FLAG_M)
 
 struct phase2_credentials {
 	char *username;
@@ -505,6 +561,45 @@ static bool eap_ttls_phase2_chap_init(struct eap_state *eap)
 
 static struct phase2_method phase2_chap = {
 	.init = eap_ttls_phase2_chap_init,
+	.destroy = eap_ttls_phase2_credentials_destroy,
+};
+
+static bool eap_ttls_phase2_ms_chap_init(struct eap_state *eap)
+{
+	struct eap_ttls_state *ttls = eap_get_data(eap);
+	struct phase2_credentials *credentials = ttls->phase2->state;
+	struct avp_builder *builder;
+	uint8_t challenge[MS_CHAP_CHALLENGE_LEN + CHAP_IDENT_LEN];
+	uint8_t password_hash[16];
+	uint8_t ident;
+	uint8_t *data;
+	size_t data_len;
+
+	eap_ttls_phase2_chap_generate_challenge(ttls->tls, challenge,
+							MS_CHAP_CHALLENGE_LEN +
+							CHAP_IDENT_LEN);
+
+	ident = challenge[MS_CHAP_CHALLENGE_LEN];
+
+	builder = avp_builder_new(512);
+
+	build_avp_user_name(builder, credentials->username);
+	build_avp_ms_chap_challenge(builder, challenge);
+
+	mschap_nt_password_hash(credentials->password, password_hash);
+
+	build_avp_ms_chap_response(builder, &ident, challenge, password_hash);
+
+	data = avp_builder_free(builder, false, &data_len);
+
+	l_tls_write(ttls->tls, data, data_len);
+	l_free(data);
+
+	return true;
+}
+
+static struct phase2_method phase2_ms_chap = {
+	.init = eap_ttls_phase2_ms_chap_init,
 	.destroy = eap_ttls_phase2_credentials_destroy,
 };
 
@@ -723,6 +818,11 @@ static void eap_ttls_disconnect_cb(enum l_tls_alert_desc reason,
 	ttls->completed = true;
 }
 
+static void eap_ttls_debug_cb(const char *str, void *user_data)
+{
+	l_info("EAP-TTLS %s", str);
+}
+
 static void eap_ttls_handle_payload(struct eap_state *eap,
 						const uint8_t *pkt,
 						size_t pkt_len)
@@ -819,8 +919,15 @@ static void eap_ttls_handle_request(struct eap_state *eap,
 		goto err;
 	}
 
+	/* Sanity check that first fragmented request has L flag set */
+	if ((flags & EAP_TTLS_FLAG_LM_MASK) == EAP_TTLS_FLAG_M &&
+				!ttls->rx_pkt_buf) {
+		l_error("EAP-TTLS request 1st fragment with no length");
+		goto err;
+	}
+
 	if (flags & EAP_TTLS_FLAG_L) {
-		if (len < 7) {
+		if (len < 4) {
 			l_error("EAP-TTLS request with L flag too short");
 			goto err;
 		}
@@ -829,35 +936,31 @@ static void eap_ttls_handle_request(struct eap_state *eap,
 		pkt += 4;
 		len -= 4;
 
-		if (ttls->rx_pkt_buf) {
-			l_error("EAP-TTLS request L flag invalid");
+		if (flags & EAP_TTLS_FLAG_M) {
+			if (ttls->rx_pkt_buf)
+				goto add_to_pkt_buf;
 
-			l_free(ttls->rx_pkt_buf);
-			ttls->rx_pkt_buf = NULL;
+			if (total_len > 512*1024) {
+				l_error("Maximum message size exceeded");
+				goto err;
+			}
 
-			goto err;
-		}
-
-		if (!(flags & EAP_TTLS_FLAG_M) && total_len != len) {
+			ttls->rx_pkt_buf = l_malloc(total_len);
+			ttls->rx_pkt_len = total_len;
+			ttls->rx_pkt_received = 0;
+			goto add_to_pkt_buf;
+		} else if (total_len != len && !ttls->rx_pkt_buf) {
+			/*
+			 * Sanity check length for unfragmented request
+			 * with L flag set
+			 */
 			l_error("EAP-TTLS request Length value invalid");
-
 			goto err;
 		}
-	}
-
-	if (!ttls->rx_pkt_buf && (flags & EAP_TTLS_FLAG_M)) {
-		if (!(flags & EAP_TTLS_FLAG_L)) {
-			l_error("EAP-TTLS request 1st fragment with no length");
-
-			goto err;
-		}
-
-		ttls->rx_pkt_buf = l_malloc(total_len);
-		ttls->rx_pkt_len = total_len;
-		ttls->rx_pkt_received = 0;
 	}
 
 	if (ttls->rx_pkt_buf) {
+add_to_pkt_buf:
 		if (
 				((flags & EAP_TTLS_FLAG_M) &&
 				 ttls->rx_pkt_received + len >=
@@ -905,6 +1008,9 @@ static void eap_ttls_handle_request(struct eap_state *eap,
 			l_error("Creating a TLS instance failed");
 			goto err;
 		}
+
+		if (getenv("IWD_TLS_DEBUG"))
+			l_tls_set_debug(ttls->tls, eap_ttls_debug_cb, NULL, NULL);
 
 		l_tls_set_auth_data(ttls->tls, ttls->client_cert,
 					ttls->client_key, ttls->passphrase);
@@ -996,6 +1102,7 @@ static const struct {
 	struct phase2_method *method;
 } tunneled_non_eap_methods[] = {
 	{ "Tunneled-CHAP", &phase2_chap },
+	{ "Tunneled-MSCHAP", &phase2_ms_chap },
 	{ "Tunneled-PAP", &phase2_pap },
 	{ }
 };

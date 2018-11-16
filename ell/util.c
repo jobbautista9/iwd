@@ -64,7 +64,7 @@ LIB_EXPORT void *l_malloc(size_t size)
 			return ptr;
 
 		fprintf(stderr, "%s:%s(): failed to allocate %zd bytes\n",
-					STRLOC, __PRETTY_FUNCTION__, size);
+					STRLOC, __func__, size);
 		abort();
 	}
 
@@ -94,7 +94,7 @@ LIB_EXPORT void *l_realloc(void *mem, size_t size)
 			return ptr;
 
 		fprintf(stderr, "%s:%s(): failed to re-allocate %zd bytes\n",
-					STRLOC, __PRETTY_FUNCTION__, size);
+					STRLOC, __func__, size);
 		abort();
 	} else
 		l_free(mem);
@@ -154,7 +154,7 @@ LIB_EXPORT char *l_strdup(const char *str)
 			return tmp;
 
 		fprintf(stderr, "%s:%s(): failed to allocate string\n",
-						STRLOC, __PRETTY_FUNCTION__);
+						STRLOC, __func__);
 		abort();
 	}
 
@@ -182,7 +182,7 @@ LIB_EXPORT char *l_strndup(const char *str, size_t max)
 			return tmp;
 
 		fprintf(stderr, "%s:%s(): failed to allocate string\n",
-						STRLOC, __PRETTY_FUNCTION__);
+						STRLOC, __func__);
 		abort();
 	}
 
@@ -208,7 +208,7 @@ LIB_EXPORT char *l_strdup_printf(const char *format, ...)
 
 	if (len < 0) {
 		fprintf(stderr, "%s:%s(): failed to allocate string\n",
-					STRLOC, __PRETTY_FUNCTION__);
+					STRLOC, __func__);
 		abort();
 
 		return NULL;
@@ -233,296 +233,13 @@ LIB_EXPORT char *l_strdup_vprintf(const char *format, va_list args)
 
 	if (len < 0) {
 		fprintf(stderr, "%s:%s(): failed to allocate string\n",
-					STRLOC, __PRETTY_FUNCTION__);
+					STRLOC, __func__);
 		abort();
 
 		return NULL;
 	}
 
 	return str;
-}
-
-/**
- * l_strfreev:
- * @strlist: String list to free
- *
- * Frees a list of strings
- **/
-LIB_EXPORT void l_strfreev(char **strlist)
-{
-	l_strv_free(strlist);
-}
-
-/**
- * l_strsplit:
- * @str: String to split
- * @sep: The delimiter character
- *
- * Splits a string into pieces which do not contain the delimiter character.
- * As a special case, an empty string is returned as an empty array, e.g.
- * an array with just the NULL element.
- *
- * Note that this function only works with ASCII delimiters.
- *
- * Returns: A newly allocated %NULL terminated string array.  This array
- * should be freed using l_strfreev().
- **/
-LIB_EXPORT char **l_strsplit(const char *str, const char sep)
-{
-	int len;
-	int i;
-	const char *p;
-	char **ret;
-
-	if (unlikely(!str))
-		return NULL;
-
-	if (str[0] == '\0')
-		return l_new(char *, 1);
-
-	for (p = str, len = 1; *p; p++)
-		if (*p == sep)
-			len += 1;
-
-	ret = l_new(char *, len + 1);
-
-	i = 0;
-	p = str;
-	len = 0;
-
-	while (p[len]) {
-		if (p[len] != sep) {
-			len += 1;
-			continue;
-		}
-
-		ret[i++] = l_strndup(p, len);
-		p += len + 1;
-		len = 0;
-	}
-
-	ret[i++] = l_strndup(p, len);
-
-	return ret;
-}
-
-/**
- * l_strsplit_set:
- * @str: String to split
- * @separators: A set of delimiters
- *
- * Splits a string into pieces which do not contain the delimiter characters
- * that can be found in @separators.
- * As a special case, an empty string is returned as an empty array, e.g.
- * an array with just the NULL element.
- *
- * Note that this function only works with ASCII delimiters.
- *
- * Returns: A newly allocated %NULL terminated string array.  This array
- * should be freed using l_strfreev().
- **/
-LIB_EXPORT char **l_strsplit_set(const char *str, const char *separators)
-{
-	int len;
-	int i;
-	const char *p;
-	char **ret;
-	bool sep_table[256];
-
-	if (unlikely(!str))
-		return NULL;
-
-	if (str[0] == '\0')
-		return l_new(char *, 1);
-
-	memset(sep_table, 0, sizeof(sep_table));
-
-	for (p = separators; *p; p++)
-		sep_table[(unsigned char) *p] = true;
-
-	for (p = str, len = 1; *p; p++)
-		if (sep_table[(unsigned char) *p] == true)
-			len += 1;
-
-	ret = l_new(char *, len + 1);
-
-	i = 0;
-	p = str;
-	len = 0;
-
-	while (p[len]) {
-		if (sep_table[(unsigned char) p[len]] != true) {
-			len += 1;
-			continue;
-		}
-
-		ret[i++] = l_strndup(p, len);
-		p += len + 1;
-		len = 0;
-	}
-
-	ret[i++] = l_strndup(p, len);
-
-	return ret;
-}
-
-/**
- * l_strjoinv:
- * @str_array: a %NULL terminated array of strings to join
- * @delim: Delimiting character
- *
- * Joins strings contanied in the @str_array into one long string delimited
- * by @delim.
- *
- * Returns: A newly allocated string that should be freed using l_free()
- */
-LIB_EXPORT char *l_strjoinv(char **str_array, const char delim)
-{
-	size_t len = 0;
-	unsigned int i;
-	char *ret;
-	char *p;
-
-	if (unlikely(!str_array))
-		return NULL;
-
-	if (!str_array[0])
-		return l_strdup("");
-
-	for (i = 0; str_array[i]; i++)
-		len += strlen(str_array[i]);
-
-	len += 1 + i - 1;
-
-	ret = l_malloc(len);
-
-	p = stpcpy(ret, str_array[0]);
-
-	for (i = 1; str_array[i]; i++) {
-		*p++ = delim;
-		p = stpcpy(p, str_array[i]);
-	}
-
-	return ret;
-}
-
-/**
- * l_strv_free:
- * @str_array: a %NULL terminated array of strings
- *
- * Frees strings in @str_array and @str_array itself
- **/
-LIB_EXPORT void l_strv_free(char **str_array)
-{
-	if (likely(str_array)) {
-		int i;
-
-		for (i = 0; str_array[i]; i++)
-			l_free(str_array[i]);
-
-		l_free(str_array);
-	}
-}
-
-/**
- * l_strv_length:
- * @str_array: a %NULL terminated array of strings
- *
- * Returns: the number of strings in @str_array
- */
-LIB_EXPORT unsigned int l_strv_length(char **str_array)
-{
-	unsigned int i = 0;
-
-	if (unlikely(!str_array))
-		return 0;
-
-	while (str_array[i])
-		i += 1;
-
-	return i;
-}
-
-/**
- * l_strv_contains:
- * @str_array: a %NULL terminated array of strings
- * @item: An item to search for, must be not %NULL
- *
- * Returns: #true if @str_array contains item
- */
-LIB_EXPORT bool l_strv_contains(char **str_array, const char *item)
-{
-	unsigned int i = 0;
-
-	if (unlikely(!str_array || !item))
-		return false;
-
-	while (str_array[i]) {
-		if (!strcmp(str_array[i], item))
-			return true;
-
-		i += 1;
-	}
-
-	return false;
-}
-
-/**
- * l_strv_append:
- * @str_array: a %NULL terminated array of strings or %NULL
- * @str: A string to be appened at the end of @str_array
- *
- * Returns: New %NULL terminated array of strings with @str added
- */
-LIB_EXPORT char **l_strv_append(char **str_array, const char *str)
-{
-	char **ret;
-	unsigned int i, len;
-
-	if (unlikely(!str))
-		return str_array;
-
-	len = l_strv_length(str_array);
-	ret = l_new(char *, len + 2);
-
-	for (i = 0; i < len; i++)
-		ret[i] = str_array[i];
-
-	ret[i++] = l_strdup(str);
-
-	l_free(str_array);
-
-	return ret;
-}
-
-/**
- * l_str_has_prefix:
- * @str: A string to be examined
- * @delim: Prefix string
- *
- * Determines if the string given by @str is prefixed by string given by
- * @prefix.
- *
- * Returns: True if @str was prefixed by @prefix.  False otherwise.
- */
-LIB_EXPORT bool l_str_has_prefix(const char *str, const char *prefix)
-{
-	size_t str_len;
-	size_t prefix_len;
-
-	if (unlikely(!str))
-		return false;
-
-	if (unlikely(!prefix))
-		return false;
-
-	str_len = strlen(str);
-	prefix_len = strlen(prefix);
-
-	if (str_len < prefix_len)
-		return false;
-
-	return !strncmp(str, prefix, prefix_len);
 }
 
 /**
@@ -555,6 +272,36 @@ LIB_EXPORT size_t l_strlcpy(char* dst, const char *src, size_t len)
 	}
 
 	return src_len;
+}
+
+/**
+ * l_str_has_prefix:
+ * @str: A string to be examined
+ * @delim: Prefix string
+ *
+ * Determines if the string given by @str is prefixed by string given by
+ * @prefix.
+ *
+ * Returns: True if @str was prefixed by @prefix.  False otherwise.
+ */
+LIB_EXPORT bool l_str_has_prefix(const char *str, const char *prefix)
+{
+	size_t str_len;
+	size_t prefix_len;
+
+	if (unlikely(!str))
+		return false;
+
+	if (unlikely(!prefix))
+		return false;
+
+	str_len = strlen(str);
+	prefix_len = strlen(prefix);
+
+	if (str_len < prefix_len)
+		return false;
+
+	return !strncmp(str, prefix, prefix_len);
 }
 
 /**

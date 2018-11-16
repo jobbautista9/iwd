@@ -24,11 +24,14 @@
 #include <config.h>
 #endif
 
+#define _GNU_SOURCE
 #include <stdio.h>
+#include <errno.h>
 #include <ctype.h>
 #include <stdlib.h>
+#include <string.h>
 #include <getopt.h>
-#include <errno.h>
+#include <signal.h>
 #include <sys/socket.h>
 #include <linux/genetlink.h>
 #include <linux/rtnetlink.h>
@@ -71,6 +74,8 @@ struct iwmon_interface {
 	struct l_netlink *rtnl;
 	struct l_netlink *genl;
 };
+
+static struct iwmon_interface monitor_interface = { };
 
 static void genl_parse(uint16_t type, const void *data, uint32_t len,
 							const char *ifname)
@@ -221,6 +226,7 @@ static struct l_netlink *rtm_interface_send_message(struct l_netlink *rtnl,
 		RTA_SPACE(nlmon_type_len);
 
 	rtmmsg = l_malloc(bufsize);
+	memset(rtmmsg, 0, bufsize);
 
 	rtmmsg->ifi_family = AF_UNSPEC;
 	rtmmsg->ifi_change = ~0;
@@ -456,11 +462,8 @@ static int analyze_pcap(const char *pathname)
 			continue;
 		}
 
-		arphrd_type = L_GET_UNALIGNED((const uint16_t *) (buf + 2));
-		arphrd_type = L_BE16_TO_CPU(arphrd_type);
-
-		proto_type = L_GET_UNALIGNED((const uint16_t *) (buf + 14));
-		proto_type = L_BE16_TO_CPU(proto_type);
+		arphrd_type = l_get_be16(buf + 2);
+		proto_type = l_get_be16(buf + 14);
 
 		switch (arphrd_type) {
 		case ARPHRD_ETHER:
@@ -600,14 +603,9 @@ static int process_pcap(struct pcap *pcap, uint16_t id)
 			continue;
 		}
 
-		pkt_type = L_GET_UNALIGNED((const uint16_t *) buf);
-		pkt_type = L_BE16_TO_CPU(pkt_type);
-
-		arphrd_type = L_GET_UNALIGNED((const uint16_t *) (buf + 2));
-		arphrd_type = L_BE16_TO_CPU(arphrd_type);
-
-		proto_type = L_GET_UNALIGNED((const uint16_t *) (buf + 14));
-		proto_type = L_BE16_TO_CPU(proto_type);
+		pkt_type = l_get_be16(buf);
+		arphrd_type = l_get_be16(buf + 2);
+		proto_type = l_get_be16(buf + 14);
 
 		switch (arphrd_type) {
 		case ARPHRD_ETHER:
@@ -648,15 +646,12 @@ static void main_loop_quit(struct l_timeout *timeout, void *user_data)
 	l_main_quit();
 }
 
-static void signal_handler(struct l_signal *signal, uint32_t signo,
-							void *user_data)
+static void signal_handler(uint32_t signo, void *user_data)
 {
-	struct iwmon_interface *monitor_interface = user_data;
-
 	switch (signo) {
 	case SIGINT:
 	case SIGTERM:
-		iwmon_interface_disable(monitor_interface);
+		iwmon_interface_disable(&monitor_interface);
 
 		timeout = l_timeout_create(1, main_loop_quit, NULL, NULL);
 		break;
@@ -700,8 +695,6 @@ int main(int argc, char *argv[])
 	const char *ifname = NULL;
 	struct iwmon_interface monitor_interface = { };
 	uint16_t nl80211_family = 0;
-	struct l_signal *signal;
-	sigset_t mask;
 	int exit_status;
 
 	for (;;) {
@@ -778,13 +771,6 @@ int main(int argc, char *argv[])
 	if (!l_main_init())
 		return EXIT_FAILURE;
 
-	sigemptyset(&mask);
-	sigaddset(&mask, SIGINT);
-	sigaddset(&mask, SIGTERM);
-
-	signal = l_signal_create(&mask, signal_handler, &monitor_interface,
-					NULL);
-
 	printf("Wireless monitor ver %s\n", VERSION);
 
 	if (analyze_path) {
@@ -818,7 +804,7 @@ int main(int argc, char *argv[])
 	monitor_interface.ifname = l_strdup(ifname);
 	iwmon_interface_lookup(&monitor_interface);
 
-	l_main_run();
+	exit_status = l_main_run_with_signal(signal_handler, NULL);
 
 	l_netlink_destroy(monitor_interface.rtnl);
 	l_netlink_destroy(monitor_interface.genl);
@@ -826,11 +812,8 @@ int main(int argc, char *argv[])
 
 	nlmon_close(nlmon);
 
-	exit_status = EXIT_SUCCESS;
-
 done:
-	l_signal_remove(signal);
-	l_free(timeout);
+	l_timeout_remove(timeout);
 
 	l_main_exit();
 

@@ -341,15 +341,15 @@ static void ordered_networks_display(struct l_queue *ordered_networks)
 	for (is_first = true, entry = l_queue_get_entries(ordered_networks);
 						entry; entry = entry->next) {
 		struct ordered_network *network = entry->data;
-		const char *network_name =
-				network_get_name(network->network_path);
-		const char *network_type =
-				network_get_type(network->network_path);
+		const struct proxy_interface *network_i =
+				network_get_proxy(network->network_path);
+		const char *network_name = network_get_name(network_i);
+		const char *network_type = network_get_type(network_i);
 
 		if (display_signal_as_dbms)
 			dbms = l_strdup_printf("%d", network->signal_strength);
 
-		if (is_first && network_is_connected(network->network_path)) {
+		if (is_first && network_is_connected(network_i)) {
 			display("%s%-*s%-*s%-*s%-*s\n", MARGIN,
 				2, COLOR_BOLDGRAY "> " COLOR_OFF,
 				32, network_name, 10, network_type,
@@ -452,6 +452,115 @@ proceed:
 	return CMD_STATUS_TRIGGERED;
 }
 
+struct hidden_access_point {
+	char *address;
+	int16_t signal_strength;
+	char *type;
+};
+
+static void hidden_access_point_destroy(void *data)
+{
+	struct hidden_access_point *ap = data;
+
+	l_free(ap->address);
+	l_free(ap->type);
+	l_free(ap);
+}
+
+static void hidden_access_points_display(struct l_queue *access_points)
+{
+	const struct l_queue_entry *entry;
+
+	display_table_header("Available hidden APs", MARGIN "%-*s%-*s%*s",
+				20, "Address", 10, "Security", 6, "Signal");
+
+	if (l_queue_isempty(access_points)) {
+		display("No hidden APs are available.\n");
+		display_table_footer();
+
+		return;
+	}
+
+	for (entry = l_queue_get_entries(access_points); entry;
+							entry = entry->next) {
+		const struct hidden_access_point *ap = entry->data;
+		L_AUTO_FREE_VAR(char *, dbms) = NULL;
+
+		if (display_signal_as_dbms)
+			dbms = l_strdup_printf("%d", ap->signal_strength);
+
+		display(MARGIN "%-*s%-*s%-*s\n",
+			20, ap->address, 10, ap->type,
+			6, dbms ? : dbms_tostars(ap->signal_strength));
+	}
+
+	display_table_footer();
+}
+
+static void hidden_access_points_callback(struct l_dbus_message *message,
+								void *proxy)
+{
+	struct l_queue *access_points = NULL;
+	struct l_dbus_message_iter iter;
+	const char *address;
+	uint16_t strength;
+	const char *type;
+
+	if (dbus_message_has_error(message))
+		return;
+
+	if (!l_dbus_message_get_arguments(message, "a(sns)", &iter)) {
+		l_error("Failed to parse hidden stations callback message");
+
+		return;
+	}
+
+	while (l_dbus_message_iter_next_entry(&iter, &address,
+						&strength, &type)) {
+		struct hidden_access_point *ap =
+			l_new(struct hidden_access_point, 1);
+
+		if (!access_points)
+			access_points = l_queue_new();
+
+		ap->address = l_strdup(address);
+		ap->signal_strength = strength;
+		ap->type = l_strdup(type);
+
+		l_queue_push_tail(access_points, ap);
+	}
+
+	hidden_access_points_display(access_points);
+
+	l_queue_destroy(access_points, hidden_access_point_destroy);
+}
+
+static enum cmd_status cmd_get_hidden_access_points(const char *device_name,
+							char **argv, int argc)
+{
+	const struct proxy_interface *station_i =
+			device_proxy_find(device_name, IWD_STATION_INTERFACE);
+
+	if (!station_i) {
+		display("Device '%s' is not in station mode.\n", device_name);
+		return CMD_STATUS_INVALID_VALUE;
+	}
+
+	if (!argc)
+		goto proceed;
+
+	if (!strcmp(argv[0], RSSI_DBMS))
+		display_signal_as_dbms = true;
+	else
+		display_signal_as_dbms = false;
+
+proceed:
+	proxy_interface_method_call(station_i, "GetHiddenAccessPoints", "",
+						hidden_access_points_callback);
+
+	return CMD_STATUS_TRIGGERED;
+}
+
 static enum cmd_status cmd_scan(const char *device_name,
 						char **argv, int argc)
 {
@@ -488,6 +597,9 @@ static const struct command station_commands[] = {
 					cmd_get_networks,
 						"Get networks",       true,
 			get_networks_cmd_arg_completion },
+	{ "<wlan>", "get-hidden-access-points", "[rssi-dbms]",
+					cmd_get_hidden_access_points,
+						"Get hidden APs", true },
 	{ "<wlan>", "scan",     NULL,   cmd_scan, "Scan for networks" },
 	{ }
 };

@@ -25,17 +25,18 @@
 #endif
 
 #include <string.h>
+#include <alloca.h>
 #include <linux/if_ether.h>
 #include <ell/ell.h>
 
-#include "crypto.h"
-#include "eapol.h"
-#include "ie.h"
-#include "util.h"
-#include "mpdu.h"
-#include "eap.h"
-#include "handshake.h"
-#include "watchlist.h"
+#include "src/crypto.h"
+#include "src/eapol.h"
+#include "src/ie.h"
+#include "src/util.h"
+#include "src/mpdu.h"
+#include "src/eap.h"
+#include "src/handshake.h"
+#include "src/watchlist.h"
 
 struct l_queue *state_machines;
 struct l_queue *preauths;
@@ -230,7 +231,7 @@ error:
  * Note that for efficiency @key_data is being modified, including in
  * case of failure, so it must be sufficiently larger than @key_data_len.
  */
-bool eapol_encrypt_key_data(const uint8_t *kek, uint8_t *key_data,
+static bool eapol_encrypt_key_data(const uint8_t *kek, uint8_t *key_data,
 				size_t key_data_len,
 				struct eapol_key *out_frame)
 {
@@ -259,7 +260,8 @@ bool eapol_encrypt_key_data(const uint8_t *kek, uint8_t *key_data,
 	return true;
 }
 
-void eapol_key_data_append(struct eapol_key *ek, enum handshake_kde selector,
+static void eapol_key_data_append(struct eapol_key *ek,
+				enum handshake_kde selector,
 				const uint8_t *data, size_t data_len)
 {
 	uint16_t key_data_len = L_BE16_TO_CPU(ek->key_data_len);
@@ -625,6 +627,41 @@ struct eapol_key *eapol_create_gtk_2_of_2(
 		step2->wpa_key_id = wpa_key_id;
 
 	return step2;
+}
+
+struct eapol_frame_watch {
+	uint32_t ifindex;
+	struct watchlist_item super;
+};
+
+static void eapol_frame_watch_free(struct watchlist_item *item)
+{
+	struct eapol_frame_watch *efw =
+		container_of(item, struct eapol_frame_watch, super);
+
+	l_free(efw);
+}
+
+static const struct watchlist_ops eapol_frame_watch_ops = {
+	.item_free = eapol_frame_watch_free,
+};
+
+static int32_t eapol_frame_watch_add(uint32_t ifindex,
+					eapol_frame_watch_func_t handler,
+					void *user_data)
+{
+	struct eapol_frame_watch *efw;
+
+	efw = l_new(struct eapol_frame_watch, 1);
+	efw->ifindex = ifindex;
+
+	return watchlist_link(&frame_watches, &efw->super,
+				handler, user_data, NULL);
+}
+
+static bool eapol_frame_watch_remove(uint32_t id)
+{
+	return watchlist_remove(&frame_watches, id);
 }
 
 struct eapol_sm {
@@ -1142,6 +1179,32 @@ static void eapol_ptk_3_of_4_retry(struct l_timeout *timeout,
 	l_debug("attempt %i", sm->frame_retry);
 }
 
+static const uint8_t *eapol_find_rsne(const uint8_t *data, size_t data_len,
+				const uint8_t **optional)
+{
+	struct ie_tlv_iter iter;
+	const uint8_t *first = NULL;
+
+	ie_tlv_iter_init(&iter, data, data_len);
+
+	while (ie_tlv_iter_next(&iter)) {
+		if (ie_tlv_iter_get_tag(&iter) != IE_TYPE_RSN)
+			continue;
+
+		if (!first) {
+			first = ie_tlv_iter_get_data(&iter) - 2;
+			continue;
+		}
+
+		if (optional)
+			*optional = ie_tlv_iter_get_data(&iter) - 2;
+
+		return first;
+	}
+
+	return first;
+}
+
 /* 802.11-2016 Section 12.7.6.3 */
 static void eapol_handle_ptk_2_of_4(struct eapol_sm *sm,
 					const struct eapol_key *ek)
@@ -1195,32 +1258,6 @@ static void eapol_handle_ptk_2_of_4(struct eapol_sm *sm,
 	sm->frame_retry = 0;
 
 	eapol_ptk_3_of_4_retry(NULL, sm);
-}
-
-const uint8_t *eapol_find_rsne(const uint8_t *data, size_t data_len,
-				const uint8_t **optional)
-{
-	struct ie_tlv_iter iter;
-	const uint8_t *first = NULL;
-
-	ie_tlv_iter_init(&iter, data, data_len);
-
-	while (ie_tlv_iter_next(&iter)) {
-		if (ie_tlv_iter_get_tag(&iter) != IE_TYPE_RSN)
-			continue;
-
-		if (!first) {
-			first = ie_tlv_iter_get_data(&iter) - 2;
-			continue;
-		}
-
-		if (optional)
-			*optional = ie_tlv_iter_get_data(&iter) - 2;
-
-		return first;
-	}
-
-	return first;
 }
 
 static const uint8_t *eapol_find_wpa_ie(const uint8_t *data, size_t data_len)
@@ -1462,13 +1499,22 @@ retransmit:
 	if (sm->handshake->ptk_complete)
 		return;
 
-	handshake_state_install_ptk(sm->handshake);
+	/*
+	 * For WPA1 the group handshake should be happening after we set the
+	 * ptk, this flag tells netdev to wait for the gtk/igtk before
+	 * completing the connection.
+	 */
+	if (!gtk && sm->handshake->group_cipher !=
+			IE_RSN_CIPHER_SUITE_NO_GROUP_TRAFFIC)
+		sm->handshake->wait_for_gtk = true;
 
 	if (gtk)
 		eapol_install_gtk(sm, gtk_key_index, gtk, gtk_len, ek->key_rsc);
 
 	if (igtk)
 		eapol_install_igtk(sm, igtk_key_index, igtk, igtk_len);
+
+	handshake_state_install_ptk(sm->handshake);
 
 	if (rekey_offload)
 		rekey_offload(sm->handshake->ifindex, ptk->kek, ptk->kck,
@@ -2074,41 +2120,6 @@ eap_error:
 			(int) sm->handshake->ifindex);
 
 	return false;
-}
-
-struct eapol_frame_watch {
-	uint32_t ifindex;
-	struct watchlist_item super;
-};
-
-static void eapol_frame_watch_free(struct watchlist_item *item)
-{
-	struct eapol_frame_watch *efw =
-		container_of(item, struct eapol_frame_watch, super);
-
-	l_free(efw);
-}
-
-static const struct watchlist_ops eapol_frame_watch_ops = {
-	.item_free = eapol_frame_watch_free,
-};
-
-uint32_t eapol_frame_watch_add(uint32_t ifindex,
-				eapol_frame_watch_func_t handler,
-				void *user_data)
-{
-	struct eapol_frame_watch *efw;
-
-	efw = l_new(struct eapol_frame_watch, 1);
-	efw->ifindex = ifindex;
-
-	return watchlist_link(&frame_watches, &efw->super,
-				handler, user_data, NULL);
-}
-
-bool eapol_frame_watch_remove(uint32_t id)
-{
-	return watchlist_remove(&frame_watches, id);
 }
 
 struct preauth_sm {

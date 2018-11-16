@@ -24,10 +24,12 @@
 #include <config.h>
 #endif
 
+#define _GNU_SOURCE
 #include <errno.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <limits.h>
+#include <signal.h>
 #include <sys/epoll.h>
 
 #include "signal.h"
@@ -506,13 +508,20 @@ struct signal_data {
 	void *user_data;
 };
 
-static void signal_handler(struct l_signal *signal, uint32_t signo,
-							void *user_data)
+static void sigint_handler(void *user_data)
 {
 	struct signal_data *data = user_data;
 
 	if (data->callback)
-		data->callback(signo, data->user_data);
+		data->callback(SIGINT, data->user_data);
+}
+
+static void sigterm_handler(void *user_data)
+{
+	struct signal_data *data = user_data;
+
+	if (data->callback)
+		data->callback(SIGTERM, data->user_data);
 }
 
 /**
@@ -523,12 +532,12 @@ static void signal_handler(struct l_signal *signal, uint32_t signo,
  * Returns: #EXIT_SUCCESS after successful execution or #EXIT_FAILURE in
  *          case of failure
  **/
-LIB_EXPORT
-int l_main_run_with_signal(l_main_signal_cb_t callback, void *user_data)
+LIB_EXPORT int l_main_run_with_signal(l_main_signal_cb_t callback,
+							void *user_data)
 {
 	struct signal_data *data;
-	struct l_signal *signal;
-	sigset_t mask;
+	struct l_signal *sigint;
+	struct l_signal *sigterm;
 	int result;
 
 	data = l_new(struct signal_data, 1);
@@ -536,15 +545,15 @@ int l_main_run_with_signal(l_main_signal_cb_t callback, void *user_data)
 	data->callback = callback;
 	data->user_data = user_data;
 
-	sigemptyset(&mask);
-	sigaddset(&mask, SIGINT);
-	sigaddset(&mask, SIGTERM);
-
-	signal = l_signal_create(&mask, signal_handler, data, l_free);
+	sigint = l_signal_create(SIGINT, sigint_handler, data, NULL);
+	sigterm = l_signal_create(SIGTERM, sigterm_handler, data, NULL);
 
 	result = l_main_run();
 
-	l_signal_remove(signal);
+	l_signal_remove(sigint);
+	l_signal_remove(sigterm);
+
+	l_free(data);
 
 	return result;
 }

@@ -136,49 +136,51 @@ CONFIG_CLEAN_FILES =
 CONFIG_CLEAN_VPATH_FILES =
 LTLIBRARIES = $(noinst_LTLIBRARIES)
 ell_libell_internal_la_LIBADD =
-am__ell_libell_internal_la_SOURCES_DIST = ell/ell.h ell/private.h \
-	ell/missing.h ell/util.h ell/util.c ell/test.h ell/test.c \
-	ell/queue.h ell/queue.c ell/hashmap.h ell/hashmap.c \
-	ell/ringbuf.h ell/ringbuf.c ell/string.h ell/string.c \
-	ell/settings.h ell/settings.c ell/main.h ell/main.c ell/idle.h \
-	ell/idle.c ell/signal.h ell/signal.c ell/timeout.h \
-	ell/timeout.c ell/io.h ell/io.c ell/log.h ell/log.c \
-	ell/plugin.h ell/plugin.c ell/checksum.h ell/checksum.c \
-	ell/netlink-private.h ell/netlink.h ell/netlink.c \
-	ell/genl-private.h ell/genl.h ell/genl.c ell/dbus-private.h \
-	ell/dbus.h ell/dbus.c ell/dbus-util.c ell/dbus-message.c \
-	ell/dbus-service.h ell/dbus-service.c ell/dbus-filter.c \
-	ell/dbus-name-cache.c ell/gvariant-private.h \
-	ell/gvariant-util.c ell/siphash-private.h ell/siphash.c \
-	ell/hwdb.h ell/hwdb.c ell/cipher.h ell/cipher.c ell/random.h \
-	ell/random.c ell/uintset.h ell/uintset.c ell/base64.h \
-	ell/base64.c ell/pem.h ell/pem.c ell/tls-private.h ell/tls.h \
-	ell/tls.c ell/tls-record.c ell/uuid.h ell/uuid.c ell/key.h \
-	ell/key.c ell/asn1-private.h ell/pkcs5.h ell/pkcs5.c \
-	ell/pkcs5-private.h ell/file.h ell/file.c ell/dir.h ell/dir.c \
-	ell/dbus-client.h ell/dbus-client.c ell/net.h ell/net.c \
-	ell/dhcp.h ell/dhcp.c ell/dhcp-transport.c ell/dhcp-private.h \
-	ell/dhcp-lease.c
+am__ell_libell_internal_la_SOURCES_DIST = ell/util.h ell/test.h \
+	ell/strv.h ell/utf8.h ell/queue.h ell/hashmap.h ell/string.h \
+	ell/settings.h ell/main.h ell/idle.h ell/signal.h \
+	ell/timeout.h ell/io.h ell/ringbuf.h ell/log.h ell/plugin.h \
+	ell/checksum.h ell/netlink.h ell/genl.h ell/dbus.h \
+	ell/dbus-service.h ell/dbus-client.h ell/hwdb.h ell/cipher.h \
+	ell/random.h ell/uintset.h ell/base64.h ell/pem.h ell/tls.h \
+	ell/uuid.h ell/key.h ell/pkcs5.h ell/file.h ell/dir.h \
+	ell/net.h ell/dhcp.h ell/private.h ell/missing.h ell/util.c \
+	ell/test.c ell/strv.c ell/utf8.c ell/queue.c ell/hashmap.c \
+	ell/string.c ell/settings.c ell/main.c ell/idle.c ell/signal.c \
+	ell/timeout.c ell/io.c ell/ringbuf.c ell/log.c ell/plugin.c \
+	ell/checksum.c ell/netlink-private.h ell/netlink.c \
+	ell/genl-private.h ell/genl.c ell/dbus-private.h ell/dbus.c \
+	ell/dbus-message.c ell/dbus-util.c ell/dbus-service.c \
+	ell/dbus-client.c ell/dbus-name-cache.c ell/dbus-filter.c \
+	ell/gvariant-private.h ell/gvariant-util.c \
+	ell/siphash-private.h ell/siphash.c ell/hwdb.c ell/cipher.c \
+	ell/random.c ell/uintset.c ell/base64.c ell/asn1-private.h \
+	ell/pem.c ell/tls-private.h ell/tls.c ell/tls-record.c \
+	ell/uuid.c ell/key.c ell/pkcs5-private.h ell/pkcs5.c \
+	ell/file.c ell/dir.c ell/net.c ell/dhcp-private.h ell/dhcp.c \
+	ell/dhcp-transport.c ell/dhcp-lease.c
+am__objects_1 =
 am__dirstamp = $(am__leading_dot)dirstamp
-@EXTERNAL_ELL_FALSE@am__objects_1 = ell/util.lo ell/test.lo \
-@EXTERNAL_ELL_FALSE@	ell/queue.lo ell/hashmap.lo ell/ringbuf.lo \
-@EXTERNAL_ELL_FALSE@	ell/string.lo ell/settings.lo ell/main.lo \
-@EXTERNAL_ELL_FALSE@	ell/idle.lo ell/signal.lo ell/timeout.lo \
-@EXTERNAL_ELL_FALSE@	ell/io.lo ell/log.lo ell/plugin.lo \
+@EXTERNAL_ELL_FALSE@am__objects_2 = ell/util.lo ell/test.lo \
+@EXTERNAL_ELL_FALSE@	ell/strv.lo ell/utf8.lo ell/queue.lo \
+@EXTERNAL_ELL_FALSE@	ell/hashmap.lo ell/string.lo \
+@EXTERNAL_ELL_FALSE@	ell/settings.lo ell/main.lo ell/idle.lo \
+@EXTERNAL_ELL_FALSE@	ell/signal.lo ell/timeout.lo ell/io.lo \
+@EXTERNAL_ELL_FALSE@	ell/ringbuf.lo ell/log.lo ell/plugin.lo \
 @EXTERNAL_ELL_FALSE@	ell/checksum.lo ell/netlink.lo ell/genl.lo \
-@EXTERNAL_ELL_FALSE@	ell/dbus.lo ell/dbus-util.lo \
-@EXTERNAL_ELL_FALSE@	ell/dbus-message.lo ell/dbus-service.lo \
-@EXTERNAL_ELL_FALSE@	ell/dbus-filter.lo ell/dbus-name-cache.lo \
-@EXTERNAL_ELL_FALSE@	ell/gvariant-util.lo ell/siphash.lo \
-@EXTERNAL_ELL_FALSE@	ell/hwdb.lo ell/cipher.lo ell/random.lo \
-@EXTERNAL_ELL_FALSE@	ell/uintset.lo ell/base64.lo ell/pem.lo \
-@EXTERNAL_ELL_FALSE@	ell/tls.lo ell/tls-record.lo ell/uuid.lo \
-@EXTERNAL_ELL_FALSE@	ell/key.lo ell/pkcs5.lo ell/file.lo \
-@EXTERNAL_ELL_FALSE@	ell/dir.lo ell/dbus-client.lo ell/net.lo \
+@EXTERNAL_ELL_FALSE@	ell/dbus.lo ell/dbus-message.lo \
+@EXTERNAL_ELL_FALSE@	ell/dbus-util.lo ell/dbus-service.lo \
+@EXTERNAL_ELL_FALSE@	ell/dbus-client.lo ell/dbus-name-cache.lo \
+@EXTERNAL_ELL_FALSE@	ell/dbus-filter.lo ell/gvariant-util.lo \
+@EXTERNAL_ELL_FALSE@	ell/siphash.lo ell/hwdb.lo ell/cipher.lo \
+@EXTERNAL_ELL_FALSE@	ell/random.lo ell/uintset.lo ell/base64.lo \
+@EXTERNAL_ELL_FALSE@	ell/pem.lo ell/tls.lo ell/tls-record.lo \
+@EXTERNAL_ELL_FALSE@	ell/uuid.lo ell/key.lo ell/pkcs5.lo \
+@EXTERNAL_ELL_FALSE@	ell/file.lo ell/dir.lo ell/net.lo \
 @EXTERNAL_ELL_FALSE@	ell/dhcp.lo ell/dhcp-transport.lo \
 @EXTERNAL_ELL_FALSE@	ell/dhcp-lease.lo
 @EXTERNAL_ELL_FALSE@am_ell_libell_internal_la_OBJECTS =  \
-@EXTERNAL_ELL_FALSE@	$(am__objects_1)
+@EXTERNAL_ELL_FALSE@	$(am__objects_1) $(am__objects_2)
 ell_libell_internal_la_OBJECTS = $(am_ell_libell_internal_la_OBJECTS)
 AM_V_lt = $(am__v_lt_@AM_V@)
 am__v_lt_ = $(am__v_lt_@AM_DEFAULT_V@)
@@ -265,8 +267,9 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/ecc.c src/wscutil.h src/wscutil.c src/simutil.h \
 	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
 	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c \
-	plugins/sim_hardcoded.c plugins/ofono.c
-am__objects_2 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
+	src/mschaputil.h src/mschaputil.c plugins/sim_hardcoded.c \
+	plugins/ofono.c
+am__objects_3 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
 	src/eap-md5.$(OBJEXT) src/eap-tls.$(OBJEXT) \
 	src/eap-ttls.$(OBJEXT) src/eap-mschapv2.$(OBJEXT) \
 	src/eap-sim.$(OBJEXT) src/eap-aka.$(OBJEXT) \
@@ -274,10 +277,10 @@ am__objects_2 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
 	src/eap-pwd.$(OBJEXT) src/util.$(OBJEXT) src/crypto.$(OBJEXT) \
 	src/ecc.$(OBJEXT) src/wscutil.$(OBJEXT) src/simutil.$(OBJEXT) \
 	src/simauth.$(OBJEXT) src/watchlist.$(OBJEXT) \
-	src/eap-tls-common.$(OBJEXT)
-@DAEMON_TRUE@@SIM_HARDCODED_TRUE@am__objects_3 = plugins/sim_hardcoded.$(OBJEXT)
-@DAEMON_TRUE@@OFONO_TRUE@am__objects_4 = plugins/ofono.$(OBJEXT)
-am__objects_5 = $(am__objects_3) $(am__objects_4)
+	src/eap-tls-common.$(OBJEXT) src/mschaputil.$(OBJEXT)
+@DAEMON_TRUE@@SIM_HARDCODED_TRUE@am__objects_4 = plugins/sim_hardcoded.$(OBJEXT)
+@DAEMON_TRUE@@OFONO_TRUE@am__objects_5 = plugins/ofono.$(OBJEXT)
+am__objects_6 = $(am__objects_4) $(am__objects_5)
 @DAEMON_TRUE@am_src_iwd_OBJECTS = src/main.$(OBJEXT) \
 @DAEMON_TRUE@	src/plugin.$(OBJEXT) src/netdev.$(OBJEXT) \
 @DAEMON_TRUE@	src/wiphy.$(OBJEXT) src/device.$(OBJEXT) \
@@ -291,8 +294,8 @@ am__objects_5 = $(am__objects_3) $(am__objects_4)
 @DAEMON_TRUE@	src/knownnetworks.$(OBJEXT) src/rfkill.$(OBJEXT) \
 @DAEMON_TRUE@	src/ftutil.$(OBJEXT) src/ap.$(OBJEXT) \
 @DAEMON_TRUE@	src/adhoc.$(OBJEXT) src/sae.$(OBJEXT) \
-@DAEMON_TRUE@	src/nl80211util.$(OBJEXT) $(am__objects_2) \
-@DAEMON_TRUE@	$(am__objects_5)
+@DAEMON_TRUE@	src/nl80211util.$(OBJEXT) $(am__objects_3) \
+@DAEMON_TRUE@	$(am__objects_6)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am__tools_hwsim_SOURCES_DIST = tools/hwsim.c src/mpdu.h src/util.h \
 	src/util.c src/storage.h src/storage.c src/common.h \
@@ -344,7 +347,7 @@ am_unit_test_eapol_OBJECTS = unit/test-eapol.$(OBJEXT) \
 	src/handshake.$(OBJEXT) src/eap.$(OBJEXT) \
 	src/eap-tls.$(OBJEXT) src/eap-ttls.$(OBJEXT) \
 	src/eap-md5.$(OBJEXT) src/util.$(OBJEXT) \
-	src/eap-tls-common.$(OBJEXT)
+	src/eap-tls-common.$(OBJEXT) src/mschaputil.$(OBJEXT)
 unit_test_eapol_OBJECTS = $(am_unit_test_eapol_OBJECTS)
 unit_test_eapol_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_unit_test_ecc_OBJECTS = unit/test-ecc.$(OBJEXT) src/ecc.$(OBJEXT)
@@ -408,10 +411,11 @@ am__wired_ead_SOURCES_DIST = wired/main.c wired/ethdev.h \
 	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
 	src/ecc.h src/ecc.c src/wscutil.h src/wscutil.c src/simutil.h \
 	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
-	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c
+	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c \
+	src/mschaputil.h src/mschaputil.c
 @WIRED_TRUE@am_wired_ead_OBJECTS = wired/main.$(OBJEXT) \
 @WIRED_TRUE@	wired/ethdev.$(OBJEXT) wired/network.$(OBJEXT) \
-@WIRED_TRUE@	wired/dbus.$(OBJEXT) $(am__objects_2)
+@WIRED_TRUE@	wired/dbus.$(OBJEXT) $(am__objects_3)
 wired_ead_OBJECTS = $(am_wired_ead_OBJECTS)
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
@@ -865,62 +869,104 @@ builtin_sources = $(am__append_3) $(am__append_5)
 @EXTERNAL_ELL_TRUE@ell_ldadd = @ELL_LIBS@
 @EXTERNAL_ELL_FALSE@ell_dependencies = $(ell_ldadd)
 @EXTERNAL_ELL_TRUE@ell_dependencies = 
-@EXTERNAL_ELL_FALSE@ell_built_sources = ell/internal
+@EXTERNAL_ELL_FALSE@ell_built_sources = ell/internal ell/ell.h
 @EXTERNAL_ELL_TRUE@ell_built_sources = 
 @EXTERNAL_ELL_FALSE@noinst_LTLIBRARIES = ell/libell-internal.la
-@EXTERNAL_ELL_FALSE@ell_sources = ell/ell.h ell/private.h ell/missing.h \
-@EXTERNAL_ELL_FALSE@			ell/util.h ell/util.c \
-@EXTERNAL_ELL_FALSE@			ell/test.h ell/test.c \
-@EXTERNAL_ELL_FALSE@			ell/queue.h ell/queue.c \
-@EXTERNAL_ELL_FALSE@			ell/hashmap.h ell/hashmap.c \
-@EXTERNAL_ELL_FALSE@			ell/ringbuf.h ell/ringbuf.c \
-@EXTERNAL_ELL_FALSE@			ell/string.h ell/string.c \
-@EXTERNAL_ELL_FALSE@			ell/settings.h ell/settings.c \
-@EXTERNAL_ELL_FALSE@			ell/main.h ell/main.c \
-@EXTERNAL_ELL_FALSE@			ell/idle.h ell/idle.c \
-@EXTERNAL_ELL_FALSE@			ell/signal.h ell/signal.c \
-@EXTERNAL_ELL_FALSE@			ell/timeout.h ell/timeout.c \
-@EXTERNAL_ELL_FALSE@			ell/io.h ell/io.c \
-@EXTERNAL_ELL_FALSE@			ell/log.h ell/log.c \
-@EXTERNAL_ELL_FALSE@			ell/plugin.h ell/plugin.c \
-@EXTERNAL_ELL_FALSE@			ell/checksum.h ell/checksum.c \
+@EXTERNAL_ELL_FALSE@ell_headers = ell/util.h \
+@EXTERNAL_ELL_FALSE@			ell/test.h \
+@EXTERNAL_ELL_FALSE@			ell/strv.h \
+@EXTERNAL_ELL_FALSE@			ell/utf8.h \
+@EXTERNAL_ELL_FALSE@			ell/queue.h \
+@EXTERNAL_ELL_FALSE@			ell/hashmap.h \
+@EXTERNAL_ELL_FALSE@			ell/string.h \
+@EXTERNAL_ELL_FALSE@			ell/settings.h \
+@EXTERNAL_ELL_FALSE@			ell/main.h \
+@EXTERNAL_ELL_FALSE@			ell/idle.h \
+@EXTERNAL_ELL_FALSE@			ell/signal.h \
+@EXTERNAL_ELL_FALSE@			ell/timeout.h \
+@EXTERNAL_ELL_FALSE@			ell/io.h \
+@EXTERNAL_ELL_FALSE@			ell/ringbuf.h \
+@EXTERNAL_ELL_FALSE@			ell/log.h \
+@EXTERNAL_ELL_FALSE@			ell/plugin.h \
+@EXTERNAL_ELL_FALSE@			ell/checksum.h \
+@EXTERNAL_ELL_FALSE@			ell/netlink.h \
+@EXTERNAL_ELL_FALSE@			ell/genl.h \
+@EXTERNAL_ELL_FALSE@			ell/dbus.h \
+@EXTERNAL_ELL_FALSE@			ell/dbus-service.h \
+@EXTERNAL_ELL_FALSE@			ell/dbus-client.h \
+@EXTERNAL_ELL_FALSE@			ell/hwdb.h \
+@EXTERNAL_ELL_FALSE@			ell/cipher.h \
+@EXTERNAL_ELL_FALSE@			ell/random.h \
+@EXTERNAL_ELL_FALSE@			ell/uintset.h \
+@EXTERNAL_ELL_FALSE@			ell/base64.h \
+@EXTERNAL_ELL_FALSE@			ell/pem.h \
+@EXTERNAL_ELL_FALSE@			ell/tls.h \
+@EXTERNAL_ELL_FALSE@			ell/uuid.h \
+@EXTERNAL_ELL_FALSE@			ell/key.h \
+@EXTERNAL_ELL_FALSE@			ell/pkcs5.h \
+@EXTERNAL_ELL_FALSE@			ell/file.h \
+@EXTERNAL_ELL_FALSE@			ell/dir.h \
+@EXTERNAL_ELL_FALSE@			ell/net.h \
+@EXTERNAL_ELL_FALSE@			ell/dhcp.h
+
+@EXTERNAL_ELL_FALSE@ell_sources = ell/private.h \
+@EXTERNAL_ELL_FALSE@			ell/missing.h \
+@EXTERNAL_ELL_FALSE@			ell/util.c \
+@EXTERNAL_ELL_FALSE@			ell/test.c \
+@EXTERNAL_ELL_FALSE@			ell/strv.c \
+@EXTERNAL_ELL_FALSE@			ell/utf8.c \
+@EXTERNAL_ELL_FALSE@			ell/queue.c \
+@EXTERNAL_ELL_FALSE@			ell/hashmap.c \
+@EXTERNAL_ELL_FALSE@			ell/string.c \
+@EXTERNAL_ELL_FALSE@			ell/settings.c \
+@EXTERNAL_ELL_FALSE@			ell/main.c \
+@EXTERNAL_ELL_FALSE@			ell/idle.c \
+@EXTERNAL_ELL_FALSE@			ell/signal.c \
+@EXTERNAL_ELL_FALSE@			ell/timeout.c \
+@EXTERNAL_ELL_FALSE@			ell/io.c \
+@EXTERNAL_ELL_FALSE@			ell/ringbuf.c \
+@EXTERNAL_ELL_FALSE@			ell/log.c \
+@EXTERNAL_ELL_FALSE@			ell/plugin.c \
+@EXTERNAL_ELL_FALSE@			ell/checksum.c \
 @EXTERNAL_ELL_FALSE@			ell/netlink-private.h \
-@EXTERNAL_ELL_FALSE@			ell/netlink.h ell/netlink.c \
+@EXTERNAL_ELL_FALSE@			ell/netlink.c \
 @EXTERNAL_ELL_FALSE@			ell/genl-private.h \
-@EXTERNAL_ELL_FALSE@			ell/genl.h ell/genl.c \
+@EXTERNAL_ELL_FALSE@			ell/genl.c \
 @EXTERNAL_ELL_FALSE@			ell/dbus-private.h \
-@EXTERNAL_ELL_FALSE@			ell/dbus.h ell/dbus.c \
-@EXTERNAL_ELL_FALSE@			ell/dbus-util.c \
+@EXTERNAL_ELL_FALSE@			ell/dbus.c \
 @EXTERNAL_ELL_FALSE@			ell/dbus-message.c \
-@EXTERNAL_ELL_FALSE@			ell/dbus-service.h ell/dbus-service.c \
-@EXTERNAL_ELL_FALSE@			ell/dbus-filter.c \
+@EXTERNAL_ELL_FALSE@			ell/dbus-util.c \
+@EXTERNAL_ELL_FALSE@			ell/dbus-service.c \
+@EXTERNAL_ELL_FALSE@			ell/dbus-client.c \
 @EXTERNAL_ELL_FALSE@			ell/dbus-name-cache.c \
+@EXTERNAL_ELL_FALSE@			ell/dbus-filter.c \
 @EXTERNAL_ELL_FALSE@			ell/gvariant-private.h \
 @EXTERNAL_ELL_FALSE@			ell/gvariant-util.c \
 @EXTERNAL_ELL_FALSE@			ell/siphash-private.h \
 @EXTERNAL_ELL_FALSE@			ell/siphash.c \
-@EXTERNAL_ELL_FALSE@			ell/hwdb.h ell/hwdb.c \
-@EXTERNAL_ELL_FALSE@			ell/cipher.h ell/cipher.c \
-@EXTERNAL_ELL_FALSE@			ell/random.h ell/random.c \
-@EXTERNAL_ELL_FALSE@			ell/uintset.h ell/uintset.c \
-@EXTERNAL_ELL_FALSE@			ell/base64.h ell/base64.c \
-@EXTERNAL_ELL_FALSE@			ell/pem.h ell/pem.c \
-@EXTERNAL_ELL_FALSE@			ell/tls-private.h \
-@EXTERNAL_ELL_FALSE@			ell/tls.h ell/tls.c \
-@EXTERNAL_ELL_FALSE@			ell/tls-record.c \
-@EXTERNAL_ELL_FALSE@			ell/uuid.h ell/uuid.c \
-@EXTERNAL_ELL_FALSE@			ell/key.h ell/key.c \
+@EXTERNAL_ELL_FALSE@			ell/hwdb.c \
+@EXTERNAL_ELL_FALSE@			ell/cipher.c \
+@EXTERNAL_ELL_FALSE@			ell/random.c \
+@EXTERNAL_ELL_FALSE@			ell/uintset.c \
+@EXTERNAL_ELL_FALSE@			ell/base64.c \
 @EXTERNAL_ELL_FALSE@			ell/asn1-private.h \
-@EXTERNAL_ELL_FALSE@			ell/pkcs5.h ell/pkcs5.c \
+@EXTERNAL_ELL_FALSE@			ell/pem.c \
+@EXTERNAL_ELL_FALSE@			ell/tls-private.h \
+@EXTERNAL_ELL_FALSE@			ell/tls.c \
+@EXTERNAL_ELL_FALSE@			ell/tls-record.c \
+@EXTERNAL_ELL_FALSE@			ell/uuid.c \
+@EXTERNAL_ELL_FALSE@			ell/key.c \
 @EXTERNAL_ELL_FALSE@			ell/pkcs5-private.h \
-@EXTERNAL_ELL_FALSE@			ell/file.h ell/file.c \
-@EXTERNAL_ELL_FALSE@			ell/dir.h ell/dir.c \
-@EXTERNAL_ELL_FALSE@			ell/dbus-client.h ell/dbus-client.c \
-@EXTERNAL_ELL_FALSE@			ell/net.h ell/net.c \
-@EXTERNAL_ELL_FALSE@			ell/dhcp.h ell/dhcp.c ell/dhcp-transport.c \
-@EXTERNAL_ELL_FALSE@			ell/dhcp-private.h ell/dhcp-lease.c
+@EXTERNAL_ELL_FALSE@			ell/pkcs5.c \
+@EXTERNAL_ELL_FALSE@			ell/file.c \
+@EXTERNAL_ELL_FALSE@			ell/dir.c \
+@EXTERNAL_ELL_FALSE@			ell/net.c \
+@EXTERNAL_ELL_FALSE@			ell/dhcp-private.h \
+@EXTERNAL_ELL_FALSE@			ell/dhcp.c \
+@EXTERNAL_ELL_FALSE@			ell/dhcp-transport.c \
+@EXTERNAL_ELL_FALSE@			ell/dhcp-lease.c
 
-@EXTERNAL_ELL_FALSE@ell_libell_internal_la_SOURCES = $(ell_sources)
+@EXTERNAL_ELL_FALSE@ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources)
 @DBUS_POLICY_TRUE@dbus_datadir = @DBUS_DATADIR@/dbus-1/system.d
 @DBUS_POLICY_TRUE@dist_dbus_data_DATA = $(am__append_6) \
 @DBUS_POLICY_TRUE@	$(am__append_13) $(am__append_18)
@@ -947,7 +993,8 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 				src/simutil.h src/simutil.c \
 				src/simauth.h src/simauth.c \
 				src/watchlist.h src/watchlist.c \
-				src/eap-tls-common.h src/eap-tls-common.c
+				src/eap-tls-common.h src/eap-tls-common.c \
+				src/mschaputil.h src/mschaputil.c
 
 @DAEMON_TRUE@src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h \
 @DAEMON_TRUE@					src/plugin.h src/plugin.c \
@@ -1103,7 +1150,8 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 				src/eap.h src/eap.c src/eap-private.h \
 				src/eap-tls.c src/eap-ttls.c \
 				src/eap-md5.c src/util.c \
-				src/eap-tls-common.h src/eap-tls-common.c
+				src/eap-tls-common.h src/eap-tls-common.c \
+				src/mschaputil.h src/mschaputil.c
 
 unit_test_eapol_LDADD = $(ell_ldadd)
 unit_test_ssid_to_utf8_SOURCES = src/util.h src/util.c \
@@ -1248,9 +1296,10 @@ ell/$(DEPDIR)/$(am__dirstamp):
 	@: > ell/$(DEPDIR)/$(am__dirstamp)
 ell/util.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/test.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/strv.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/utf8.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/queue.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/hashmap.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
-ell/ringbuf.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/string.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/settings.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/main.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
@@ -1258,18 +1307,20 @@ ell/idle.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/signal.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/timeout.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/io.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/ringbuf.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/log.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/plugin.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/checksum.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/netlink.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/genl.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dbus.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
-ell/dbus-util.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dbus-message.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/dbus-util.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dbus-service.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
-ell/dbus-filter.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/dbus-client.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dbus-name-cache.lo: ell/$(am__dirstamp) \
 	ell/$(DEPDIR)/$(am__dirstamp)
+ell/dbus-filter.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/gvariant-util.lo: ell/$(am__dirstamp) \
 	ell/$(DEPDIR)/$(am__dirstamp)
 ell/siphash.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
@@ -1286,7 +1337,6 @@ ell/key.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/pkcs5.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/file.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dir.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
-ell/dbus-client.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/net.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dhcp.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dhcp-transport.lo: ell/$(am__dirstamp) \
@@ -1541,6 +1591,8 @@ src/simauth.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/eap-tls-common.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
+src/mschaputil.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
 plugins/$(am__dirstamp):
 	@$(MKDIR_P) plugins
 	@: > plugins/$(am__dirstamp)
@@ -1778,11 +1830,13 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/signal.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/siphash.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/string.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/strv.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/test.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/timeout.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/tls-record.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/tls.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/uintset.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/utf8.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/util.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/uuid.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@monitor/$(DEPDIR)/display.Po@am__quote@
@@ -1820,6 +1874,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/knownnetworks.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/main.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/mpdu.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/mschaputil.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/netdev.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/network.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/nl80211util.Po@am__quote@
@@ -2691,17 +2746,17 @@ uninstall-man: uninstall-man1
 
 ell/internal: Makefile
 	$(AM_V_at)$(MKDIR_P) ell
-	$(AM_V_GEN)for f in $(ell_sources) ; do \
+	$(AM_V_GEN)for f in $(ell_headers) $(ell_sources) ; do \
 		if [ ! -f $$f ] ; then \
 			$(LN_S) -t ell -f $(abs_srcdir)/../ell/$$f ; \
 		fi \
 	done > $@
-	$(AM_V_at)$(MKDIR_P) linux
-	$(AM_V_GEN)for f in $(ell_linux_headers) ; do \
-		if [ ! -f $$f ] ; then \
-			$(LN_S) -t linux -f $(abs_srcdir)/../ell/$$f ; \
-		fi \
-	done > $@
+
+ell/ell.h: Makefile
+	$(AM_V_at)echo -n > $@
+	$(AM_V_GEN)for f in $(ell_headers) ; do \
+		echo "#include <$$f>" >> $@ ; \
+	done
 
 ell/unit/test_data: Makefile
 	$(AM_V_at)$(MKDIR_P) ell/unit
