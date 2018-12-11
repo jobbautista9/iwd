@@ -45,6 +45,7 @@ enum crypto_akm {
 	CRYPTO_AKM_8021X_SUITE_B_SHA256 = 0x000fac0b,
 	CRYPTO_AKM_8021X_SUITE_B_SHA384 = 0x000fac0c,
 	CRYPTO_AKM_FT_OVER_8021X_SHA384 = 0x000fac0d,
+	CRYPTO_AKM_OWE = 0x000fac12,
 };
 
 /* Min & Max reported by crypto_cipher_key_len when ignoring WEP */
@@ -92,8 +93,11 @@ bool kdf_sha256(const void *key, size_t key_len,
 bool prf_sha1(const void *key, size_t key_len,
 		const void *prefix, size_t prefix_len,
 		const void *data, size_t data_len, void *output, size_t size);
-bool hkdf_256(const uint8_t *key, size_t key_len, uint8_t num_args,
-		uint8_t *out, ...);
+bool hkdf_extract_sha256(const uint8_t *key, size_t key_len, uint8_t num_args,
+			uint8_t *out, ...);
+
+bool hkdf_expand_sha256(const uint8_t *key, size_t key_len, const char *info,
+			size_t info_len, void *out, size_t out_len);
 
 bool crypto_derive_pairwise_ptk(const uint8_t *pmk,
 				const uint8_t *addr1, const uint8_t *addr2,

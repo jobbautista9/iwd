@@ -1,5 +1,5 @@
 AC_PREREQ(2.60)
-AC_INIT(iwd, 0.12)
+AC_INIT(iwd, 0.13)
 
 AC_CONFIG_HEADERS(config.h)
 AC_CONFIG_AUX_DIR(build-aux)
@@ -25,6 +25,8 @@ AC_PROG_CC_PIE
 AC_PROG_INSTALL
 AC_PROG_MKDIR_P
 AC_PROG_LN_S
+
+AC_SYS_LARGEFILE
 
 LT_PREREQ(2.2)
 LT_INIT([disable-static])
@@ -80,8 +82,16 @@ AC_DEFINE_UNQUOTED(WIRED_STORAGEDIR, "${wired_storagedir}",
 
 AC_CHECK_HEADERS(linux/types.h linux/if_alg.h)
 
-AC_CHECK_HEADERS_ONCE(execinfo.h)
-AC_CHECK_LIB(execinfo, backtrace)
+# In maintainer mode: try to build with application backtrace and disable PIE.
+if (test "${USE_MAINTAINER_MODE}" = yes); then
+	AC_SEARCH_LIBS([backtrace], [execinfo],
+		[
+			AC_DEFINE([HAVE_BACKTRACE], [1],
+				[Define to 1 if you have backtrace(3).])
+			CFLAGS="$CFLAGS -fno-PIE"
+			LDFLAGS="$LDFLAGS -no-pie"
+		])
+fi
 
 AC_ARG_ENABLE([daemon], AC_HELP_STRING([--disable-daemon],
 				[don't install iwd system daemon]),
@@ -164,7 +174,7 @@ if (test "${enable_external_ell}" = "yes"); then
 			test "${enable_monitor}" != "no" ||
 			test "${enable_wired}" = "yes" ||
 			test "${enable_hwsim}" = "yes"); then
-		ell_min_version="0.15"
+		ell_min_version="0.16"
 	else
 		ell_min_version="0.5"
 	fi

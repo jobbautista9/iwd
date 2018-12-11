@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2013-2016  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2018  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -19,7 +19,16 @@
  *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
-#ifdef HAVE_BACKTRACE
-void __iwd_backtrace_init();
-void __iwd_backtrace_print(unsigned int offset);
-#endif
+
+/*
+ * Generate a private/public key pair. All inputs are expected in little-endian.
+ */
+bool ecdh_generate_key_pair(void *private, size_t priv_len,
+				void *public, size_t pub_len);
+/*
+ * Generate a shared secret from a private/public key. All inputs are expected
+ * in little-endian.
+ */
+bool ecdh_generate_shared_secret(const void *private, const void *other_public,
+					size_t pub_len, void *secret,
+					size_t secret_len);

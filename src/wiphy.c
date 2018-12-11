@@ -45,6 +45,7 @@
 #include "src/storage.h"
 #include "src/util.h"
 #include "src/common.h"
+#include "src/watchlist.h"
 
 static struct l_genl_family *nl80211 = NULL;
 static struct l_hwdb *hwdb;
@@ -57,15 +58,16 @@ struct wiphy {
 	uint32_t feature_flags;
 	uint8_t ext_features[(NUM_NL80211_EXT_FEATURES + 7) / 8];
 	uint8_t max_num_ssids_per_scan;
-	bool support_scheduled_scan:1;
-	bool support_rekey_offload:1;
-	bool support_adhoc_rsn:1;
 	uint16_t supported_iftypes;
 	uint16_t supported_ciphers;
 	struct scan_freq_set *supported_freqs;
 	char *model_str;
 	char *vendor_str;
+	struct watchlist state_watches;
 
+	bool support_scheduled_scan:1;
+	bool support_rekey_offload:1;
+	bool support_adhoc_rsn:1;
 	bool soft_rfkill : 1;
 	bool hard_rfkill : 1;
 };
@@ -140,9 +142,23 @@ enum ie_rsn_akm_suite wiphy_select_akm(struct wiphy *wiphy,
 
 		if (info.akm_suites & IE_RSN_AKM_SUITE_PSK)
 			return IE_RSN_AKM_SUITE_PSK;
+	} else if (security == SECURITY_NONE) {
+		if (info.akm_suites & IE_RSN_AKM_SUITE_OWE)
+			return IE_RSN_AKM_SUITE_OWE;
 	}
 
 	return 0;
+}
+
+static struct wiphy *wiphy_new(uint32_t id)
+{
+	struct wiphy *wiphy = l_new(struct wiphy, 1);
+
+	wiphy->id = id;
+	wiphy->supported_freqs = scan_freq_set_new();
+	watchlist_init(&wiphy->state_watches, NULL);
+
+	return wiphy;
 }
 
 static void wiphy_free(void *data)
@@ -152,6 +168,7 @@ static void wiphy_free(void *data)
 	l_debug("Freeing wiphy %s[%u]", wiphy->name, wiphy->id);
 
 	scan_freq_set_free(wiphy->supported_freqs);
+	watchlist_destroy(&wiphy->state_watches);
 	l_free(wiphy->model_str);
 	l_free(wiphy->vendor_str);
 	l_free(wiphy);
@@ -297,6 +314,18 @@ bool wiphy_supports_iftype(struct wiphy *wiphy, uint32_t iftype)
 		return false;
 
 	return wiphy->supported_iftypes & (1 << (iftype - 1));
+}
+
+uint32_t wiphy_state_watch_add(struct wiphy *wiphy,
+				wiphy_state_watch_func_t func,
+				void *user_data, wiphy_destroy_func_t destroy)
+{
+	return watchlist_add(&wiphy->state_watches, func, user_data, destroy);
+}
+
+bool wiphy_state_watch_remove(struct wiphy *wiphy, uint32_t id)
+{
+	return watchlist_remove(&wiphy->state_watches, id);
 }
 
 static void wiphy_print_basic_info(struct wiphy *wiphy)
@@ -619,9 +648,7 @@ static void wiphy_dump_callback(struct l_genl_msg *msg, void *user_data)
 		if (!wiphy_is_managed(name))
 			return;
 
-		wiphy = l_new(struct wiphy, 1);
-		wiphy->id = id;
-		wiphy->supported_freqs = scan_freq_set_new();
+		wiphy = wiphy_new(id);
 		l_queue_push_head(wiphy_list, wiphy);
 	}
 
@@ -731,10 +758,8 @@ static void wiphy_new_wiphy_event(struct l_genl_msg *msg)
 	if (!wiphy_is_managed(name))
 		return;
 
-	wiphy = l_new(struct wiphy, 1);
-	wiphy->id = id;
+	wiphy = wiphy_new(id);
 	memcpy(wiphy->name, name, name_len);
-	wiphy->supported_freqs = scan_freq_set_new();
 	l_queue_push_head(wiphy_list, wiphy);
 
 	wiphy_parse_attributes(wiphy, &attr);
@@ -858,6 +883,7 @@ static void wiphy_rfkill_cb(unsigned int wiphy_id, bool soft, bool hard,
 	struct wiphy *wiphy = wiphy_find(wiphy_id);
 	struct l_dbus *dbus = dbus_get_bus();
 	bool old_powered, new_powered;
+	enum wiphy_state_watch_event event;
 
 	if (!wiphy)
 		return;
@@ -869,8 +895,15 @@ static void wiphy_rfkill_cb(unsigned int wiphy_id, bool soft, bool hard,
 
 	new_powered = !wiphy->soft_rfkill && !wiphy->hard_rfkill;
 
-	if (old_powered != new_powered)
-		l_dbus_property_changed(dbus, wiphy_get_path(wiphy),
+	if (old_powered == new_powered)
+		return;
+
+	event = new_powered ? WIPHY_STATE_WATCH_EVENT_POWERED :
+				WIPHY_STATE_WATCH_EVENT_RFKILLED;
+	WATCHLIST_NOTIFY(&wiphy->state_watches, wiphy_state_watch_func_t,
+				wiphy, event);
+
+	l_dbus_property_changed(dbus, wiphy_get_path(wiphy),
 					IWD_WIPHY_INTERFACE, "Powered");
 }
 
