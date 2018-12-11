@@ -13,11 +13,11 @@ Forwarded: not-needed
 --- a/Makefile.am
 +++ b/Makefile.am
 @@ -195,7 +195,7 @@
+ 		unit/test-crypto unit/test-eapol unit/test-mpdu \
  		unit/test-ie unit/test-ssid-to-utf8 unit/test-ssid-security \
  		unit/test-arc4 unit/test-wsc unit/test-eap-mschapv2 \
- 		unit/test-eap-sim unit/test-client unit/test-ecc \
--		unit/test-sae
-+		$(NULL) # test-sae disabled.
+-		unit/test-eap-sim unit/test-ecc unit/test-sae unit/test-ecdh
++		unit/test-eap-sim unit/test-ecc unit/test-ecdh
  
- 
- ell_pem_files = cert-ca-key.pem cert-client-key.pem cert-client-key-pkcs8.pem \
+ if CLIENT
+ unit_tests += unit/test-client
