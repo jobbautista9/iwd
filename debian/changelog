@@ -1,3 +1,11 @@
+iwd (0.13-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Drop debian/patches/lfs.patch, merged upstream.
+  * Update disable-sae-test.patch to apply again
+
+ -- Andreas Henriksson <andreas@fatal.se>  Tue, 11 Dec 2018 16:53:47 +0100
+
 iwd (0.12-1) unstable; urgency=medium
 
   * New upstream release.
