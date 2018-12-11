@@ -573,6 +573,7 @@ static const struct cipher_suites rsn_akm_selectors[] = {
 	{ 0x000fac07, "TDLS; TPK"                                                                 },
 	{ 0x000fac08, "SAE/PMKSA caching SHA256; RSNA PMKSA caching SHA256/mesh peering exchange" },
 	{ 0x000fac09, "FT SAE SHA256; FT"                                                         },
+	{ 0x000fac12, "OWE"                                                                       },
 	{ }
 };
 
@@ -1405,6 +1406,21 @@ static void print_ie_rm_enabled_caps(unsigned int level,
 				bytemask2, sizeof(bytemask2), capabilities);
 }
 
+static void print_ie_owe(unsigned int level,
+					const char *label,
+					const void *data, uint16_t size)
+{
+	uint16_t group;
+
+	print_attr(level, "%s: len %u", label, size);
+
+	group = l_get_le16(data);
+
+	print_attr(level + 1, "ECC Group: %u", group);
+	print_attr(level + 1, "Public Key:");
+	print_hexdump(level + 2, data + 2, size - 2);
+}
+
 static struct attr_entry ie_entry[] = {
 	{ IE_TYPE_SSID,				"SSID",
 		ATTR_CUSTOM,	{ .function = print_ie_ssid } },
@@ -1438,6 +1454,8 @@ static struct attr_entry ie_entry[] = {
 		ATTR_CUSTOM,	{ .function = print_ie_ht_capabilities } },
 	{ IE_TYPE_RM_ENABLED_CAPABILITIES,	"RM Enabled Capabilities",
 		ATTR_CUSTOM,	{ .function = print_ie_rm_enabled_caps } },
+	{ IE_TYPE_OWE_DH_PARAM,			"OWE Diffie-Hellman Parameter",
+		ATTR_CUSTOM,	{ .function = print_ie_owe } },
 	{ },
 };
 
@@ -1452,7 +1470,7 @@ static void print_ie(unsigned int level, const char *label,
 	ie_tlv_iter_init(&iter, data, size);
 
 	while (ie_tlv_iter_next(&iter)) {
-		uint8_t tag = ie_tlv_iter_get_tag(&iter);
+		uint16_t tag = ie_tlv_iter_get_tag(&iter);
 		struct attr_entry *entry = NULL;
 
 		for (i = 0; ie_entry[i].str; i++) {
@@ -2688,7 +2706,7 @@ static void print_akm_suites(unsigned int level, const char *label,
 	while (size >= 4) {
 		uint32_t akm = *((uint32_t *) data);
 
-		print_ie_cipher_suite(level, NULL, akm, rsn_akm_selectors);
+		print_ie_cipher_suite(level + 1, NULL, akm, rsn_akm_selectors);
 		data += 4;
 		size -= 4;
 	}
@@ -3632,7 +3650,20 @@ static void print_value(int indent, const char *label, enum attr_type type,
 		if (len != 4)
 			printf("malformed packet\n");
 		break;
-	default:
+	case ATTR_UNSPEC:
+	case ATTR_FLAG:
+	case ATTR_U8:
+	case ATTR_U64:
+	case ATTR_S8:
+	case ATTR_S32:
+	case ATTR_S64:
+	case ATTR_STRING:
+	case ATTR_ADDRESS:
+	case ATTR_BINARY:
+	case ATTR_NESTED:
+	case ATTR_ARRAY:
+	case ATTR_FLAG_OR_U16:
+	case ATTR_CUSTOM:
 		print_attr(indent, "%s: len %u", label, len);
 		print_hexdump(indent  + 1, buf, len);
 		break;

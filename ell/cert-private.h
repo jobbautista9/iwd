@@ -1,8 +1,8 @@
 /*
  *
- *  Wireless daemon for Linux
+ *  Embedded Linux library
  *
- *  Copyright (C) 2013-2016  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2018  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -19,7 +19,6 @@
  *  Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  *
  */
-#ifdef HAVE_BACKTRACE
-void __iwd_backtrace_init();
-void __iwd_backtrace_print(unsigned int offset);
-#endif
+
+struct l_certchain *certchain_new_from_leaf(struct l_cert *leaf);
+void certchain_link_issuer(struct l_certchain *chain, struct l_cert *issuer);

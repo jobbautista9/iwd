@@ -529,19 +529,30 @@ static void create_dbus_system_conf(void)
 
 static bool start_dbus_daemon(void)
 {
-	char *argv[3];
+	char *argv[4];
 	pid_t pid;
 
 	argv[0] = "dbus-daemon";
 	argv[1] = "--system";
-	argv[2] = NULL;
+	argv[2] = "--nosyslog";
+	argv[3] = NULL;
 
-	pid = execute_program(argv, false, false);
+	if (check_verbosity("dbus"))
+		setenv("DBUS_VERBOSE", "1", true);
+
+	pid = execute_program(argv, false, check_verbosity("dbus"));
 	if (pid < 0)
 		return false;
 
 	if (!wait_for_socket("/run/dbus/system_bus_socket", 25 * 10000))
 		return false;
+
+	if (check_verbosity("dbus-monitor")) {
+		argv[0] = "dbus-monitor";
+		argv[1] = "--system";
+		argv[2] = NULL;
+		execute_program(argv, false, true);
+	}
 
 	l_debug("D-Bus is running");
 
@@ -1771,14 +1782,14 @@ static void create_network_and_run_tests(const void *key, void *value,
 		setenv("IWD_TEST_TIMEOUTS", "off", true);
 
 	if (!create_tmpfs_extra_stuff(tmpfs_extra_stuff))
-		goto exit_hwsim;
+		goto remove_abs_paths;
 
 	if (!configure_hw_radios(hw_settings, wiphy_list))
-		goto exit_hwsim;
+		goto remove_abs_paths;
 
 	medium_pid = register_hwsim_as_trans_medium();
 	if (medium_pid < 0)
-		goto exit_hwsim;
+		goto remove_abs_paths;
 
 	if (check_verbosity("hwsim")) {
 		list_hwsim_radios();
@@ -1840,11 +1851,13 @@ exit_hostapd:
 
 	terminate_medium(medium_pid);
 
+remove_abs_paths:
+	remove_absolute_path_dirs(tmpfs_extra_stuff);
+
 exit_hwsim:
 	l_queue_destroy(wiphy_list, wiphy_free);
 
 	l_settings_free(hw_settings);
-	remove_absolute_path_dirs(tmpfs_extra_stuff);
 	l_strfreev(tmpfs_extra_stuff);
 }
 

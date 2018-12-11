@@ -28,8 +28,6 @@
 #define TLS_VERSION	TLS_V12
 #define TLS_MIN_VERSION	TLS_V10
 
-struct tls_cert;
-
 enum tls_cipher_type {
 	TLS_CIPHER_STREAM,
 	TLS_CIPHER_BLOCK,
@@ -38,10 +36,15 @@ enum tls_cipher_type {
 
 struct tls_bulk_encryption_algorithm {
 	enum tls_cipher_type cipher_type;
-	enum l_cipher_type l_id;
+	union {
+		enum l_cipher_type l_id;
+		enum l_aead_cipher_type l_aead_id;
+	};
 	size_t key_length;
 	size_t iv_length;
+	size_t fixed_iv_length;
 	size_t block_length;
+	size_t auth_tag_length;
 };
 
 struct tls_hash_algorithm {
@@ -60,7 +63,7 @@ struct tls_key_exchange_algorithm {
 
 	bool certificate_check;
 
-	bool (*validate_cert_key_type)(struct tls_cert *cert);
+	bool (*validate_cert_key_type)(struct l_cert *cert);
 
 	bool (*send_client_key_exchange)(struct l_tls *tls);
 	void (*handle_client_key_exchange)(struct l_tls *tls,
@@ -86,6 +89,7 @@ struct tls_cipher_suite {
 	struct tls_bulk_encryption_algorithm *encryption;
 	struct tls_key_exchange_algorithm *key_xchg;
 	struct tls_mac_algorithm *mac;
+	enum l_checksum_type prf_hmac;
 };
 
 struct tls_compression_method {
@@ -118,18 +122,17 @@ enum tls_content_type {
  * Finished message.  If we're sent a hash of a different type (in TLS 1.2+)
  * and need to verify we'll give up.
  * SHA1 and MD5 are explicitly required by versions < 1.2 and 1.2 requires
- * that the Finished hash is the same as used for the PRF, which in all
- * our supported cipher suites is defined to be SHA256.
+ * that the Finished hash is the same as used for the PRF so we need to
+ * keep at least the hashes our supported cipher suites specify for the PRF.
  */
 enum handshake_hash_type {
+	HANDSHAKE_HASH_SHA384,
 	HANDSHAKE_HASH_SHA256,
 	HANDSHAKE_HASH_MD5,
 	HANDSHAKE_HASH_SHA1,
 	__HANDSHAKE_HASH_COUNT,
 };
-#define HANDSHAKE_HASH_MAX_SIZE	32
-
-#define HANDSHAKE_HASH_TLS12 HANDSHAKE_HASH_SHA256
+#define HANDSHAKE_HASH_MAX_SIZE	48
 
 struct l_tls {
 	bool server;
@@ -142,8 +145,8 @@ struct l_tls {
 	l_tls_destroy_cb_t debug_destroy;
 	void *debug_data;
 
-	char *ca_cert_path;
-	char *cert_path;
+	struct l_queue *ca_certs;
+	struct l_certchain *cert;
 	struct l_key *priv_key;
 	size_t priv_key_size;
 
@@ -169,10 +172,11 @@ struct l_tls {
 	uint16_t negotiated_version;
 	bool cert_requested, cert_sent;
 	bool peer_authenticated;
-	struct tls_cert *peer_cert;
+	struct l_cert *peer_cert;
 	struct l_key *peer_pubkey;
 	size_t peer_pubkey_size;
 	enum handshake_hash_type signature_hash;
+	const struct tls_hash_algorithm *prf_hmac;
 
 	/* SecurityParameters current and pending */
 
@@ -192,11 +196,17 @@ struct l_tls {
 
 	enum tls_cipher_type cipher_type[2];
 	struct tls_cipher_suite *cipher_suite[2];
-	struct l_cipher *cipher[2];
+	union {
+		struct l_cipher *cipher[2];
+		struct l_aead_cipher *aead_cipher[2];
+	};
 	struct l_checksum *mac[2];
 	size_t mac_length[2];
 	size_t block_length[2];
 	size_t record_iv_length[2];
+	size_t fixed_iv_length[2];
+	uint8_t fixed_iv[2][32];
+	size_t auth_tag_length[2];
 	uint64_t seq_num[2];
 	/*
 	 * Some of the key and IV parts of the "current" state are kept
@@ -207,12 +217,12 @@ struct l_tls {
 	bool ready;
 };
 
-void tls10_prf(const void *secret, size_t secret_len,
+bool tls10_prf(const void *secret, size_t secret_len,
 		const char *label,
 		const void *seed, size_t seed_len,
 		uint8_t *out, size_t out_len);
 
-void tls12_prf(enum l_checksum_type type, size_t hash_len,
+bool tls12_prf(enum l_checksum_type type, size_t hash_len,
 		const void *secret, size_t secret_len,
 		const char *label,
 		const void *seed, size_t seed_len,
@@ -226,39 +236,9 @@ void tls_tx_record(struct l_tls *tls, enum tls_content_type type,
 bool tls_handle_message(struct l_tls *tls, const uint8_t *message,
 			int len, enum tls_content_type type, uint16_t version);
 
-/* X509 Certificates and Certificate Chains */
-
-struct tls_cert {
-	size_t size;
-	struct tls_cert *issuer;
-	uint8_t asn1[0];
-};
-
-enum tls_cert_key_type {
-	TLS_CERT_KEY_RSA,
-	TLS_CERT_KEY_UNKNOWN,
-};
-
-struct tls_cert *tls_cert_load_file(const char *filename);
-int tls_cert_from_certificate_list(const void *data, size_t len,
-					struct tls_cert **out_certchain);
-
-bool tls_cert_find_certchain(struct tls_cert *cert,
-				const char *cacert_filename);
-
-bool tls_cert_verify_certchain(struct tls_cert *certchain,
-				struct tls_cert *ca_cert);
-
-void tls_cert_free_certchain(struct tls_cert *cert);
-
-enum tls_cert_key_type tls_cert_get_pubkey_type(struct tls_cert *cert);
-
-void tls_prf_get_bytes(struct l_tls *tls,
-				enum l_checksum_type type, size_t hash_len,
-				const void *secret, size_t secret_len,
-				const char *label,
-				const void *seed, size_t seed_len,
-				uint8_t *buf, size_t len);
+struct l_cert *tls_cert_load_file(const char *filename);
+int tls_parse_certificate_list(const void *data, size_t len,
+				struct l_certchain **out_certchain);
 
 #define TLS_DEBUG(fmt, args...)	\
 	l_util_debug(tls->debug_handler, tls->debug_data, "%s:%i " fmt,	\

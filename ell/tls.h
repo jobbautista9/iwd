@@ -86,8 +86,8 @@ void l_tls_write(struct l_tls *tls, const uint8_t *data, size_t len);
 /* Submit TLS payload from underlying transport to be decrypted */
 void l_tls_handle_rx(struct l_tls *tls, const uint8_t *data, size_t len);
 
-/* If peer is to be authenticated, supply the CA certificate */
-void l_tls_set_cacert(struct l_tls *tls, const char *ca_cert_path);
+/* If peer is to be authenticated, supply the CA certificates */
+bool l_tls_set_cacert(struct l_tls *tls, const char *ca_cert_path);
 
 /*
  * If we are to be authenticated, supply our certificate, private key and
@@ -108,9 +108,7 @@ const char *l_tls_alert_to_str(enum l_tls_alert_desc desc);
 
 enum l_checksum_type;
 
-bool l_tls_prf_get_bytes(struct l_tls *tls,
-				enum l_checksum_type type,
-				size_t hash_len, bool use_master_secret,
+bool l_tls_prf_get_bytes(struct l_tls *tls, bool use_master_secret,
 				const char *label, uint8_t *buf, size_t len);
 
 bool l_tls_set_debug(struct l_tls *tls, l_tls_debug_cb_t function,

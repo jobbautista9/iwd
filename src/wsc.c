@@ -560,8 +560,8 @@ static void pin_timeout(struct l_timeout *timeout, void *user_data)
 					wsc_error_time_expired(wsc->pending));
 }
 
-static bool push_button_scan_results(uint32_t wiphy_id, uint32_t ifindex,
-					int err, struct l_queue *bss_list,
+static bool push_button_scan_results(uint32_t ifindex, int err,
+					struct l_queue *bss_list,
 					void *userdata)
 {
 	struct wsc *wsc = userdata;
@@ -718,7 +718,7 @@ static bool authorized_macs_contains(const uint8_t *authorized_macs,
 	return false;
 }
 
-static bool pin_scan_results(uint32_t wiphy_id, uint32_t ifindex, int err,
+static bool pin_scan_results(uint32_t ifindex, int err,
 				struct l_queue *bss_list, void *userdata)
 {
 	static const uint8_t wildcard_address[] =
@@ -1082,7 +1082,8 @@ static void wsc_netdev_watch(struct netdev *netdev,
 	switch (event) {
 	case NETDEV_WATCH_EVENT_UP:
 	case NETDEV_WATCH_EVENT_NEW:
-		if (netdev_get_iftype(netdev) == NETDEV_IFTYPE_STATION)
+		if (netdev_get_iftype(netdev) == NETDEV_IFTYPE_STATION &&
+				netdev_get_is_up(netdev))
 			wsc_add_interface(netdev);
 		break;
 	case NETDEV_WATCH_EVENT_DOWN:

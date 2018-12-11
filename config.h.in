@@ -6,17 +6,14 @@
 /* Directory for Wireless daemon storage files */
 #undef DAEMON_STORAGEDIR
 
+/* Define to 1 if you have backtrace(3). */
+#undef HAVE_BACKTRACE
+
 /* Define to 1 if you have the <dlfcn.h> header file. */
 #undef HAVE_DLFCN_H
 
-/* Define to 1 if you have the <execinfo.h> header file. */
-#undef HAVE_EXECINFO_H
-
 /* Define to 1 if you have the <inttypes.h> header file. */
 #undef HAVE_INTTYPES_H
-
-/* Define to 1 if you have the `execinfo' library (-lexecinfo). */
-#undef HAVE_LIBEXECINFO
 
 /* Define to 1 if you have the <linux/if_alg.h> header file. */
 #undef HAVE_LINUX_IF_ALG_H
@@ -84,3 +81,14 @@
 
 /* Directory for Ethernet daemon storage files */
 #undef WIRED_STORAGEDIR
+
+/* Enable large inode numbers on Mac OS X 10.5.  */
+#ifndef _DARWIN_USE_64_BIT_INODE
+# define _DARWIN_USE_64_BIT_INODE 1
+#endif
+
+/* Number of bits in a file offset, on hosts where this is settable. */
+#undef _FILE_OFFSET_BITS
+
+/* Define for large files, on AIX-style hosts. */
+#undef _LARGE_FILES

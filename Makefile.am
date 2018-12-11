@@ -54,7 +54,8 @@ ell_headers = ell/util.h \
 			ell/file.h \
 			ell/dir.h \
 			ell/net.h \
-			ell/dhcp.h
+			ell/dhcp.h \
+			ell/cert.h
 
 ell_sources = ell/private.h \
 			ell/missing.h \
@@ -111,7 +112,9 @@ ell_sources = ell/private.h \
 			ell/dhcp-private.h \
 			ell/dhcp.c \
 			ell/dhcp-transport.c \
-			ell/dhcp-lease.c
+			ell/dhcp-lease.c \
+			ell/cert-private.h \
+			ell/cert.c
 
 ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources)
 endif
@@ -184,6 +187,8 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h \
 					src/adhoc.h src/adhoc.c \
 					src/sae.h src/sae.c \
 					src/nl80211util.h src/nl80211util.c \
+					src/ecdh.h src/ecdh.c \
+					src/owe.h src/owe.c \
 					$(eap_sources) \
 					$(builtin_sources)
 src_iwd_LDADD = $(ell_ldadd) -ldl
@@ -297,8 +302,11 @@ unit_tests = unit/test-cmac-aes \
 		unit/test-crypto unit/test-eapol unit/test-mpdu \
 		unit/test-ie unit/test-ssid-to-utf8 unit/test-ssid-security \
 		unit/test-arc4 unit/test-wsc unit/test-eap-mschapv2 \
-		unit/test-eap-sim unit/test-client unit/test-ecc \
-		unit/test-sae
+		unit/test-eap-sim unit/test-ecc unit/test-sae unit/test-ecdh
+
+if CLIENT
+unit_tests += unit/test-client
+endif
 
 
 ell_pem_files = cert-ca-key.pem cert-client-key.pem cert-client-key-pkcs8.pem \
@@ -404,6 +412,7 @@ unit_test_eap_mschapv2_SOURCES = src/eap-mschapv2.h src/eap-mschapv2.c \
 				unit/test-eap-mschapv2.c
 unit_test_eap_mschapv2_LDADD = $(ell_ldadd)
 
+if CLIENT
 unit_test_client_SOURCES = unit/test-client.c \
 				client/adapter.c \
 				client/agent.h client/agent.c \
@@ -414,6 +423,7 @@ unit_test_client_SOURCES = unit/test-client.c \
 				client/network.h client/network.c \
 				client/properties.h client/properties.c
 unit_test_client_LDADD = $(ell_ldadd) -lreadline
+endif
 
 unit_test_ecc_SOURCES = unit/test-ecc.c src/ecc.c src/ecc.h
 unit_test_ecc_LDADD = $(ell_ldadd)
@@ -426,6 +436,12 @@ unit_test_sae_SOURCES = unit/test-sae.c \
 				src/util.h src/util.c \
 				src/ecc.h src/ecc.c
 unit_test_sae_LDADD = $(ell_ldadd)
+
+unit_test_ecdh_SOURCES = unit/test-ecdh.c \
+				src/ecdh.h src/ecdh.c \
+				src/ecc.h src/ecc.c
+unit_test_ecdh_LDADD = $(ell_ldadd)
+unit_test_ecdh_LDFLAGS = -Wl,-wrap,l_getrandom
 
 TESTS = $(unit_tests)
 

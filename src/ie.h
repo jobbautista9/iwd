@@ -224,6 +224,7 @@ enum ie_type {
 	IE_TYPE_EXTENDED_REQUEST                     = 256 + 10,
 	IE_TYPE_ESTIMATED_SERVICE_PARAMETERS         = 256 + 11,
 	IE_TYPE_FUTURE_CHANNEL_GUIDANCE              = 256 + 14,
+	IE_TYPE_OWE_DH_PARAM                         = 256 + 32,
 };
 
 enum ie_rsn_cipher_suite {
@@ -250,6 +251,7 @@ enum ie_rsn_akm_suite {
 	IE_RSN_AKM_SUITE_8021X_SUITE_B_SHA256	= 0x0400,
 	IE_RSN_AKM_SUITE_8021X_SUITE_B_SHA384	= 0x0800,
 	IE_RSN_AKM_SUITE_FT_OVER_8021X_SHA384	= 0x1000,
+	IE_RSN_AKM_SUITE_OWE			= 0x2000,
 };
 
 #define IE_AKM_IS_SAE(akm) \

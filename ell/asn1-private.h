@@ -46,8 +46,14 @@ static inline int asn1_parse_definite_length(const uint8_t **buf,
 	int n;
 	size_t result = 0;
 
-	(*len)--;
+	/* Decrease the buffer length left */
+	if ((*len)-- < 1)
+		return -1;
 
+	/*
+	 * If short form length, move the pointer to start of data and
+	 * return the data length.
+	 */
 	if (!(**buf & 0x80))
 		return *(*buf)++;
 
@@ -60,6 +66,22 @@ static inline int asn1_parse_definite_length(const uint8_t **buf,
 		result = (result << 8) | *(*buf)++;
 
 	return result;
+}
+
+static inline void asn1_write_definite_length(uint8_t **buf, size_t len)
+{
+	int n;
+
+	if (len < 0x80) {
+		*(*buf)++ = len;
+		return;
+	}
+
+	for (n = 1; len >> (n * 8); n++);
+	*(*buf)++ = 0x80 | n;
+
+	while (n--)
+		*(*buf)++ = len >> (n * 8);
 }
 
 /* Return index'th element in a DER SEQUENCE */

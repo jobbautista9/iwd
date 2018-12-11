@@ -28,9 +28,12 @@
 #include <errno.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <limits.h>
 #include <signal.h>
 #include <sys/epoll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 
 #include "signal.h"
 #include "queue.h"
@@ -38,6 +41,7 @@
 #include "util.h"
 #include "main.h"
 #include "private.h"
+#include "timeout.h"
 
 /**
  * SECTION:main
@@ -54,10 +58,16 @@
 #define WATCH_FLAG_DISPATCHING	1
 #define WATCH_FLAG_DESTROYED	2
 
+#define WATCHDOG_TRIGGER_FREQ	2
+
 static int epoll_fd;
 static bool epoll_running;
 static bool epoll_terminate;
 static int idle_id;
+
+static int notify_fd;
+
+static struct l_timeout *watchdog;
 
 static struct l_queue *idle_list;
 
@@ -324,6 +334,78 @@ static void idle_dispatch(void *data, void *user_data)
 	idle->flags &= ~IDLE_FLAG_DISPATCHING;
 }
 
+static int sd_notify(const char *state)
+{
+	int err;
+
+	if (notify_fd <= 0)
+		return -ENOTCONN;
+
+	err = send(notify_fd, state, strlen(state), MSG_NOSIGNAL);
+	if (err < 0)
+		return -errno;
+
+	return 0;
+}
+
+static void watchdog_callback(struct l_timeout *timeout, void *user_data)
+{
+	int msec = L_PTR_TO_INT(user_data);
+
+	sd_notify("WATCHDOG=1");
+
+	l_timeout_modify_ms(timeout, msec);
+}
+
+static void create_sd_notify_socket(void)
+{
+	const char *sock;
+	struct sockaddr_un addr;
+	const char *watchdog_usec;
+	int msec;
+
+	/* check if NOTIFY_SOCKET has been set */
+	sock = getenv("NOTIFY_SOCKET");
+	if (!sock)
+		return;
+
+	/* check for abstract socket or absolute path */
+	if (sock[0] != '@' && sock[0] != '/')
+		return;
+
+	notify_fd = socket(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+	if (notify_fd < 0) {
+		notify_fd = 0;
+		return;
+	}
+
+	memset(&addr, 0, sizeof(addr));
+	addr.sun_family = AF_UNIX;
+	strncpy(addr.sun_path, sock, sizeof(addr.sun_path) - 1);
+
+	if (addr.sun_path[0] == '@')
+		addr.sun_path[0] = '\0';
+
+	if (bind(notify_fd, (struct sockaddr *) &addr, sizeof(addr)) < 0) {
+		close(notify_fd);
+		notify_fd = 0;
+		return;
+	}
+
+	watchdog_usec = getenv("WATCHDOG_USEC");
+	if (!watchdog_usec)
+		return;
+
+	msec = atoi(watchdog_usec) / 1000;
+	if (msec < WATCHDOG_TRIGGER_FREQ)
+		return;
+
+	msec /= WATCHDOG_TRIGGER_FREQ;
+
+	watchdog = l_timeout_create_ms(msec, watchdog_callback,
+					L_INT_TO_PTR(msec), NULL);
+}
+
 /**
  * l_main_init:
  *
@@ -341,6 +423,8 @@ LIB_EXPORT bool l_main_init(void)
 
 	if (!create_epoll())
 		return false;
+
+	create_sd_notify_socket();
 
 	epoll_terminate = false;
 
@@ -437,6 +521,13 @@ LIB_EXPORT int l_main_run(void)
 	}
 
 	epoll_running = false;
+
+	if (notify_fd) {
+		close(notify_fd);
+		notify_fd = 0;
+		l_timeout_remove(watchdog);
+		watchdog = NULL;
+	}
 
 	return EXIT_SUCCESS;
 }
