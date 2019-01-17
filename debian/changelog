@@ -1,3 +1,11 @@
+iwd (0.14-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Update disable-sae-test.patch to apply again
+  * Use a proper and new-style dh compat 12
+
+ -- Andreas Henriksson <andreas@fatal.se>  Thu, 17 Jan 2019 13:00:11 +0100
+
 iwd (0.13-1) unstable; urgency=medium
 
   * New upstream release.
