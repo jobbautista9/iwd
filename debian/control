@@ -2,7 +2,10 @@ Source: iwd
 Section: net
 Priority: optional
 Maintainer: Andreas Henriksson <andreas@fatal.se>
-Build-Depends: debhelper (>= 11.4.1~), libreadline-dev, libdbus-1-dev, systemd
+Build-Depends: debhelper-compat (= 12),
+               libreadline-dev,
+               libdbus-1-dev,
+               systemd
 Standards-Version: 4.2.1
 Vcs-Git: https://salsa.debian.org/debian/iwd.git
 Vcs-Browser: https://salsa.debian.org/debian/iwd
