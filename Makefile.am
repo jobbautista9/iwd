@@ -55,7 +55,9 @@ ell_headers = ell/util.h \
 			ell/dir.h \
 			ell/net.h \
 			ell/dhcp.h \
-			ell/cert.h
+			ell/cert.h \
+			ell/ecc.h \
+			ell/ecdh.h
 
 ell_sources = ell/private.h \
 			ell/missing.h \
@@ -102,6 +104,8 @@ ell_sources = ell/private.h \
 			ell/tls-private.h \
 			ell/tls.c \
 			ell/tls-record.c \
+			ell/tls-suites.c \
+			ell/tls-extensions.c \
 			ell/uuid.c \
 			ell/key.c \
 			ell/pkcs5-private.h \
@@ -114,7 +118,11 @@ ell_sources = ell/private.h \
 			ell/dhcp-transport.c \
 			ell/dhcp-lease.c \
 			ell/cert-private.h \
-			ell/cert.c
+			ell/cert.c \
+			ell/ecc-external.c \
+			ell/ecc-private.h \
+			ell/ecc.c \
+			ell/ecdh.c
 
 ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources)
 endif
@@ -149,7 +157,6 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 				src/eap-pwd.c \
 				src/util.h src/util.c \
 				src/crypto.h src/crypto.c \
-				src/ecc.h src/ecc.c \
 				src/wscutil.h src/wscutil.c \
 				src/simutil.h src/simutil.c \
 				src/simauth.h src/simauth.c \
@@ -187,7 +194,6 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h \
 					src/adhoc.h src/adhoc.c \
 					src/sae.h src/sae.c \
 					src/nl80211util.h src/nl80211util.c \
-					src/ecdh.h src/ecdh.c \
 					src/owe.h src/owe.c \
 					$(eap_sources) \
 					$(builtin_sources)
@@ -302,7 +308,7 @@ unit_tests = unit/test-cmac-aes \
 		unit/test-crypto unit/test-eapol unit/test-mpdu \
 		unit/test-ie unit/test-ssid-to-utf8 unit/test-ssid-security \
 		unit/test-arc4 unit/test-wsc unit/test-eap-mschapv2 \
-		unit/test-eap-sim unit/test-ecc unit/test-sae unit/test-ecdh
+		unit/test-eap-sim unit/test-sae
 
 if CLIENT
 unit_tests += unit/test-client
@@ -409,6 +415,7 @@ unit_test_wsc_LDADD = $(ell_ldadd)
 
 unit_test_eap_mschapv2_SOURCES = src/eap-mschapv2.h src/eap-mschapv2.c \
 				src/eap.c src/eap.h src/eap-private.h \
+				src/mschaputil.h src/mschaputil.c \
 				unit/test-eap-mschapv2.c
 unit_test_eap_mschapv2_LDADD = $(ell_ldadd)
 
@@ -425,23 +432,13 @@ unit_test_client_SOURCES = unit/test-client.c \
 unit_test_client_LDADD = $(ell_ldadd) -lreadline
 endif
 
-unit_test_ecc_SOURCES = unit/test-ecc.c src/ecc.c src/ecc.h
-unit_test_ecc_LDADD = $(ell_ldadd)
-
 unit_test_sae_SOURCES = unit/test-sae.c \
 				src/sae.h src/sae.c \
 				src/crypto.h src/crypto.c \
 				src/ie.h src/ie.c \
 				src/handshake.h src/handshake.c \
-				src/util.h src/util.c \
-				src/ecc.h src/ecc.c
+				src/util.h src/util.c
 unit_test_sae_LDADD = $(ell_ldadd)
-
-unit_test_ecdh_SOURCES = unit/test-ecdh.c \
-				src/ecdh.h src/ecdh.c \
-				src/ecc.h src/ecc.c
-unit_test_ecdh_LDADD = $(ell_ldadd)
-unit_test_ecdh_LDFLAGS = -Wl,-wrap,l_getrandom
 
 TESTS = $(unit_tests)
 

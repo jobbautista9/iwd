@@ -145,22 +145,24 @@ am__ell_libell_internal_la_SOURCES_DIST = ell/util.h ell/test.h \
 	ell/dbus-service.h ell/dbus-client.h ell/hwdb.h ell/cipher.h \
 	ell/random.h ell/uintset.h ell/base64.h ell/pem.h ell/tls.h \
 	ell/uuid.h ell/key.h ell/pkcs5.h ell/file.h ell/dir.h \
-	ell/net.h ell/dhcp.h ell/cert.h ell/private.h ell/missing.h \
-	ell/util.c ell/test.c ell/strv.c ell/utf8.c ell/queue.c \
-	ell/hashmap.c ell/string.c ell/settings.c ell/main.c \
-	ell/idle.c ell/signal.c ell/timeout.c ell/io.c ell/ringbuf.c \
-	ell/log.c ell/plugin.c ell/checksum.c ell/netlink-private.h \
-	ell/netlink.c ell/genl-private.h ell/genl.c ell/dbus-private.h \
-	ell/dbus.c ell/dbus-message.c ell/dbus-util.c \
-	ell/dbus-service.c ell/dbus-client.c ell/dbus-name-cache.c \
-	ell/dbus-filter.c ell/gvariant-private.h ell/gvariant-util.c \
+	ell/net.h ell/dhcp.h ell/cert.h ell/ecc.h ell/ecdh.h \
+	ell/private.h ell/missing.h ell/util.c ell/test.c ell/strv.c \
+	ell/utf8.c ell/queue.c ell/hashmap.c ell/string.c \
+	ell/settings.c ell/main.c ell/idle.c ell/signal.c \
+	ell/timeout.c ell/io.c ell/ringbuf.c ell/log.c ell/plugin.c \
+	ell/checksum.c ell/netlink-private.h ell/netlink.c \
+	ell/genl-private.h ell/genl.c ell/dbus-private.h ell/dbus.c \
+	ell/dbus-message.c ell/dbus-util.c ell/dbus-service.c \
+	ell/dbus-client.c ell/dbus-name-cache.c ell/dbus-filter.c \
+	ell/gvariant-private.h ell/gvariant-util.c \
 	ell/siphash-private.h ell/siphash.c ell/hwdb.c ell/cipher.c \
 	ell/random.c ell/uintset.c ell/base64.c ell/asn1-private.h \
 	ell/pem.c ell/tls-private.h ell/tls.c ell/tls-record.c \
-	ell/uuid.c ell/key.c ell/pkcs5-private.h ell/pkcs5.c \
-	ell/file.c ell/dir.c ell/net.c ell/dhcp-private.h ell/dhcp.c \
-	ell/dhcp-transport.c ell/dhcp-lease.c ell/cert-private.h \
-	ell/cert.c
+	ell/tls-suites.c ell/tls-extensions.c ell/uuid.c ell/key.c \
+	ell/pkcs5-private.h ell/pkcs5.c ell/file.c ell/dir.c ell/net.c \
+	ell/dhcp-private.h ell/dhcp.c ell/dhcp-transport.c \
+	ell/dhcp-lease.c ell/cert-private.h ell/cert.c \
+	ell/ecc-external.c ell/ecc-private.h ell/ecc.c ell/ecdh.c
 am__objects_1 =
 am__dirstamp = $(am__leading_dot)dirstamp
 @EXTERNAL_ELL_FALSE@am__objects_2 = ell/util.lo ell/test.lo \
@@ -177,10 +179,12 @@ am__dirstamp = $(am__leading_dot)dirstamp
 @EXTERNAL_ELL_FALSE@	ell/siphash.lo ell/hwdb.lo ell/cipher.lo \
 @EXTERNAL_ELL_FALSE@	ell/random.lo ell/uintset.lo ell/base64.lo \
 @EXTERNAL_ELL_FALSE@	ell/pem.lo ell/tls.lo ell/tls-record.lo \
+@EXTERNAL_ELL_FALSE@	ell/tls-suites.lo ell/tls-extensions.lo \
 @EXTERNAL_ELL_FALSE@	ell/uuid.lo ell/key.lo ell/pkcs5.lo \
 @EXTERNAL_ELL_FALSE@	ell/file.lo ell/dir.lo ell/net.lo \
 @EXTERNAL_ELL_FALSE@	ell/dhcp.lo ell/dhcp-transport.lo \
-@EXTERNAL_ELL_FALSE@	ell/dhcp-lease.lo ell/cert.lo
+@EXTERNAL_ELL_FALSE@	ell/dhcp-lease.lo ell/cert.lo \
+@EXTERNAL_ELL_FALSE@	ell/ecc-external.lo ell/ecc.lo ell/ecdh.lo
 @EXTERNAL_ELL_FALSE@am_ell_libell_internal_la_OBJECTS =  \
 @EXTERNAL_ELL_FALSE@	$(am__objects_1) $(am__objects_2)
 ell_libell_internal_la_OBJECTS = $(am_ell_libell_internal_la_OBJECTS)
@@ -207,8 +211,8 @@ am__EXEEXT_8 = unit/test-cmac-aes$(EXEEXT) unit/test-hmac-md5$(EXEEXT) \
 	unit/test-ssid-to-utf8$(EXEEXT) \
 	unit/test-ssid-security$(EXEEXT) unit/test-arc4$(EXEEXT) \
 	unit/test-wsc$(EXEEXT) unit/test-eap-mschapv2$(EXEEXT) \
-	unit/test-eap-sim$(EXEEXT) unit/test-ecc$(EXEEXT) \
-	unit/test-sae$(EXEEXT) unit/test-ecdh$(EXEEXT) $(am__EXEEXT_7)
+	unit/test-eap-sim$(EXEEXT) unit/test-sae$(EXEEXT) \
+	$(am__EXEEXT_7)
 @MAINTAINER_MODE_TRUE@am__EXEEXT_9 = $(am__EXEEXT_8)
 PROGRAMS = $(bin_PROGRAMS) $(libexec_PROGRAMS) $(noinst_PROGRAMS)
 am__client_iwctl_SOURCES_DIST = client/main.c client/adapter.c \
@@ -262,23 +266,22 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/knownnetworks.c src/rfkill.h src/rfkill.c src/ftutil.h \
 	src/ftutil.c src/ap.h src/ap.c src/adhoc.h src/adhoc.c \
 	src/sae.h src/sae.c src/nl80211util.h src/nl80211util.c \
-	src/ecdh.h src/ecdh.c src/owe.h src/owe.c src/eap.c src/eap.h \
-	src/eap-private.h src/eap-wsc.c src/eap-wsc.h src/eap-md5.c \
-	src/eap-tls.c src/eap-ttls.c src/eap-mschapv2.c \
-	src/eap-mschapv2.h src/eap-sim.c src/eap-aka.c src/eap-peap.c \
-	src/eap-gtc.c src/eap-pwd.c src/util.h src/util.c src/crypto.h \
-	src/crypto.c src/ecc.h src/ecc.c src/wscutil.h src/wscutil.c \
-	src/simutil.h src/simutil.c src/simauth.h src/simauth.c \
-	src/watchlist.h src/watchlist.c src/eap-tls-common.h \
-	src/eap-tls-common.c src/mschaputil.h src/mschaputil.c \
-	plugins/sim_hardcoded.c plugins/ofono.c
+	src/owe.h src/owe.c src/eap.c src/eap.h src/eap-private.h \
+	src/eap-wsc.c src/eap-wsc.h src/eap-md5.c src/eap-tls.c \
+	src/eap-ttls.c src/eap-mschapv2.c src/eap-mschapv2.h \
+	src/eap-sim.c src/eap-aka.c src/eap-peap.c src/eap-gtc.c \
+	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
+	src/wscutil.h src/wscutil.c src/simutil.h src/simutil.c \
+	src/simauth.h src/simauth.c src/watchlist.h src/watchlist.c \
+	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
+	src/mschaputil.c plugins/sim_hardcoded.c plugins/ofono.c
 am__objects_3 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
 	src/eap-md5.$(OBJEXT) src/eap-tls.$(OBJEXT) \
 	src/eap-ttls.$(OBJEXT) src/eap-mschapv2.$(OBJEXT) \
 	src/eap-sim.$(OBJEXT) src/eap-aka.$(OBJEXT) \
 	src/eap-peap.$(OBJEXT) src/eap-gtc.$(OBJEXT) \
 	src/eap-pwd.$(OBJEXT) src/util.$(OBJEXT) src/crypto.$(OBJEXT) \
-	src/ecc.$(OBJEXT) src/wscutil.$(OBJEXT) src/simutil.$(OBJEXT) \
+	src/wscutil.$(OBJEXT) src/simutil.$(OBJEXT) \
 	src/simauth.$(OBJEXT) src/watchlist.$(OBJEXT) \
 	src/eap-tls-common.$(OBJEXT) src/mschaputil.$(OBJEXT)
 @DAEMON_TRUE@@SIM_HARDCODED_TRUE@am__objects_4 = plugins/sim_hardcoded.$(OBJEXT)
@@ -297,9 +300,8 @@ am__objects_6 = $(am__objects_4) $(am__objects_5)
 @DAEMON_TRUE@	src/knownnetworks.$(OBJEXT) src/rfkill.$(OBJEXT) \
 @DAEMON_TRUE@	src/ftutil.$(OBJEXT) src/ap.$(OBJEXT) \
 @DAEMON_TRUE@	src/adhoc.$(OBJEXT) src/sae.$(OBJEXT) \
-@DAEMON_TRUE@	src/nl80211util.$(OBJEXT) src/ecdh.$(OBJEXT) \
-@DAEMON_TRUE@	src/owe.$(OBJEXT) $(am__objects_3) \
-@DAEMON_TRUE@	$(am__objects_6)
+@DAEMON_TRUE@	src/nl80211util.$(OBJEXT) src/owe.$(OBJEXT) \
+@DAEMON_TRUE@	$(am__objects_3) $(am__objects_6)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am__tools_hwsim_SOURCES_DIST = tools/hwsim.c src/mpdu.h src/util.h \
 	src/util.c src/storage.h src/storage.c src/common.h \
@@ -342,7 +344,8 @@ am_unit_test_crypto_OBJECTS = unit/test-crypto.$(OBJEXT) \
 unit_test_crypto_OBJECTS = $(am_unit_test_crypto_OBJECTS)
 unit_test_crypto_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_unit_test_eap_mschapv2_OBJECTS = src/eap-mschapv2.$(OBJEXT) \
-	src/eap.$(OBJEXT) unit/test-eap-mschapv2.$(OBJEXT)
+	src/eap.$(OBJEXT) src/mschaputil.$(OBJEXT) \
+	unit/test-eap-mschapv2.$(OBJEXT)
 unit_test_eap_mschapv2_OBJECTS = $(am_unit_test_eap_mschapv2_OBJECTS)
 unit_test_eap_mschapv2_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_unit_test_eap_sim_OBJECTS = unit/test-eap-sim.$(OBJEXT) \
@@ -362,17 +365,6 @@ am_unit_test_eapol_OBJECTS = unit/test-eapol.$(OBJEXT) \
 	src/eap-tls-common.$(OBJEXT) src/mschaputil.$(OBJEXT)
 unit_test_eapol_OBJECTS = $(am_unit_test_eapol_OBJECTS)
 unit_test_eapol_DEPENDENCIES = $(am__DEPENDENCIES_1)
-am_unit_test_ecc_OBJECTS = unit/test-ecc.$(OBJEXT) src/ecc.$(OBJEXT)
-unit_test_ecc_OBJECTS = $(am_unit_test_ecc_OBJECTS)
-unit_test_ecc_DEPENDENCIES = $(am__DEPENDENCIES_1)
-am_unit_test_ecdh_OBJECTS = unit/test-ecdh.$(OBJEXT) \
-	src/ecdh.$(OBJEXT) src/ecc.$(OBJEXT)
-unit_test_ecdh_OBJECTS = $(am_unit_test_ecdh_OBJECTS)
-unit_test_ecdh_DEPENDENCIES = $(am__DEPENDENCIES_1)
-unit_test_ecdh_LINK = $(LIBTOOL) $(AM_V_lt) --tag=CC \
-	$(AM_LIBTOOLFLAGS) $(LIBTOOLFLAGS) --mode=link $(CCLD) \
-	$(AM_CFLAGS) $(CFLAGS) $(unit_test_ecdh_LDFLAGS) $(LDFLAGS) -o \
-	$@
 am_unit_test_hmac_md5_OBJECTS = unit/test-hmac-md5.$(OBJEXT) \
 	src/crypto.$(OBJEXT)
 unit_test_hmac_md5_OBJECTS = $(am_unit_test_hmac_md5_OBJECTS)
@@ -402,7 +394,7 @@ unit_test_prf_sha1_OBJECTS = $(am_unit_test_prf_sha1_OBJECTS)
 unit_test_prf_sha1_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_unit_test_sae_OBJECTS = unit/test-sae.$(OBJEXT) src/sae.$(OBJEXT) \
 	src/crypto.$(OBJEXT) src/ie.$(OBJEXT) src/handshake.$(OBJEXT) \
-	src/util.$(OBJEXT) src/ecc.$(OBJEXT)
+	src/util.$(OBJEXT)
 unit_test_sae_OBJECTS = $(am_unit_test_sae_OBJECTS)
 unit_test_sae_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_unit_test_ssid_security_OBJECTS =  \
@@ -429,10 +421,10 @@ am__wired_ead_SOURCES_DIST = wired/main.c wired/ethdev.h \
 	src/eap-ttls.c src/eap-mschapv2.c src/eap-mschapv2.h \
 	src/eap-sim.c src/eap-aka.c src/eap-peap.c src/eap-gtc.c \
 	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
-	src/ecc.h src/ecc.c src/wscutil.h src/wscutil.c src/simutil.h \
-	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
-	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c \
-	src/mschaputil.h src/mschaputil.c
+	src/wscutil.h src/wscutil.c src/simutil.h src/simutil.c \
+	src/simauth.h src/simauth.c src/watchlist.h src/watchlist.c \
+	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
+	src/mschaputil.c
 @WIRED_TRUE@am_wired_ead_OBJECTS = wired/main.$(OBJEXT) \
 @WIRED_TRUE@	wired/ethdev.$(OBJEXT) wired/network.$(OBJEXT) \
 @WIRED_TRUE@	wired/dbus.$(OBJEXT) $(am__objects_3)
@@ -477,8 +469,7 @@ SOURCES = $(ell_libell_internal_la_SOURCES) $(client_iwctl_SOURCES) \
 	$(unit_test_arc4_SOURCES) $(unit_test_client_SOURCES) \
 	$(unit_test_cmac_aes_SOURCES) $(unit_test_crypto_SOURCES) \
 	$(unit_test_eap_mschapv2_SOURCES) $(unit_test_eap_sim_SOURCES) \
-	$(unit_test_eapol_SOURCES) $(unit_test_ecc_SOURCES) \
-	$(unit_test_ecdh_SOURCES) $(unit_test_hmac_md5_SOURCES) \
+	$(unit_test_eapol_SOURCES) $(unit_test_hmac_md5_SOURCES) \
 	$(unit_test_hmac_sha1_SOURCES) \
 	$(unit_test_hmac_sha256_SOURCES) $(unit_test_ie_SOURCES) \
 	$(unit_test_kdf_sha256_SOURCES) $(unit_test_mpdu_SOURCES) \
@@ -494,8 +485,7 @@ DIST_SOURCES = $(am__ell_libell_internal_la_SOURCES_DIST) \
 	$(unit_test_arc4_SOURCES) $(am__unit_test_client_SOURCES_DIST) \
 	$(unit_test_cmac_aes_SOURCES) $(unit_test_crypto_SOURCES) \
 	$(unit_test_eap_mschapv2_SOURCES) $(unit_test_eap_sim_SOURCES) \
-	$(unit_test_eapol_SOURCES) $(unit_test_ecc_SOURCES) \
-	$(unit_test_ecdh_SOURCES) $(unit_test_hmac_md5_SOURCES) \
+	$(unit_test_eapol_SOURCES) $(unit_test_hmac_md5_SOURCES) \
 	$(unit_test_hmac_sha1_SOURCES) \
 	$(unit_test_hmac_sha256_SOURCES) $(unit_test_ie_SOURCES) \
 	$(unit_test_kdf_sha256_SOURCES) $(unit_test_mpdu_SOURCES) \
@@ -930,7 +920,9 @@ builtin_sources = $(am__append_3) $(am__append_5)
 @EXTERNAL_ELL_FALSE@			ell/dir.h \
 @EXTERNAL_ELL_FALSE@			ell/net.h \
 @EXTERNAL_ELL_FALSE@			ell/dhcp.h \
-@EXTERNAL_ELL_FALSE@			ell/cert.h
+@EXTERNAL_ELL_FALSE@			ell/cert.h \
+@EXTERNAL_ELL_FALSE@			ell/ecc.h \
+@EXTERNAL_ELL_FALSE@			ell/ecdh.h
 
 @EXTERNAL_ELL_FALSE@ell_sources = ell/private.h \
 @EXTERNAL_ELL_FALSE@			ell/missing.h \
@@ -977,6 +969,8 @@ builtin_sources = $(am__append_3) $(am__append_5)
 @EXTERNAL_ELL_FALSE@			ell/tls-private.h \
 @EXTERNAL_ELL_FALSE@			ell/tls.c \
 @EXTERNAL_ELL_FALSE@			ell/tls-record.c \
+@EXTERNAL_ELL_FALSE@			ell/tls-suites.c \
+@EXTERNAL_ELL_FALSE@			ell/tls-extensions.c \
 @EXTERNAL_ELL_FALSE@			ell/uuid.c \
 @EXTERNAL_ELL_FALSE@			ell/key.c \
 @EXTERNAL_ELL_FALSE@			ell/pkcs5-private.h \
@@ -989,7 +983,11 @@ builtin_sources = $(am__append_3) $(am__append_5)
 @EXTERNAL_ELL_FALSE@			ell/dhcp-transport.c \
 @EXTERNAL_ELL_FALSE@			ell/dhcp-lease.c \
 @EXTERNAL_ELL_FALSE@			ell/cert-private.h \
-@EXTERNAL_ELL_FALSE@			ell/cert.c
+@EXTERNAL_ELL_FALSE@			ell/cert.c \
+@EXTERNAL_ELL_FALSE@			ell/ecc-external.c \
+@EXTERNAL_ELL_FALSE@			ell/ecc-private.h \
+@EXTERNAL_ELL_FALSE@			ell/ecc.c \
+@EXTERNAL_ELL_FALSE@			ell/ecdh.c
 
 @EXTERNAL_ELL_FALSE@ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources)
 @DBUS_POLICY_TRUE@dbus_datadir = @DBUS_DATADIR@/dbus-1/system.d
@@ -1013,7 +1011,6 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 				src/eap-pwd.c \
 				src/util.h src/util.c \
 				src/crypto.h src/crypto.c \
-				src/ecc.h src/ecc.c \
 				src/wscutil.h src/wscutil.c \
 				src/simutil.h src/simutil.c \
 				src/simauth.h src/simauth.c \
@@ -1048,7 +1045,6 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/adhoc.h src/adhoc.c \
 @DAEMON_TRUE@					src/sae.h src/sae.c \
 @DAEMON_TRUE@					src/nl80211util.h src/nl80211util.c \
-@DAEMON_TRUE@					src/ecdh.h src/ecdh.c \
 @DAEMON_TRUE@					src/owe.h src/owe.c \
 @DAEMON_TRUE@					$(eap_sources) \
 @DAEMON_TRUE@					$(builtin_sources)
@@ -1106,7 +1102,7 @@ unit_tests = unit/test-cmac-aes unit/test-hmac-md5 unit/test-hmac-sha1 \
 	unit/test-crypto unit/test-eapol unit/test-mpdu unit/test-ie \
 	unit/test-ssid-to-utf8 unit/test-ssid-security unit/test-arc4 \
 	unit/test-wsc unit/test-eap-mschapv2 unit/test-eap-sim \
-	unit/test-ecc unit/test-sae unit/test-ecdh $(am__append_20)
+	unit/test-sae $(am__append_20)
 ell_pem_files = cert-ca-key.pem cert-client-key.pem cert-client-key-pkcs8.pem \
 		cert-server-key.pem cert-server-key-pkcs8.pem \
 		cert-ca.pem cert-client.pem cert-server.pem
@@ -1200,6 +1196,7 @@ unit_test_wsc_SOURCES = unit/test-wsc.c src/wscutil.h src/wscutil.c \
 unit_test_wsc_LDADD = $(ell_ldadd)
 unit_test_eap_mschapv2_SOURCES = src/eap-mschapv2.h src/eap-mschapv2.c \
 				src/eap.c src/eap.h src/eap-private.h \
+				src/mschaputil.h src/mschaputil.c \
 				unit/test-eap-mschapv2.c
 
 unit_test_eap_mschapv2_LDADD = $(ell_ldadd)
@@ -1214,23 +1211,14 @@ unit_test_eap_mschapv2_LDADD = $(ell_ldadd)
 @CLIENT_TRUE@				client/properties.h client/properties.c
 
 @CLIENT_TRUE@unit_test_client_LDADD = $(ell_ldadd) -lreadline
-unit_test_ecc_SOURCES = unit/test-ecc.c src/ecc.c src/ecc.h
-unit_test_ecc_LDADD = $(ell_ldadd)
 unit_test_sae_SOURCES = unit/test-sae.c \
 				src/sae.h src/sae.c \
 				src/crypto.h src/crypto.c \
 				src/ie.h src/ie.c \
 				src/handshake.h src/handshake.c \
-				src/util.h src/util.c \
-				src/ecc.h src/ecc.c
+				src/util.h src/util.c
 
 unit_test_sae_LDADD = $(ell_ldadd)
-unit_test_ecdh_SOURCES = unit/test-ecdh.c \
-				src/ecdh.h src/ecdh.c \
-				src/ecc.h src/ecc.c
-
-unit_test_ecdh_LDADD = $(ell_ldadd)
-unit_test_ecdh_LDFLAGS = -Wl,-wrap,l_getrandom
 manual_pages = doc/iwmon.1
 @BUILD_DOCS_TRUE@dist_man_MANS = $(manual_pages)
 EXTRA_DIST = src/genbuiltin src/iwd.service.in src/net.connman.iwd.service \
@@ -1362,6 +1350,9 @@ ell/base64.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/pem.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/tls.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/tls-record.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/tls-suites.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/tls-extensions.lo: ell/$(am__dirstamp) \
+	ell/$(DEPDIR)/$(am__dirstamp)
 ell/uuid.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/key.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/pkcs5.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
@@ -1373,6 +1364,9 @@ ell/dhcp-transport.lo: ell/$(am__dirstamp) \
 	ell/$(DEPDIR)/$(am__dirstamp)
 ell/dhcp-lease.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/cert.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/ecc-external.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/ecc.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/ecdh.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 
 ell/libell-internal.la: $(ell_libell_internal_la_OBJECTS) $(ell_libell_internal_la_DEPENDENCIES) $(EXTRA_ell_libell_internal_la_DEPENDENCIES) ell/$(am__dirstamp)
 	$(AM_V_CCLD)$(LINK) $(am_ell_libell_internal_la_rpath) $(ell_libell_internal_la_OBJECTS) $(ell_libell_internal_la_LIBADD) $(LIBS)
@@ -1594,7 +1588,6 @@ src/adhoc.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/sae.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/nl80211util.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
-src/ecdh.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/owe.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/eap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/eap-wsc.$(OBJEXT): src/$(am__dirstamp) \
@@ -1617,7 +1610,6 @@ src/eap-gtc.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/eap-pwd.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
-src/ecc.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/simutil.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/simauth.$(OBJEXT): src/$(am__dirstamp) \
@@ -1706,18 +1698,6 @@ unit/test-eapol.$(OBJEXT): unit/$(am__dirstamp) \
 unit/test-eapol$(EXEEXT): $(unit_test_eapol_OBJECTS) $(unit_test_eapol_DEPENDENCIES) $(EXTRA_unit_test_eapol_DEPENDENCIES) unit/$(am__dirstamp)
 	@rm -f unit/test-eapol$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(unit_test_eapol_OBJECTS) $(unit_test_eapol_LDADD) $(LIBS)
-unit/test-ecc.$(OBJEXT): unit/$(am__dirstamp) \
-	unit/$(DEPDIR)/$(am__dirstamp)
-
-unit/test-ecc$(EXEEXT): $(unit_test_ecc_OBJECTS) $(unit_test_ecc_DEPENDENCIES) $(EXTRA_unit_test_ecc_DEPENDENCIES) unit/$(am__dirstamp)
-	@rm -f unit/test-ecc$(EXEEXT)
-	$(AM_V_CCLD)$(LINK) $(unit_test_ecc_OBJECTS) $(unit_test_ecc_LDADD) $(LIBS)
-unit/test-ecdh.$(OBJEXT): unit/$(am__dirstamp) \
-	unit/$(DEPDIR)/$(am__dirstamp)
-
-unit/test-ecdh$(EXEEXT): $(unit_test_ecdh_OBJECTS) $(unit_test_ecdh_DEPENDENCIES) $(EXTRA_unit_test_ecdh_DEPENDENCIES) unit/$(am__dirstamp)
-	@rm -f unit/test-ecdh$(EXEEXT)
-	$(AM_V_CCLD)$(unit_test_ecdh_LINK) $(unit_test_ecdh_OBJECTS) $(unit_test_ecdh_LDADD) $(LIBS)
 unit/test-hmac-md5.$(OBJEXT): unit/$(am__dirstamp) \
 	unit/$(DEPDIR)/$(am__dirstamp)
 
@@ -1848,6 +1828,9 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/dhcp-transport.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/dhcp.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/dir.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/ecc-external.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/ecc.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/ecdh.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/file.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/genl.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/gvariant-util.Plo@am__quote@
@@ -1873,7 +1856,9 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/strv.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/test.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/timeout.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/tls-extensions.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/tls-record.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/tls-suites.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/tls.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/uintset.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/utf8.Plo@am__quote@
@@ -1907,8 +1892,6 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eapol.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eapolutil.Po@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ecc.Po@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ecdh.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ftutil.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/handshake.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ie.Po@am__quote@
@@ -1942,8 +1925,6 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-eap-mschapv2.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-eap-sim.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-eapol.Po@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-ecc.Po@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-ecdh.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-hmac-md5.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-hmac-sha1.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-hmac-sha256.Po@am__quote@
@@ -2418,23 +2399,9 @@ unit/test-eap-sim.log: unit/test-eap-sim$(EXEEXT)
 	--log-file $$b.log --trs-file $$b.trs \
 	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
 	"$$tst" $(AM_TESTS_FD_REDIRECT)
-unit/test-ecc.log: unit/test-ecc$(EXEEXT)
-	@p='unit/test-ecc$(EXEEXT)'; \
-	b='unit/test-ecc'; \
-	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
-	--log-file $$b.log --trs-file $$b.trs \
-	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
-	"$$tst" $(AM_TESTS_FD_REDIRECT)
 unit/test-sae.log: unit/test-sae$(EXEEXT)
 	@p='unit/test-sae$(EXEEXT)'; \
 	b='unit/test-sae'; \
-	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
-	--log-file $$b.log --trs-file $$b.trs \
-	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
-	"$$tst" $(AM_TESTS_FD_REDIRECT)
-unit/test-ecdh.log: unit/test-ecdh$(EXEEXT)
-	@p='unit/test-ecdh$(EXEEXT)'; \
-	b='unit/test-ecdh'; \
 	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
 	--log-file $$b.log --trs-file $$b.trs \
 	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \

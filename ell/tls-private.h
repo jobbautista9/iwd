@@ -20,13 +20,15 @@
  *
  */
 
-/* Only TLS 1.2 supported */
-#define TLS_V12		((3 << 8) | 3)
-#define TLS_V11		((3 << 8) | 2)
-#define TLS_V10		((3 << 8) | 1)
+enum l_tls_version {
+	L_TLS_V10 = ((3 << 8) | 1),
+	L_TLS_V11 = ((3 << 8) | 2),
+	L_TLS_V12 = ((3 << 8) | 3),
+	L_TLS_V13 = ((3 << 8) | 4),	/* Not supported */
+};
 
-#define TLS_VERSION	TLS_V12
-#define TLS_MIN_VERSION	TLS_V10
+#define TLS_VERSION	L_TLS_V12
+#define TLS_MIN_VERSION	L_TLS_V10
 
 enum tls_cipher_type {
 	TLS_CIPHER_STREAM,
@@ -54,6 +56,8 @@ struct tls_hash_algorithm {
 	const char *name;
 };
 
+extern const struct tls_hash_algorithm tls_handshake_hash_data[];
+
 typedef bool (*tls_get_hash_t)(struct l_tls *tls, uint8_t tls_id,
 				uint8_t *out, size_t *len,
 				enum l_checksum_type *type);
@@ -62,8 +66,14 @@ struct tls_key_exchange_algorithm {
 	uint8_t id;
 
 	bool certificate_check;
+	bool need_ecc;
+	bool need_ffdh;
 
 	bool (*validate_cert_key_type)(struct l_cert *cert);
+
+	bool (*send_server_key_exchange)(struct l_tls *tls);
+	void (*handle_server_key_exchange)(struct l_tls *tls,
+						const uint8_t *buf, size_t len);
 
 	bool (*send_client_key_exchange)(struct l_tls *tls);
 	void (*handle_client_key_exchange)(struct l_tls *tls,
@@ -73,6 +83,8 @@ struct tls_key_exchange_algorithm {
 			tls_get_hash_t get_hash);
 	bool (*verify)(struct l_tls *tls, const uint8_t *in, size_t len,
 			tls_get_hash_t get_hash);
+
+	void (*free_params)(struct l_tls *tls);
 };
 
 struct tls_mac_algorithm {
@@ -92,12 +104,55 @@ struct tls_cipher_suite {
 	enum l_checksum_type prf_hmac;
 };
 
+extern struct tls_cipher_suite *tls_cipher_suite_pref[];
+
 struct tls_compression_method {
 	int id;
 	const char *name;
 };
 
+struct tls_hello_extension {
+	const char *name;
+	const char *short_name;
+	uint16_t id;
+	ssize_t (*client_write)(struct l_tls *tls, uint8_t *buf, size_t len);
+	/* Handle a Client Hello extension (on server), can't be NULL */
+	bool (*client_handle)(struct l_tls *tls,
+				const uint8_t *buf, size_t len);
+	/* Handle a Client Hello extension's absence (on server) */
+	bool (*client_handle_absent)(struct l_tls *tls);
+	ssize_t (*server_write)(struct l_tls *tls, uint8_t *buf, size_t len);
+	/* Handle a Server Hello extension (on client) */
+	bool (*server_handle)(struct l_tls *tls,
+				const uint8_t *buf, size_t len);
+	/* Handle a Server Hello extension's absence (on client) */
+	bool (*server_handle_absent)(struct l_tls *tls);
+};
+
+extern const struct tls_hello_extension tls_extensions[];
+
+struct tls_named_group {
+	const char *name;
+	uint16_t id;
+	enum {
+		TLS_GROUP_TYPE_EC,
+		TLS_GROUP_TYPE_FF,
+	} type;
+	union {
+		struct {
+			unsigned int l_group;
+			size_t point_bytes;
+		} ec;
+		struct {
+			const uint8_t *prime;
+			size_t prime_len;
+			unsigned int generator;
+		} ff;
+	};
+};
+
 enum tls_handshake_state {
+	TLS_HANDSHAKE_WAIT_START,
 	TLS_HANDSHAKE_WAIT_HELLO,
 	TLS_HANDSHAKE_WAIT_CERTIFICATE,
 	TLS_HANDSHAKE_WAIT_KEY_EXCHANGE,
@@ -113,6 +168,19 @@ enum tls_content_type {
 	TLS_CT_ALERT			= 21,
 	TLS_CT_HANDSHAKE		= 22,
 	TLS_CT_APPLICATION_DATA		= 23,
+};
+
+enum tls_handshake_type {
+	TLS_HELLO_REQUEST	= 0,
+	TLS_CLIENT_HELLO	= 1,
+	TLS_SERVER_HELLO	= 2,
+	TLS_CERTIFICATE		= 11,
+	TLS_SERVER_KEY_EXCHANGE	= 12,
+	TLS_CERTIFICATE_REQUEST	= 13,
+	TLS_SERVER_HELLO_DONE	= 14,
+	TLS_CERTIFICATE_VERIFY	= 15,
+	TLS_CLIENT_KEY_EXCHANGE	= 16,
+	TLS_FINISHED		= 20,
 };
 
 /*
@@ -150,6 +218,8 @@ struct l_tls {
 	struct l_key *priv_key;
 	size_t priv_key_size;
 
+	struct tls_cipher_suite **cipher_suite_pref_list;
+
 	/* Record layer */
 
 	uint8_t *record_buf;
@@ -168,8 +238,8 @@ struct l_tls {
 	struct l_checksum *handshake_hash[__HANDSHAKE_HASH_COUNT];
 	uint8_t prev_digest[__HANDSHAKE_HASH_COUNT][HANDSHAKE_HASH_MAX_SIZE];
 
-	uint16_t client_version;
-	uint16_t negotiated_version;
+	enum l_tls_version client_version;
+	enum l_tls_version negotiated_version;
 	bool cert_requested, cert_sent;
 	bool peer_authenticated;
 	struct l_cert *peer_cert;
@@ -177,6 +247,8 @@ struct l_tls {
 	size_t peer_pubkey_size;
 	enum handshake_hash_type signature_hash;
 	const struct tls_hash_algorithm *prf_hmac;
+	const struct tls_named_group *negotiated_curve;
+	const struct tls_named_group *negotiated_ff_group;
 
 	/* SecurityParameters current and pending */
 
@@ -192,6 +264,7 @@ struct l_tls {
 		 * 6.3 v1.2 + two IVs of 32 bytes.
 		 */
 		uint8_t key_block[192];
+		void *key_xchg_params;
 	} pending;
 
 	enum tls_cipher_type cipher_type[2];
@@ -236,7 +309,23 @@ void tls_tx_record(struct l_tls *tls, enum tls_content_type type,
 bool tls_handle_message(struct l_tls *tls, const uint8_t *message,
 			int len, enum tls_content_type type, uint16_t version);
 
-struct l_cert *tls_cert_load_file(const char *filename);
+#define TLS_HANDSHAKE_HEADER_SIZE	4
+
+void tls_tx_handshake(struct l_tls *tls, int type, uint8_t *buf, size_t length);
+
+/* Optionally limit allowed cipher suites to a custom set */
+bool tls_set_cipher_suites(struct l_tls *tls, const char **suite_list);
+
+void tls_generate_master_secret(struct l_tls *tls,
+				const uint8_t *pre_master_secret,
+				int pre_master_secret_len);
+
+const struct tls_named_group *tls_find_group(uint16_t id);
+const struct tls_named_group *tls_find_ff_group(const uint8_t *prime,
+						size_t prime_len,
+						const uint8_t *generator,
+						size_t generator_len);
+
 int tls_parse_certificate_list(const void *data, size_t len,
 				struct l_certchain **out_certchain);
 
@@ -256,5 +345,8 @@ int tls_parse_certificate_list(const void *data, size_t len,
 				l_tls_alert_to_str(local_desc), ## args);\
 		tls_disconnect(tls, desc, local_desc);	\
 	} while (0)
+
+#define TLS_VER_FMT		"1.%i"
+#define TLS_VER_ARGS(version)	(((version) & 0xff) - 1)
 
 const char *tls_handshake_state_to_str(enum tls_handshake_state state);
