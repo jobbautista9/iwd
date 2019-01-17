@@ -570,8 +570,10 @@ static struct eapol_key *eapol_create_common(
 	out_frame->key_length = 0;
 	out_frame->key_replay_counter = L_CPU_TO_BE64(key_replay_counter);
 	memcpy(out_frame->key_nonce, snonce, sizeof(out_frame->key_nonce));
+
 	out_frame->key_data_len = L_CPU_TO_BE16(extra_len);
-	memcpy(out_frame->key_data, extra_data, extra_len);
+	if (extra_len)
+		memcpy(out_frame->key_data, extra_data, extra_len);
 
 	return out_frame;
 }
@@ -980,8 +982,10 @@ static void eapol_handle_ptk_1_of_4(struct eapol_sm *sm,
 	} else if (pmkid) {
 		uint8_t own_pmkid[16];
 
-		if (handshake_state_get_pmkid(sm->handshake, own_pmkid) &&
-				memcmp(pmkid, own_pmkid, 16)) {
+		if (!handshake_state_get_pmkid(sm->handshake, own_pmkid))
+			goto error_unspecified;
+
+		if (memcmp(pmkid, own_pmkid, 16)) {
 			l_debug("Authenticator sent a PMKID that didn't match");
 
 			/*
@@ -2380,7 +2384,7 @@ void __eapol_set_config(struct l_settings *config)
 {
 	if (!l_settings_get_uint(config, "EAPoL",
 			"max_4way_handshake_time", &eapol_4way_handshake_time))
-		eapol_4way_handshake_time = 2;
+		eapol_4way_handshake_time = 5;
 }
 
 bool eapol_init()

@@ -32,7 +32,13 @@
 #include "src/eap-private.h"
 #include "src/eap-tls-common.h"
 
-struct databuf *databuf_new(size_t capacity)
+struct databuf {
+	uint8_t *data;
+	size_t len;
+	size_t capacity;
+};
+
+static struct databuf *databuf_new(size_t capacity)
 {
 	struct databuf *databuf;
 
@@ -46,7 +52,7 @@ struct databuf *databuf_new(size_t capacity)
 	return databuf;
 }
 
-void databuf_append(struct databuf *databuf, const uint8_t *data,
+static void databuf_append(struct databuf *databuf, const uint8_t *data,
 								size_t data_len)
 {
 	size_t new_len;
@@ -66,7 +72,7 @@ void databuf_append(struct databuf *databuf, const uint8_t *data,
 	databuf->len = new_len;
 }
 
-void databuf_free(struct databuf *databuf)
+static void databuf_free(struct databuf *databuf)
 {
 	if (!databuf)
 		return;
@@ -352,7 +358,7 @@ static int eap_tls_init_request_assembly(struct eap_state *eap,
 		 * for the first fragment of a fragmented TLS message or set of
 		 * messages.
 		 */
-		l_warn("%s: Server has set the L bit in the fragment other "
+		l_debug("%s: Server has set the L bit in the fragment other "
 			"than the first of a fragmented TLS message.",
 						eap_get_method_name(eap));
 
@@ -391,7 +397,7 @@ static int eap_tls_init_request_assembly(struct eap_state *eap,
 		 * with redundant TLS Message Length field for the un-fragmented
 		 * packets.
 		 */
-		l_warn("%s: Server has set the redundant TLS Message Length "
+		l_debug("%s: Server has set the redundant TLS Message Length "
 					"field for the un-fragmented packet.",
 						eap_get_method_name(eap));
 
@@ -419,7 +425,7 @@ static int eap_tls_init_request_assembly(struct eap_state *eap,
 		 * during the fragmented transmission. To stay compatible with
 		 * such devices, we have relaxed this requirement.
 		 */
-		l_warn("%s: Server has failed to set the M flag in the first"
+		l_debug("%s: Server has failed to set the M flag in the first"
 				" packet of the fragmented transmission.",
 						eap_get_method_name(eap));
 
@@ -508,7 +514,7 @@ static bool eap_tls_tunnel_init(struct eap_state *eap)
 	}
 
 	if (getenv("IWD_TLS_DEBUG"))
-		l_tls_set_debug(eap_tls->tunnel, eap_tls_tunnel_debug, NULL,
+		l_tls_set_debug(eap_tls->tunnel, eap_tls_tunnel_debug, eap,
 									NULL);
 
 	if (!l_tls_set_auth_data(eap_tls->tunnel, eap_tls->client_cert,
@@ -518,6 +524,12 @@ static bool eap_tls_tunnel_init(struct eap_state *eap)
 				!l_tls_set_cacert(eap_tls->tunnel,
 							eap_tls->ca_cert))) {
 		l_error("%s: Error loading TLS keys or certificates.",
+						eap_get_method_name(eap));
+		return false;
+	}
+
+	if (!l_tls_start(eap_tls->tunnel)) {
+		l_error("%s: Failed to start the TLS client",
 						eap_get_method_name(eap));
 		return false;
 	}
@@ -719,8 +731,6 @@ int eap_tls_common_settings_check(struct l_settings *settings,
 	char setting_key[72];
 	char client_cert_setting[72];
 	char passphrase_setting[72];
-	uint8_t *cert;
-	size_t size;
 
 	L_AUTO_FREE_VAR(char *, path);
 	L_AUTO_FREE_VAR(char *, client_cert) = NULL;
@@ -729,13 +739,16 @@ int eap_tls_common_settings_check(struct l_settings *settings,
 	snprintf(setting_key, sizeof(setting_key), "%sCACert", prefix);
 	path = l_settings_get_string(settings, "Security", setting_key);
 	if (path) {
-		cert = l_pem_load_certificate(path, &size);
-		if (!cert) {
+		struct l_queue *cacerts;
+
+		cacerts = l_pem_load_certificate_list(path);
+		if (!cacerts) {
 			l_error("Failed to load %s", path);
 			return -EIO;
 		}
 
-		l_free(cert);
+		l_queue_destroy(cacerts,
+				(l_queue_destroy_func_t) l_cert_free);
 	}
 
 	snprintf(client_cert_setting, sizeof(client_cert_setting),
@@ -743,13 +756,15 @@ int eap_tls_common_settings_check(struct l_settings *settings,
 	client_cert = l_settings_get_string(settings, "Security",
 							client_cert_setting);
 	if (client_cert) {
-		cert = l_pem_load_certificate(client_cert, &size);
+		struct l_certchain *cert;
+
+		cert = l_pem_load_certificate_chain(client_cert);
 		if (!cert) {
 			l_error("Failed to load %s", client_cert);
 			return -EIO;
 		}
 
-		l_free(cert);
+		l_certchain_free(cert);
 	}
 
 	l_free(path);

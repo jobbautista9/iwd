@@ -47,8 +47,11 @@ enum ttls_avp_flag {
 enum radius_attr {
 	RADIUS_ATTR_USER_NAME			= 1,
 	RADIUS_ATTR_USER_PASSWORD		= 2,
+	RADIUS_ATTR_MSCHAPV2_ERROR		= 2,
 	RADIUS_ATTR_CHAP_PASSWORD		= 3,
 	RADIUS_ATTR_MS_CHAP_CHALLENGE		= 11,
+	RADIUS_ATTR_MSCHAPV2_RESPONSE		= 25,
+	RADIUS_ATTR_MSCHAPV2_SUCCESS		= 26,
 	RADIUS_ATTR_CHAP_CHALLENGE		= 60,
 	RADIUS_ATTR_EAP_MESSAGE			= 79,
 };
@@ -276,6 +279,58 @@ static void build_avp_ms_chap_response(struct avp_builder *builder,
 	avp_builder_finalize_avp(builder);
 }
 
+#define MSCHAPV2_RESERVED_LEN		8
+#define MSCHAPV2_RESPONSE_LEN		24
+#define MSCHAPV2_CHALLENGE_LEN		16
+#define MSCHAPV2_SERVER_RESPONSE_LEN	42
+
+static void build_avp_mschapv2_challenge(struct avp_builder *builder,
+						const uint8_t *challenge)
+{
+	avp_builder_start_avp(builder, RADIUS_ATTR_MS_CHAP_CHALLENGE, true,
+						RADIUS_VENDOR_ID_MICROSOFT);
+	memcpy(avp_builder_reserve(builder, 1, MSCHAPV2_CHALLENGE_LEN),
+					challenge, MSCHAPV2_CHALLENGE_LEN);
+	avp_builder_finalize_avp(builder);
+}
+
+static void build_avp_mschapv2_response(struct avp_builder *builder,
+						const uint8_t *ident,
+						const uint8_t *peer_challenge,
+						const uint8_t *response)
+{
+	uint8_t *flags;
+
+	avp_builder_start_avp(builder, RADIUS_ATTR_MSCHAPV2_RESPONSE, true,
+						RADIUS_VENDOR_ID_MICROSOFT);
+
+	memcpy(avp_builder_reserve(builder, 1, CHAP_IDENT_LEN),
+							ident, CHAP_IDENT_LEN);
+
+	/*
+	 * RFC 2548: Section 2.3.2.
+	 *
+	 * The Flags field is one octet in length. It is reserved for future
+	 * use and MUST be zero.
+	 */
+	flags = avp_builder_reserve(builder, 1, 1);
+	*flags = 0;
+
+	memcpy(avp_builder_reserve(builder, 1, MSCHAPV2_CHALLENGE_LEN),
+					peer_challenge,
+					MSCHAPV2_CHALLENGE_LEN);
+
+	/*
+	 * Reserved - This field is 8 octets long and MUST be zero.
+	 */
+	avp_builder_reserve(builder, 1, MSCHAPV2_RESERVED_LEN);
+
+	memcpy(avp_builder_reserve(builder, 1, MSCHAPV2_RESPONSE_LEN),
+					response, MSCHAPV2_RESPONSE_LEN);
+
+	avp_builder_finalize_avp(builder);
+}
+
 struct avp_iter {
 	enum radius_attr type;
 	uint8_t flags;
@@ -347,91 +402,81 @@ static bool avp_iter_next(struct avp_iter *iter)
 	return true;
 }
 
-struct phase2_method_ops {
-	bool (*init)(struct eap_state *eap);
-	bool (*handle_avp)(struct eap_state *eap, enum radius_attr type,
-				uint32_t vendor_id, const uint8_t *data,
-								size_t len);
-	void (*destroy)(void *state);
-	bool (*reset)(void *state);
-};
-
-struct phase2_method {
-	void *state;
-	const struct phase2_method_ops *ops;
-};
-
 struct phase2_credentials {
 	char *username;
 	char *password;
 };
 
-static void eap_ttls_phase2_credentials_destroy(void *state)
-{
-	struct phase2_credentials *credentials = state;
+struct phase2_method {
+	void *state;
+	struct phase2_credentials credentials;
+	const struct phase2_method_ops *ops;
+};
 
+struct phase2_method_ops {
+	bool (*init)(struct eap_state *eap);
+	bool (*handle_avp)(struct eap_state *eap, enum radius_attr type,
+				uint32_t vendor_id, const uint8_t *data,
+								size_t len);
+	void (*destroy)(struct phase2_method *phase2);
+	void (*reset)(struct phase2_method *phase2);
+};
+
+static void eap_ttls_phase2_credentials_destroy(
+					struct phase2_credentials *credentials)
+{
 	if (!credentials)
 		return;
 
+	if (credentials->password)
+		memset(credentials->password, 0, strlen(credentials->password));
+
 	l_free(credentials->username);
-
-	memset(credentials->password, 0, strlen(credentials->password));
 	l_free(credentials->password);
-
-	l_free(credentials);
 }
 
 static bool eap_ttls_phase2_non_eap_load_settings(struct phase2_method *phase2,
 						struct l_settings *settings,
 						const char *prefix)
 {
-	struct phase2_credentials *credentials;
-	char setting[72];
-
-	credentials = l_new(struct phase2_credentials, 1);
+	char setting[128];
 
 	snprintf(setting, sizeof(setting), "%sIdentity", prefix);
-	credentials->username =
+	phase2->credentials.username =
 			l_settings_get_string(settings, "Security", setting);
 
-	if (!credentials->username) {
+	if (!phase2->credentials.username) {
 		l_error("Phase 2 Identity is missing.");
-		goto error;
+		return false;
 	}
 
 	snprintf(setting, sizeof(setting), "%sPassword", prefix);
-	credentials->password =
+	phase2->credentials.password =
 			l_settings_get_string(settings, "Security", setting);
 
-	if (!credentials->password) {
+	if (!phase2->credentials.password) {
 		l_error("Phase 2 Password is missing.");
-		goto error;
+		l_free(phase2->credentials.username);
+
+		return false;
 	}
 
-	phase2->state = credentials;
-
 	return true;
-
-error:
-	l_free(credentials->username);
-	l_free(credentials->password);
-	l_free(credentials);
-
-	return false;
 }
 
-static void eap_ttls_phase2_chap_generate_challenge(struct eap_state *eap,
+static bool eap_ttls_phase2_chap_generate_challenge(struct eap_state *eap,
 							uint8_t *challenge,
 							size_t challenge_len)
 {
-	eap_tls_common_tunnel_prf_get_bytes(eap, true, "ttls challenge",
-						challenge, challenge_len);
+	return eap_tls_common_tunnel_prf_get_bytes(eap, true, "ttls challenge",
+								challenge,
+								challenge_len);
 }
 
 static bool eap_ttls_phase2_chap_init(struct eap_state *eap)
 {
 	struct phase2_method *phase2 = eap_tls_common_get_variant_data(eap);
-	struct phase2_credentials *credentials = phase2->state;
+	struct phase2_credentials *credentials = &phase2->credentials;
 	struct avp_builder *builder;
 	uint8_t challenge[CHAP_CHALLENGE_LEN + CHAP_IDENT_LEN];
 	uint8_t password_hash[CHAP_PASSWORD_LEN];
@@ -440,9 +485,13 @@ static bool eap_ttls_phase2_chap_init(struct eap_state *eap)
 	uint8_t *data;
 	size_t data_len;
 
-	eap_ttls_phase2_chap_generate_challenge(eap, challenge,
+	if (!eap_ttls_phase2_chap_generate_challenge(eap, challenge,
 							CHAP_CHALLENGE_LEN +
-							CHAP_IDENT_LEN);
+							CHAP_IDENT_LEN)) {
+		l_error("TTLS Tunneled-CHAP: Failed to generate CHAP "
+								"challenge.");
+		return false;
+	}
 
 	ident = challenge[CHAP_CHALLENGE_LEN];
 
@@ -476,13 +525,12 @@ static bool eap_ttls_phase2_chap_init(struct eap_state *eap)
 
 static const struct phase2_method_ops phase2_chap_ops = {
 	.init = eap_ttls_phase2_chap_init,
-	.destroy = eap_ttls_phase2_credentials_destroy,
 };
 
 static bool eap_ttls_phase2_ms_chap_init(struct eap_state *eap)
 {
 	struct phase2_method *phase2 = eap_tls_common_get_variant_data(eap);
-	struct phase2_credentials *credentials = phase2->state;
+	struct phase2_credentials *credentials = &phase2->credentials;
 	struct avp_builder *builder;
 	uint8_t challenge[MS_CHAP_CHALLENGE_LEN + CHAP_IDENT_LEN];
 	uint8_t password_hash[16];
@@ -490,9 +538,13 @@ static bool eap_ttls_phase2_ms_chap_init(struct eap_state *eap)
 	uint8_t *data;
 	size_t data_len;
 
-	eap_ttls_phase2_chap_generate_challenge(eap, challenge,
+	if (!eap_ttls_phase2_chap_generate_challenge(eap, challenge,
 							MS_CHAP_CHALLENGE_LEN +
-							CHAP_IDENT_LEN);
+							CHAP_IDENT_LEN)) {
+		l_error("TTLS Tunneled-MSCHAP: Failed to generate MS-CHAP "
+								"challenge.");
+		return false;
+	}
 
 	ident = challenge[MS_CHAP_CHALLENGE_LEN];
 
@@ -515,21 +567,202 @@ static bool eap_ttls_phase2_ms_chap_init(struct eap_state *eap)
 
 static const struct phase2_method_ops phase2_mschap_ops = {
 	.init = eap_ttls_phase2_ms_chap_init,
-	.destroy = eap_ttls_phase2_credentials_destroy,
+};
+
+struct mschapv2_state {
+	uint8_t server_challenge[MSCHAPV2_CHALLENGE_LEN + CHAP_IDENT_LEN];
+	uint8_t peer_challenge[MSCHAPV2_CHALLENGE_LEN];
+	uint8_t password_hash[16];
+};
+
+static void mschapv2_state_destroy(struct phase2_method *phase2)
+{
+	struct mschapv2_state *state = phase2->state;
+
+	if (!state)
+		return;
+
+	memset(state->server_challenge, 0, MSCHAPV2_CHALLENGE_LEN +
+							CHAP_IDENT_LEN);
+	memset(state->peer_challenge, 0, MSCHAPV2_CHALLENGE_LEN);
+	memset(state->password_hash, 0, 16);
+
+	l_free(state);
+	phase2->state = NULL;
+}
+
+static bool eap_ttls_phase2_mschapv2_init(struct eap_state *eap)
+{
+	struct phase2_method *phase2 = eap_tls_common_get_variant_data(eap);
+	struct phase2_credentials *credentials = &phase2->credentials;
+	struct mschapv2_state *mschapv2_state;
+	struct avp_builder *builder;
+	uint8_t response[MSCHAPV2_RESPONSE_LEN];
+	uint8_t ident;
+	uint8_t *data;
+	size_t data_len;
+
+	phase2->state = mschapv2_state = l_new(struct mschapv2_state, 1);
+
+	if (!l_getrandom(mschapv2_state->peer_challenge,
+						MSCHAPV2_CHALLENGE_LEN)) {
+		l_error("TTLS Tunneled-MSCHAPv2: Failed to generate random for "
+							"peer challenge.");
+		return false;
+	}
+
+	if (!eap_ttls_phase2_chap_generate_challenge(eap,
+					mschapv2_state->server_challenge,
+					MSCHAPV2_CHALLENGE_LEN +
+					CHAP_IDENT_LEN)) {
+		l_error("TTLS Tunneled-MSCHAPv2: Failed to generate CHAP "
+								"challenge.");
+		return false;
+	}
+
+	if (!mschap_nt_password_hash(credentials->password,
+					mschapv2_state->password_hash)) {
+		l_error("TTLS Tunneled-MSCHAPv2: Failed to generate password "
+								"hash.");
+		return false;
+	}
+
+	if (!mschapv2_generate_nt_response(mschapv2_state->password_hash,
+					mschapv2_state->peer_challenge,
+					mschapv2_state->server_challenge,
+					credentials->username, response)) {
+		l_error("TTLS Tunneled-MSCHAPv2: Failed to generate "
+								"NT response.");
+		return false;
+	}
+
+	ident = mschapv2_state->server_challenge[MSCHAPV2_CHALLENGE_LEN];
+
+	builder = avp_builder_new(512);
+
+	build_avp_user_name(builder, credentials->username);
+	build_avp_mschapv2_challenge(builder, mschapv2_state->server_challenge);
+	build_avp_mschapv2_response(builder, &ident,
+					mschapv2_state->peer_challenge,
+					response);
+
+	data = avp_builder_free(builder, false, &data_len);
+
+	eap_tls_common_tunnel_send(eap, data, data_len);
+	l_free(data);
+
+	return true;
+}
+
+static bool eap_ttls_phase2_mschapv2_handle_success(struct eap_state *eap,
+							const uint8_t *data,
+							size_t len)
+{
+	struct phase2_method *phase2 = eap_tls_common_get_variant_data(eap);
+	struct phase2_credentials *credentials = &phase2->credentials;
+	struct mschapv2_state *mschapv2_state = phase2->state;
+	uint8_t nt_response[MSCHAPV2_RESPONSE_LEN];
+	char nt_server_response[MSCHAPV2_SERVER_RESPONSE_LEN];
+	uint8_t password_hash_hash[16];
+
+	if (len != CHAP_IDENT_LEN + MSCHAPV2_SERVER_RESPONSE_LEN) {
+		l_error("TTLS Tunneled MSCHAPv2: Server response has invalid "
+								"length.");
+		goto error;
+	}
+
+	if (!mschapv2_generate_nt_response(mschapv2_state->password_hash,
+					mschapv2_state->peer_challenge,
+					mschapv2_state->server_challenge,
+					credentials->username,
+					nt_response)) {
+		l_error("TTLS Tunneled-MSCHAPv2: Failed to generate "
+								"NT response.");
+		goto error;
+	}
+
+	if (!mschapv2_hash_nt_password_hash(mschapv2_state->password_hash,
+							password_hash_hash)) {
+		l_error("TTLS Tunneled-MSCHAPv2: Failed to generate "
+						"hash of the password hash.");
+		goto error;
+	}
+
+	if (!mschapv2_generate_authenticator_response(
+					password_hash_hash, nt_response,
+					mschapv2_state->peer_challenge,
+					mschapv2_state->server_challenge,
+					credentials->username,
+					nt_server_response)) {
+		l_error("TTLS Tunneled-MSCHAPv2: Failed to generate server "
+								"response.");
+		goto error;
+	}
+
+	if (memcmp(nt_server_response, data + CHAP_IDENT_LEN,
+						MSCHAPV2_SERVER_RESPONSE_LEN)) {
+		l_error("TTLS Tunneled-MSCHAPv2: Invalid server response.");
+
+		goto error;
+	}
+
+	eap_tls_common_send_empty_response(eap);
+
+	return true;
+
+error:
+	eap_tls_common_set_phase2_failed(eap);
+
+	return false;
+}
+
+static bool eap_ttls_phase2_mschapv2_handle_error(struct eap_state *eap,
+							const uint8_t *data,
+							size_t len)
+{
+	l_error("TTLS Tunneled-MSCHAPv2: Authentication failed.");
+
+	eap_tls_common_set_phase2_failed(eap);
+
+	return false;
+}
+
+static bool eap_ttls_phase2_mschapv2_handle_avp(struct eap_state *eap,
+						enum radius_attr type,
+						uint32_t vendor_id,
+						const uint8_t *data,
+						size_t len)
+{
+	if (vendor_id != RADIUS_VENDOR_ID_MICROSOFT)
+		return false;
+
+	if (type == RADIUS_ATTR_MSCHAPV2_SUCCESS)
+		return eap_ttls_phase2_mschapv2_handle_success(eap, data, len);
+	else if (type == RADIUS_ATTR_MSCHAPV2_ERROR)
+		return eap_ttls_phase2_mschapv2_handle_error(eap, data, len);
+
+	return false;
+}
+
+static const struct phase2_method_ops phase2_mschapv2_ops = {
+	.init = eap_ttls_phase2_mschapv2_init,
+	.handle_avp = eap_ttls_phase2_mschapv2_handle_avp,
+	.reset = mschapv2_state_destroy,
+	.destroy = mschapv2_state_destroy,
 };
 
 static bool eap_ttls_phase2_pap_init(struct eap_state *eap)
 {
 	struct phase2_method *phase2 = eap_tls_common_get_variant_data(eap);
-	struct phase2_credentials *state = phase2->state;
+	struct phase2_credentials *credentials = &phase2->credentials;
 	struct avp_builder *builder;
 	uint8_t *buf;
 	size_t buf_len;
 
 	builder = avp_builder_new(512);
 
-	build_avp_user_name(builder, state->username);
-	build_avp_user_password(builder, state->password);
+	build_avp_user_name(builder, credentials->username);
+	build_avp_user_password(builder, credentials->password);
 
 	buf = avp_builder_free(builder, false, &buf_len);
 
@@ -541,7 +774,6 @@ static bool eap_ttls_phase2_pap_init(struct eap_state *eap)
 
 static const struct phase2_method_ops phase2_pap_ops = {
 	.init = eap_ttls_phase2_pap_init,
-	.destroy = eap_ttls_phase2_credentials_destroy,
 };
 
 static void eap_ttls_phase2_eap_send_response(const uint8_t *data, size_t len,
@@ -633,21 +865,21 @@ static bool eap_ttls_phase2_eap_handle_avp(struct eap_state *eap,
 	return true;
 }
 
-static void eap_ttls_phase2_eap_destroy(void *state)
+static void eap_ttls_phase2_eap_destroy(struct phase2_method *phase2)
 {
-	if (!state)
+	if (!phase2->state)
 		return;
 
-	eap_reset(state);
-	eap_free(state);
+	eap_reset(phase2->state);
+	eap_free(phase2->state);
 }
 
-static bool eap_ttls_phase2_eap_reset(void *state)
+static void eap_ttls_phase2_eap_reset(struct phase2_method *phase2)
 {
-	if (!state)
-		return false;
+	if (!phase2->state)
+		return;
 
-	return eap_reset(state);
+	eap_reset(phase2->state);
 }
 
 static const struct phase2_method_ops phase2_eap_ops = {
@@ -678,11 +910,8 @@ static bool eap_ttls_tunnel_ready(struct eap_state *eap,
 
 	eap_set_key_material(eap, msk_emsk + 0, 64, msk_emsk + 64, 64, NULL, 0);
 
-	if (!phase2->state)
-		return false;
-
 	if (phase2->ops->init)
-		phase2->ops->init(eap);
+		return phase2->ops->init(eap);
 
 	return true;
 }
@@ -718,15 +947,17 @@ static void eap_ttls_state_reset(void *data)
 	if (!phase2->ops->reset)
 		return;
 
-	phase2->ops->reset(phase2->state);
+	phase2->ops->reset(phase2);
 }
 
 static void eap_ttls_state_destroy(void *data)
 {
 	struct phase2_method *phase2 = data;
 
+	eap_ttls_phase2_credentials_destroy(&phase2->credentials);
+
 	if (phase2->ops->destroy)
-		phase2->ops->destroy(phase2->state);
+		phase2->ops->destroy(phase2);
 
 	l_free(phase2);
 }
@@ -737,6 +968,7 @@ static const struct {
 } tunneled_non_eap_method_ops[] = {
 	{ "Tunneled-CHAP", &phase2_chap_ops },
 	{ "Tunneled-MSCHAP", &phase2_mschap_ops },
+	{ "Tunneled-MSCHAPv2", &phase2_mschapv2_ops },
 	{ "Tunneled-PAP", &phase2_pap_ops },
 	{ }
 };
@@ -747,8 +979,8 @@ static int eap_ttls_check_tunneled_auth_settings(struct l_settings *settings,
 						struct l_queue **out_missing)
 {
 	const struct eap_secret_info *secret;
-	char identity_key[72];
-	char password_key[72];
+	char identity_key[128];
+	char password_key[128];
 
 	L_AUTO_FREE_VAR(char *, identity);
 	L_AUTO_FREE_VAR(char *, password) = NULL;

@@ -41,6 +41,7 @@
 #include "tls-private.h"
 #include "key.h"
 #include "asn1-private.h"
+#include "strv.h"
 
 bool tls10_prf(const void *secret, size_t secret_len,
 		const char *label,
@@ -130,7 +131,7 @@ static bool tls_prf_get_bytes(struct l_tls *tls,
 				const void *seed, size_t seed_len,
 				uint8_t *buf, size_t len)
 {
-	if (tls->negotiated_version >= TLS_V12)
+	if (tls->negotiated_version >= L_TLS_V12)
 		return tls12_prf(tls->prf_hmac->l_id, tls->prf_hmac->length,
 					secret, secret_len, label,
 					seed, seed_len, buf, len);
@@ -185,17 +186,23 @@ static void tls_reset_handshake(struct l_tls *tls)
 
 	memset(tls->pending.key_block, 0, sizeof(tls->pending.key_block));
 
+	if (tls->pending.cipher_suite &&
+			tls->pending.cipher_suite->key_xchg->free_params)
+		tls->pending.cipher_suite->key_xchg->free_params(tls);
+
 	l_cert_free(tls->peer_cert);
 	l_key_free(tls->peer_pubkey);
 
 	tls->peer_cert = NULL;
 	tls->peer_pubkey = NULL;
 	tls->peer_pubkey_size = 0;
+	tls->negotiated_curve = NULL;
+	tls->negotiated_ff_group = NULL;
 
 	for (hash = 0; hash < __HANDSHAKE_HASH_COUNT; hash++)
 		tls_drop_handshake_hash(tls, hash);
 
-	TLS_SET_STATE(TLS_HANDSHAKE_WAIT_HELLO);
+	TLS_SET_STATE(TLS_HANDSHAKE_WAIT_START);
 	tls->cert_requested = 0;
 	tls->cert_sent = 0;
 }
@@ -332,7 +339,7 @@ static bool tls_change_cipher_spec(struct l_tls *tls, bool txrx,
 			key_offset += 2 * enc->key_length;
 	}
 
-	if (tls->negotiated_version <= TLS_V10 &&
+	if (tls->negotiated_version <= L_TLS_V10 &&
 			tls->cipher_suite[txrx]->encryption &&
 			tls->cipher_suite[txrx]->encryption->cipher_type ==
 			TLS_CIPHER_BLOCK) {
@@ -376,156 +383,6 @@ static void tls_reset_cipher_spec(struct l_tls *tls, bool txrx)
 	tls_change_cipher_spec(tls, txrx, NULL);
 }
 
-static bool tls_send_rsa_client_key_xchg(struct l_tls *tls);
-static void tls_handle_rsa_client_key_xchg(struct l_tls *tls,
-						const uint8_t *buf, size_t len);
-
-static ssize_t tls_rsa_sign(struct l_tls *tls, uint8_t *out, size_t len,
-				tls_get_hash_t get_hash);
-static bool tls_rsa_verify(struct l_tls *tls, const uint8_t *in, size_t len,
-				tls_get_hash_t get_hash);
-
-static bool tls_rsa_validate_cert_key(struct l_cert *cert)
-{
-	return l_cert_get_pubkey_type(cert) == L_CERT_KEY_RSA;
-}
-
-static struct tls_key_exchange_algorithm tls_rsa = {
-	.id = 1, /* RSA_sign */
-	.certificate_check = true,
-	.validate_cert_key_type = tls_rsa_validate_cert_key,
-	.send_client_key_exchange = tls_send_rsa_client_key_xchg,
-	.handle_client_key_exchange = tls_handle_rsa_client_key_xchg,
-	.sign = tls_rsa_sign,
-	.verify = tls_rsa_verify,
-};
-
-static struct tls_bulk_encryption_algorithm tls_rc4 = {
-	.cipher_type = TLS_CIPHER_STREAM,
-	.l_id = L_CIPHER_ARC4,
-	.key_length = 16,
-}, tls_aes128 = {
-	.cipher_type = TLS_CIPHER_BLOCK,
-	.l_id = L_CIPHER_AES_CBC,
-	.key_length = 16,
-	.iv_length = 16,
-	.block_length = 16,
-}, tls_aes256 = {
-	.cipher_type = TLS_CIPHER_BLOCK,
-	.l_id = L_CIPHER_AES_CBC,
-	.key_length = 32,
-	.iv_length = 16,
-	.block_length = 16,
-}, tls_3des_ede = {
-	.cipher_type = TLS_CIPHER_BLOCK,
-	.l_id = L_CIPHER_DES3_EDE_CBC,
-	.key_length = 24,
-	.iv_length = 8,
-	.block_length = 8,
-}, tls_aes128_gcm = {
-	.cipher_type = TLS_CIPHER_AEAD,
-	.l_aead_id = L_AEAD_CIPHER_AES_GCM,
-	.key_length = 16,
-	.iv_length = 12,
-	.fixed_iv_length = 4,
-	.auth_tag_length = 16,
-}, tls_aes256_gcm = {
-	.cipher_type = TLS_CIPHER_AEAD,
-	.l_aead_id = L_AEAD_CIPHER_AES_GCM,
-	.key_length = 32,
-	.iv_length = 12,
-	.fixed_iv_length = 4,
-	.auth_tag_length = 16,
-};
-
-static struct tls_mac_algorithm tls_md5 = {
-	.id = 1,
-	.hmac_type = L_CHECKSUM_MD5,
-	.mac_length = 16,
-}, tls_sha = {
-	.id = 2,
-	.hmac_type = L_CHECKSUM_SHA1,
-	.mac_length = 20,
-}, tls_sha256 = {
-	.id = 4,
-	.hmac_type = L_CHECKSUM_SHA256,
-	.mac_length = 32,
-};
-
-static struct tls_cipher_suite tls_cipher_suite_pref[] = {
-	{
-		.id = { 0x00, 0x35 },
-		.name = "TLS_RSA_WITH_AES_256_CBC_SHA",
-		.verify_data_length = 12,
-		.encryption = &tls_aes256,
-		.mac = &tls_sha,
-		.key_xchg = &tls_rsa,
-	},
-	{
-		.id = { 0x00, 0x2f },
-		.name = "TLS_RSA_WITH_AES_128_CBC_SHA",
-		.verify_data_length = 12,
-		.encryption = &tls_aes128,
-		.mac = &tls_sha,
-		.key_xchg = &tls_rsa,
-	},
-	{
-		.id = { 0x00, 0x3d },
-		.name = "TLS_RSA_WITH_AES_256_CBC_SHA256",
-		.verify_data_length = 12,
-		.encryption = &tls_aes256,
-		.mac = &tls_sha256,
-		.key_xchg = &tls_rsa,
-	},
-	{
-		.id = { 0x00, 0x3c },
-		.name = "TLS_RSA_WITH_AES_128_CBC_SHA256",
-		.verify_data_length = 12,
-		.encryption = &tls_aes128,
-		.mac = &tls_sha256,
-		.key_xchg = &tls_rsa,
-	},
-	{
-		.id = { 0x00, 0x9d },
-		.name = "TLS_RSA_WITH_AES_256_GCM_SHA384",
-		.verify_data_length = 12,
-		.encryption = &tls_aes256_gcm,
-		.prf_hmac = L_CHECKSUM_SHA384,
-		.key_xchg = &tls_rsa,
-	},
-	{
-		.id = { 0x00, 0x9c },
-		.name = "TLS_RSA_WITH_AES_128_GCM_SHA256",
-		.verify_data_length = 12,
-		.encryption = &tls_aes128_gcm,
-		.key_xchg = &tls_rsa,
-	},
-	{
-		.id = { 0x00, 0x0a },
-		.name = "TLS_RSA_WITH_3DES_EDE_CBC_SHA",
-		.verify_data_length = 12,
-		.encryption = &tls_3des_ede,
-		.mac = &tls_sha,
-		.key_xchg = &tls_rsa,
-	},
-	{
-		.id = { 0x00, 0x05 },
-		.name = "TLS_RSA_WITH_RC4_128_SHA",
-		.verify_data_length = 12,
-		.encryption = &tls_rc4,
-		.mac = &tls_sha,
-		.key_xchg = &tls_rsa,
-	},
-	{
-		.id = { 0x00, 0x04 },
-		.name = "TLS_RSA_WITH_RC4_128_MD5",
-		.verify_data_length = 12,
-		.encryption = &tls_rc4,
-		.mac = &tls_md5,
-		.key_xchg = &tls_rsa,
-	},
-};
-
 static bool tls_cipher_suite_is_compatible(struct l_tls *tls,
 					const struct tls_cipher_suite *suite,
 					const char **error)
@@ -535,14 +392,17 @@ static bool tls_cipher_suite_is_compatible(struct l_tls *tls,
 
 	if (suite->encryption &&
 			suite->encryption->cipher_type == TLS_CIPHER_AEAD) {
-		if (tls->negotiated_version &&
-				tls->negotiated_version < TLS_V12) {
+		enum l_tls_version negotiated = tls->negotiated_version;
+
+		if (negotiated && negotiated < L_TLS_V12) {
 			if (error) {
 				*error = error_buf;
 				snprintf(error_buf, sizeof(error_buf),
 						"Cipher suite %s uses an AEAD "
-						"cipher but TLS < 1.2 was "
-						"negotiated", suite->name);
+						"cipher (TLS 1.2+) but "
+						TLS_VER_FMT " was negotiated",
+						suite->name,
+						TLS_VER_ARGS(negotiated));
 			}
 
 			return false;
@@ -586,10 +446,10 @@ static bool tls_cipher_suite_is_compatible(struct l_tls *tls,
 		return false;
 	}
 
-	if ((tls->negotiated_version && tls->negotiated_version < TLS_V12 &&
+	if ((tls->negotiated_version && tls->negotiated_version < L_TLS_V12 &&
 			(!l_checksum_is_supported(L_CHECKSUM_MD5, true) ||
 			 !l_checksum_is_supported(L_CHECKSUM_SHA1, true))) ||
-			(tls->negotiated_version >= TLS_V12 &&
+			(tls->negotiated_version >= L_TLS_V12 &&
 			 !l_checksum_is_supported(
 					suite->prf_hmac != L_CHECKSUM_NONE ?
 					suite->prf_hmac : L_CHECKSUM_SHA256,
@@ -599,6 +459,19 @@ static bool tls_cipher_suite_is_compatible(struct l_tls *tls,
 			snprintf(error_buf, sizeof(error_buf),
 					"Cipher suite %s's PRF algorithm not "
 					"supported by the kernel", suite->name);
+		}
+
+		return false;
+	}
+
+	if (suite->key_xchg->need_ffdh &&
+			!l_key_is_supported(L_KEY_FEATURE_DH)) {
+		if (error) {
+			*error = error_buf;
+			snprintf(error_buf, sizeof(error_buf),
+					"Cipher suite %s's key exchange "
+					"mechanism needs kernel DH support",
+					suite->name);
 		}
 
 		return false;
@@ -617,17 +490,48 @@ static bool tls_cipher_suite_is_compatible(struct l_tls *tls,
 		return false;
 	}
 
+	/*
+	 * On the server we know what elliptic curve we'll be using as soon
+	 * as we've processed the ClientHello so for EC-based key exchange
+	 * methods require that a curve has been selected.
+	 */
+	if (suite->key_xchg->need_ecc && tls->server &&
+			!tls->negotiated_curve) {
+		if (error) {
+			*error = error_buf;
+			snprintf(error_buf, sizeof(error_buf),
+					"No common supported elliptic curves "
+					"with the client, can't use %s",
+					suite->name);
+		}
+
+		return false;
+	}
+
+	/* Similarly for FF DH groups */
+	if (suite->key_xchg->need_ffdh && tls->server &&
+			!tls->negotiated_ff_group) {
+		if (error) {
+			*error = error_buf;
+			snprintf(error_buf, sizeof(error_buf),
+					"No common supported finite-field "
+					"groups with the client, can't use %s",
+					suite->name);
+		}
+
+		return false;
+	}
+
 	return true;
 }
 
 static struct tls_cipher_suite *tls_find_cipher_suite(const uint8_t *id)
 {
-	int i;
+	struct tls_cipher_suite **suite;
 
-	for (i = 0; i < (int) L_ARRAY_SIZE(tls_cipher_suite_pref); i++)
-		if (tls_cipher_suite_pref[i].id[0] == id[0] &&
-				tls_cipher_suite_pref[i].id[1] == id[1])
-			return &tls_cipher_suite_pref[i];
+	for (suite = tls_cipher_suite_pref; *suite; suite++)
+		if ((*suite)->id[0] == id[0] && (*suite)->id[1] == id[1])
+			return *suite;
 
 	return NULL;
 }
@@ -651,7 +555,7 @@ static struct tls_compression_method *tls_find_compression_method(
 	return NULL;
 }
 
-static const struct tls_hash_algorithm tls_handshake_hash_data[] = {
+const struct tls_hash_algorithm tls_handshake_hash_data[] = {
 	[HANDSHAKE_HASH_SHA384]	= { 5, L_CHECKSUM_SHA384, 48, "SHA384" },
 	[HANDSHAKE_HASH_SHA256]	= { 4, L_CHECKSUM_SHA256, 32, "SHA256" },
 	[HANDSHAKE_HASH_MD5]	= { 1, L_CHECKSUM_MD5, 16, "MD5" },
@@ -705,19 +609,6 @@ static const struct tls_hash_algorithm *tls_set_prf_hmac(struct l_tls *tls)
 
 	return NULL;
 }
-
-enum tls_handshake_type {
-	TLS_HELLO_REQUEST	= 0,
-	TLS_CLIENT_HELLO	= 1,
-	TLS_SERVER_HELLO	= 2,
-	TLS_CERTIFICATE		= 11,
-	TLS_SERVER_KEY_EXCHANGE	= 12,
-	TLS_CERTIFICATE_REQUEST	= 13,
-	TLS_SERVER_HELLO_DONE	= 14,
-	TLS_CERTIFICATE_VERIFY	= 15,
-	TLS_CLIENT_KEY_EXCHANGE	= 16,
-	TLS_FINISHED		= 20,
-};
 
 #define SWITCH_ENUM_TO_STR(val) \
 	case (val):		\
@@ -782,10 +673,7 @@ void tls_disconnect(struct l_tls *tls, enum l_tls_alert_desc desc,
 				tls->user_data);
 }
 
-#define TLS_HANDSHAKE_HEADER_SIZE	4
-
-static void tls_tx_handshake(struct l_tls *tls, int type, uint8_t *buf,
-				size_t length)
+void tls_tx_handshake(struct l_tls *tls, int type, uint8_t *buf, size_t length)
 {
 	int i;
 
@@ -807,13 +695,101 @@ static void tls_tx_handshake(struct l_tls *tls, int type, uint8_t *buf,
 	tls_tx_record(tls, TLS_CT_HANDSHAKE, buf, length);
 }
 
+static ssize_t tls_append_hello_extensions(struct l_tls *tls,
+						struct l_queue *extensions,
+						uint8_t *buf, size_t len)
+{
+	uint8_t *ptr = buf;
+	uint8_t *extensions_len_ptr = ptr;
+	bool client_hello = !tls->server;
+	unsigned int i = 0;
+	const struct l_queue_entry *entry = l_queue_get_entries(extensions);
+
+	if (len < 2)
+		return -ENOSPC;
+
+	ptr += 2;
+	len -= 2;
+
+	while (1) {
+		const struct tls_hello_extension *extension;
+		ssize_t ext_len;
+		ssize_t (*ext_write)(struct l_tls *tls,
+					uint8_t *buf, size_t len);
+
+		if (client_hello) {
+			extension = &tls_extensions[i++];
+			if (!extension->name)
+				break;
+
+			ext_write = extension->client_write;
+		} else  {
+			uint16_t ext_id;
+
+			if (!entry)
+				break;
+
+			ext_id = L_PTR_TO_UINT(entry->data);
+			entry = entry->next;
+
+			for (i = 0; tls_extensions[i].name; i++)
+				if (tls_extensions[i].id == ext_id)
+					break;
+
+			extension = &tls_extensions[i];
+			if (!extension->name)
+				continue;
+
+			ext_write = extension->server_write;
+		}
+
+		/*
+		 * Note: could handle NULL client_write with non-NULL
+		 * server_handle or server_handle_absent as "server-oriented"
+		 * extension (7.4.1.4) and write empty extension_data and
+		 * simliarly require empty extension_data in
+		 * tls_handle_client_hello if client_handle NULL.
+		 */
+		if (!ext_write)
+			continue;
+
+		if (len < 4)
+			return -ENOSPC;
+
+		ext_len = ext_write(tls, ptr + 4, len - 4);
+		if (ext_len == -ENOMSG)
+			continue;
+
+		if (ext_len < 0) {
+			TLS_DEBUG("%s extension's %s_write: %s",
+					extension->name,
+					client_hello ? "client" : "server",
+					strerror(-ext_len));
+			return ext_len;
+		}
+
+		l_put_be16(extension->id, ptr + 0);
+		l_put_be16(ext_len, ptr + 2);
+		ptr += 4 + ext_len;
+		len -= 4 + ext_len;
+	}
+
+	if (ptr > extensions_len_ptr + 2)
+		l_put_be16(ptr - (extensions_len_ptr + 2), extensions_len_ptr);
+	else /* Skip the length if no extensions */
+		ptr = extensions_len_ptr;
+
+	return ptr - buf;
+}
+
 static bool tls_send_client_hello(struct l_tls *tls)
 {
-	uint8_t buf[128 + L_ARRAY_SIZE(tls_compression_pref) +
-			2 * L_ARRAY_SIZE(tls_cipher_suite_pref)];
+	uint8_t buf[1024 + L_ARRAY_SIZE(tls_compression_pref)];
 	uint8_t *ptr = buf + TLS_HANDSHAKE_HEADER_SIZE;
 	uint8_t *len_ptr;
-	int i;
+	unsigned int i;
+	ssize_t r;
+	struct tls_cipher_suite **suite;
 
 	/* Fill in the Client Hello body */
 
@@ -826,24 +802,19 @@ static bool tls_send_client_hello(struct l_tls *tls)
 
 	*ptr++ = 0; /* No SessionID */
 
-	/*
-	 * FIXME: We do need to filter the cipher suites by key exchange
-	 * mechanism compatibility with the certificate but we don't normally
-	 * have the certificate at this point because we're called from
-	 * l_tls_new.  We also don't know the TLS version that's going to
-	 * be negotiated yet.
-	 */
 	len_ptr = ptr;
 	ptr += 2;
 
-	for (i = 0; i < (int) L_ARRAY_SIZE(tls_cipher_suite_pref); i++) {
-		if (!tls_cipher_suite_is_compatible(tls,
-						&tls_cipher_suite_pref[i],
-						NULL))
-			continue;
+	for (suite = tls->cipher_suite_pref_list; *suite; suite++) {
+		const char *error;
 
-		*ptr++ = tls_cipher_suite_pref[i].id[0];
-		*ptr++ = tls_cipher_suite_pref[i].id[1];
+		if (!tls_cipher_suite_is_compatible(tls, *suite, &error)) {
+			TLS_DEBUG("non-fatal: %s", error);
+			continue;
+		}
+
+		*ptr++ = (*suite)->id[0];
+		*ptr++ = (*suite)->id[1];
 	}
 
 	if (ptr == len_ptr + 2) {
@@ -854,17 +825,25 @@ static bool tls_send_client_hello(struct l_tls *tls)
 	l_put_be16((ptr - len_ptr - 2), len_ptr);
 	*ptr++ = L_ARRAY_SIZE(tls_compression_pref);
 
-	for (i = 0; i < (int) L_ARRAY_SIZE(tls_compression_pref); i++)
+	for (i = 0; i < L_ARRAY_SIZE(tls_compression_pref); i++)
 		*ptr++ = tls_compression_pref[i].id;
+
+	r = tls_append_hello_extensions(tls, NULL,
+					ptr, buf + sizeof(buf) - ptr);
+	if (r < 0)
+		return false;
+
+	ptr += r;
 
 	tls_tx_handshake(tls, TLS_CLIENT_HELLO, buf, ptr - buf);
 	return true;
 }
 
-static void tls_send_server_hello(struct l_tls *tls)
+static bool tls_send_server_hello(struct l_tls *tls, struct l_queue *extensions)
 {
-	uint8_t buf[128];
+	uint8_t buf[1024];
 	uint8_t *ptr = buf + TLS_HANDSHAKE_HEADER_SIZE;
+	ssize_t r;
 
 	/* Fill in the Server Hello body */
 
@@ -882,7 +861,19 @@ static void tls_send_server_hello(struct l_tls *tls)
 
 	*ptr++ = tls->pending.compression_method->id;
 
+	r = tls_append_hello_extensions(tls, extensions,
+					ptr, buf + sizeof(buf) - ptr);
+	if (r < 0) {
+		TLS_DISCONNECT(TLS_ALERT_INTERNAL_ERROR, 0,
+				"Error appending extensions: %s",
+				strerror(-r));
+		return false;
+	}
+
+	ptr += r;
+
 	tls_tx_handshake(tls, TLS_SERVER_HELLO, buf, ptr - buf);
+	return true;
 }
 
 static bool tls_cert_list_add_size(struct l_cert *cert, void *user_data)
@@ -1038,7 +1029,7 @@ static bool tls_send_certificate_request(struct l_tls *tls)
 	 * affect both of these steps so revisit which set we're passing
 	 * here.
 	 */
-	if (tls->negotiated_version >= TLS_V12) {
+	if (tls->negotiated_version >= L_TLS_V12) {
 		signature_hash_ptr = ptr;
 		ptr += 2;
 
@@ -1090,9 +1081,9 @@ static void tls_send_server_hello_done(struct l_tls *tls)
 				TLS_HANDSHAKE_HEADER_SIZE);
 }
 
-static void tls_generate_master_secret(struct l_tls *tls,
-					const uint8_t *pre_master_secret,
-					int pre_master_secret_len)
+void tls_generate_master_secret(struct l_tls *tls,
+				const uint8_t *pre_master_secret,
+				int pre_master_secret_len)
 {
 	uint8_t seed[64];
 	int key_block_size;
@@ -1116,7 +1107,7 @@ static void tls_generate_master_secret(struct l_tls *tls,
 			tls->pending.cipher_suite->mac->mac_length;
 
 	if (tls->pending.cipher_suite->encryption &&
-			tls->negotiated_version <= TLS_V10 &&
+			tls->negotiated_version <= L_TLS_V10 &&
 			tls->pending.cipher_suite->encryption->cipher_type ==
 			TLS_CIPHER_BLOCK)
 		key_block_size += 2 *
@@ -1135,211 +1126,6 @@ static void tls_generate_master_secret(struct l_tls *tls,
 				tls->pending.key_block, key_block_size);
 
 	memset(seed, 0, 64);
-}
-
-static bool tls_send_rsa_client_key_xchg(struct l_tls *tls)
-{
-	uint8_t buf[1024 + 32];
-	uint8_t *ptr = buf + TLS_HANDSHAKE_HEADER_SIZE;
-	uint8_t pre_master_secret[48];
-	ssize_t bytes_encrypted;
-
-	if (!tls->peer_pubkey) {
-		TLS_DISCONNECT(TLS_ALERT_INTERNAL_ERROR, 0,
-				"Peer public key not received");
-
-		return false;
-	}
-
-	pre_master_secret[0] = (uint8_t) (TLS_VERSION >> 8);
-	pre_master_secret[1] = (uint8_t) (TLS_VERSION >> 0);
-	l_getrandom(pre_master_secret + 2, 46);
-
-	if (tls->peer_pubkey_size + 32 > (int) sizeof(buf)) {
-		TLS_DISCONNECT(TLS_ALERT_INTERNAL_ERROR, 0,
-				"Peer public key too big: %zi",
-				tls->peer_pubkey_size);
-
-		return false;
-	}
-
-	l_put_be16(tls->peer_pubkey_size, ptr);
-	bytes_encrypted = l_key_encrypt(tls->peer_pubkey,
-					L_KEY_RSA_PKCS1_V1_5, L_CHECKSUM_NONE,
-					pre_master_secret, ptr + 2, 48,
-					tls->peer_pubkey_size);
-	ptr += tls->peer_pubkey_size + 2;
-
-	if (bytes_encrypted != (ssize_t) tls->peer_pubkey_size) {
-		TLS_DISCONNECT(TLS_ALERT_INTERNAL_ERROR, 0,
-				"Encrypting PreMasterSecret failed: %s",
-				strerror(-bytes_encrypted));
-
-		return false;
-	}
-
-	tls_tx_handshake(tls, TLS_CLIENT_KEY_EXCHANGE, buf, ptr - buf);
-
-	tls_generate_master_secret(tls, pre_master_secret, 48);
-	memset(pre_master_secret, 0, 48);
-
-	return true;
-}
-
-static ssize_t tls_rsa_sign(struct l_tls *tls, uint8_t *out, size_t len,
-				tls_get_hash_t get_hash)
-{
-	ssize_t result = -EMSGSIZE;
-	enum l_checksum_type sign_checksum_type;
-	uint8_t sign_input[HANDSHAKE_HASH_MAX_SIZE + 36];
-	size_t sign_input_len;
-	uint8_t *ptr = out;
-
-	if (!tls->priv_key || !tls->priv_key_size) {
-		TLS_DISCONNECT(TLS_ALERT_INTERNAL_ERROR, TLS_ALERT_BAD_CERT,
-				"No private key loaded");
-
-		return -ENOKEY;
-	}
-
-	if (tls->negotiated_version >= TLS_V12) {
-		const struct tls_hash_algorithm *hash_type =
-			&tls_handshake_hash_data[tls->signature_hash];
-
-		/* Build the DigitallySigned struct */
-		if (len < 2)	/* Is there space for the algorithm IDs */
-			goto error;
-
-		get_hash(tls, hash_type->tls_id, sign_input, NULL, NULL);
-		sign_checksum_type = hash_type->l_id;
-		sign_input_len = hash_type->length;
-
-		*ptr++ = hash_type->tls_id;
-		*ptr++ = 1;	/* RSA_sign */
-		len -= 2;
-	} else {
-		get_hash(tls, 1, sign_input + 0, NULL, NULL);	/* MD5 */
-		get_hash(tls, 2, sign_input + 16, NULL, NULL);	/* SHA1 */
-		sign_checksum_type = L_CHECKSUM_NONE;
-		sign_input_len = 36;
-	}
-
-	if (len < tls->priv_key_size + 2)
-		goto error;
-
-	l_put_be16(tls->priv_key_size, ptr);
-	result = l_key_sign(tls->priv_key, L_KEY_RSA_PKCS1_V1_5,
-				sign_checksum_type, sign_input, ptr + 2,
-				sign_input_len, tls->priv_key_size);
-	ptr += tls->priv_key_size + 2;
-
-	if (result == (ssize_t) tls->priv_key_size)
-		return ptr - out; /* Success */
-
-error:
-	TLS_DISCONNECT(TLS_ALERT_INTERNAL_ERROR, 0,
-			"Signing the hash failed: %s",
-			strerror(-result));
-	return result;
-}
-
-static bool tls_rsa_verify(struct l_tls *tls, const uint8_t *in, size_t len,
-				tls_get_hash_t get_hash)
-{
-	enum l_checksum_type hash_type;
-	uint8_t expected[HANDSHAKE_HASH_MAX_SIZE + 36];
-	size_t expected_len;
-	unsigned int offset;
-	bool success;
-
-	/* 2 bytes for SignatureAndHashAlgorithm if version >= 1.2 */
-	offset = 2;
-	if (tls->negotiated_version < TLS_V12)
-		offset = 0;
-
-	if (len < offset + 2 ||
-			(size_t) l_get_be16(in + offset) + offset + 2 != len) {
-		TLS_DISCONNECT(TLS_ALERT_DECODE_ERROR, 0, "Signature msg too "
-				"short (%zi) or signature length doesn't match",
-				len);
-
-		return false;
-	}
-
-	/* Only the default hash type supported */
-	if (len != offset + 2 + tls->peer_pubkey_size) {
-		TLS_DISCONNECT(TLS_ALERT_DECODE_ERROR, 0,
-				"Signature length %zi not equal %zi", len,
-				offset + 2 + tls->peer_pubkey_size);
-
-		return false;
-	}
-
-	if (tls->negotiated_version >= TLS_V12) {
-		/* Only RSA supported */
-		if (in[1] != 1 /* RSA_sign */) {
-			TLS_DISCONNECT(TLS_ALERT_DECRYPT_ERROR, 0,
-					"Unknown signature algorithm %i",
-					in[1]);
-
-			return false;
-		}
-
-		if (!get_hash(tls, in[0], expected, &expected_len,
-				&hash_type)) {
-			TLS_DISCONNECT(TLS_ALERT_DECRYPT_ERROR, 0,
-					"Unknown hash type %i", in[0]);
-
-			return false;
-		}
-
-		/*
-		 * Note: Next we let the l_key_verify's underlying kernel
-		 * operation prepend the OID to the hash to build the
-		 * DigestInfo struct.  However according to 4.7 we need to
-		 * support at least two forms of the signed content in the
-		 * verification:
-		 *  - DigestInfo with NULL AlgorithmIdentifier.parameters,
-		 *  - DigestInfo with empty AlgorithmIdentifier.parameters,
-		 *
-		 * while the kernel only understands the former encoding.
-		 * Note PKCS#1 versions 2.0 and later section A.2.4 do
-		 * mandate NULL AlgorithmIdentifier.parameters.
-		 *
-		 * Additionally PKCS#1 v1.5 said BER is used in place of DER
-		 * for DigestInfo encoding which adds more ambiguity in the
-		 * encoding.
-		 */
-	} else {
-		get_hash(tls, 1, expected + 0, NULL, NULL);	/* MD5 */
-		get_hash(tls, 2, expected + 16, NULL, NULL);	/* SHA1 */
-		expected_len = 36;
-		hash_type = L_CHECKSUM_NONE;
-
-		/*
-		 * Note: Within the RSA padding for signatures PKCS#1 1.5
-		 * allows the block format to be either 0 or 1, while PKCS#1
-		 * v2.0+ mandates block type 1 making the signatures
-		 * unambiguous.  TLS 1.0 doesn't additionally specify which
-		 * block type is to be used (TLS 1.2 does) meaning that both
-		 * PKCS#1 v1.5 types are allowed.  The l_key_verify's
-		 * underlying kernel implementation only accepts block type
-		 * 1.  If this ever becomes an issue we'd need to go back to
-		 * using L_KEY_RSA_RAW and our own PKCS#1 v1.5 verify logic.
-		 */
-	}
-
-	success = l_key_verify(tls->peer_pubkey, L_KEY_RSA_PKCS1_V1_5,
-				hash_type, expected, in + offset + 2,
-				expected_len, tls->peer_pubkey_size);
-
-	if (!success)
-		TLS_DISCONNECT(TLS_ALERT_DECRYPT_ERROR, 0,
-				"Peer signature verification failed");
-	else
-		TLS_DEBUG("Peer signature verified");
-
-	return success;
 }
 
 static void tls_get_handshake_hash(struct l_tls *tls,
@@ -1396,7 +1182,7 @@ static bool tls_send_certificate_verify(struct l_tls *tls)
 		return false;
 
 	/* Stop maintaining handshake message hashes other than the PRF hash */
-	if (tls->negotiated_version >= TLS_V12)
+	if (tls->negotiated_version >= L_TLS_V12)
 		for (i = 0; i < __HANDSHAKE_HASH_COUNT; i++)
 			if (&tls_handshake_hash_data[i] != tls->prf_hmac)
 				tls_drop_handshake_hash(tls, i);
@@ -1421,7 +1207,7 @@ static void tls_send_finished(struct l_tls *tls)
 	uint8_t seed[HANDSHAKE_HASH_MAX_SIZE * 2];
 	size_t seed_len;
 
-	if (tls->negotiated_version >= TLS_V12) {
+	if (tls->negotiated_version >= L_TLS_V12) {
 		/* Same hash type as that used for the PRF (usually SHA256) */
 		enum handshake_hash_type hash;
 
@@ -1462,7 +1248,7 @@ static bool tls_verify_finished(struct l_tls *tls, const uint8_t *received,
 		return false;
 	}
 
-	if (tls->negotiated_version >= TLS_V12) {
+	if (tls->negotiated_version >= L_TLS_V12) {
 		enum handshake_hash_type hash;
 
 		for (hash = 0; hash < __HANDSHAKE_HASH_COUNT; hash++)
@@ -1495,6 +1281,138 @@ static bool tls_verify_finished(struct l_tls *tls, const uint8_t *received,
 	return true;
 }
 
+static bool tls_ptr_match(const void *a, const void *b)
+{
+	return a == b;
+}
+
+static bool tls_handle_hello_extensions(struct l_tls *tls,
+					const uint8_t *buf, size_t len,
+					struct l_queue *seen)
+{
+	unsigned int i;
+	const struct tls_hello_extension *extension;
+	bool client_hello = tls->server;
+	uint16_t extensions_size;
+
+	if (!len)
+		return true;
+
+	if (len < 2 || len > 2 + 65535)
+		goto decode_error;
+
+	extensions_size = l_get_be16(buf);
+	len -= 2;
+	buf += 2;
+
+	if (len != extensions_size)
+		goto decode_error;
+
+	while (len) {
+		uint16_t ext_id;
+		size_t ext_len;
+		bool (*handler)(struct l_tls *tls,
+				const uint8_t *buf, size_t len);
+
+		if (len < 4)
+			goto decode_error;
+
+		ext_id = l_get_be16(buf + 0);
+		ext_len = l_get_be16(buf + 2);
+		buf += 4;
+		len -= 4;
+
+		if (ext_len > len)
+			goto decode_error;
+
+		/*
+		 * RFC 5246, Section 7.4.1.4: "There MUST NOT be more than
+		 * one extension of the same type."
+		 */
+		if (l_queue_find(seen, tls_ptr_match, L_UINT_TO_PTR(ext_id))) {
+			TLS_DEBUG("Duplicate extension %u", ext_id);
+			goto decode_error;
+		}
+
+		l_queue_push_tail(seen, L_UINT_TO_PTR(ext_id));
+
+		extension = NULL;
+
+		for (i = 0; tls_extensions[i].name; i++)
+			if (tls_extensions[i].id == ext_id) {
+				extension = &tls_extensions[i];
+				break;
+			}
+
+		if (!extension)
+			goto next;
+
+		handler = client_hello ?
+			extension->client_handle : extension->server_handle;
+
+		/*
+		 * RFC 5246, Section 7.4.1.4: "If a client receives an
+		 * extension type in ServerHello that it did not request in
+		 * the associated ClientHello, it MUST abort the handshake
+		 * with an unsupported_extension fatal alert."
+		 * There are however servers that include an unsolicited
+		 * Supported Point Format extension where the handshake
+		 * still completes fine if the extension is ignored so we
+		 * do this instead.
+		 */
+		if (!client_hello && !handler) {
+			TLS_DEBUG("non-fatal: %s extension not expected in "
+					"a ServerHello", extension->name);
+			goto next;
+		}
+
+		if (!handler(tls, buf, ext_len)) {
+			TLS_DISCONNECT(TLS_ALERT_DECODE_ERROR, 0,
+					"Hello %s extension parse error",
+					extension->name);
+			return false;
+		}
+
+next:
+		buf += ext_len;
+		len -= ext_len;
+	}
+
+	/*
+	 * Trigger any actions needed when an extension is missing and its
+	 * handler has not been called yet.
+	 */
+	for (i = 0; tls_extensions[i].name; i++) {
+		bool (*handler)(struct l_tls *tls);
+
+		extension = &tls_extensions[i];
+		handler = client_hello ?
+			extension->client_handle_absent :
+			extension->server_handle_absent;
+
+		if (!handler)
+			continue;
+
+		if (l_queue_find(seen, tls_ptr_match,
+					L_UINT_TO_PTR(extension->id)))
+			continue;
+
+		if (!handler(tls)) {
+			TLS_DISCONNECT(TLS_ALERT_DECODE_ERROR, 0,
+					"Hello %s extension missing",
+					extension->name);
+			return false;
+		}
+	}
+
+	return true;
+
+decode_error:
+	TLS_DISCONNECT(TLS_ALERT_DECODE_ERROR, 0,
+			"Hello extensions decode error");
+	return false;
+}
+
 static void tls_handle_client_hello(struct l_tls *tls,
 					const uint8_t *buf, size_t len)
 {
@@ -1503,6 +1421,8 @@ static void tls_handle_client_hello(struct l_tls *tls,
 	const uint8_t *cipher_suites;
 	const uint8_t *compression_methods;
 	int i;
+	struct l_queue *extensions_offered = NULL;
+	enum l_tls_alert_desc alert_desc = TLS_ALERT_HANDSHAKE_FAIL;
 
 	/* Do we have enough for ProtocolVersion + Random + SessionID size? */
 	if (len < 2 + 32 + 1)
@@ -1544,22 +1464,12 @@ static void tls_handle_client_hello(struct l_tls *tls,
 
 	len -= compression_methods_size;
 
-	if (len) {
-		uint16_t extensions_size;
+	extensions_offered = l_queue_new();
 
-		if (len < 2 || len > 2 + 65535)
-			goto decode_error;
-
-		extensions_size = l_get_be16(compression_methods +
-						compression_methods_size);
-		len -= 2;
-
-		if (len != extensions_size)
-			goto decode_error;
-
-		/* TODO: validate each extension in the vector, 7.4.1.4 */
-		/* TODO: check for duplicates? */
-	}
+	if (!tls_handle_hello_extensions(tls, compression_methods +
+					compression_methods_size,
+					len, extensions_offered))
+		goto cleanup;
 
 	/*
 	 * Note: if the client is supplying a SessionID we know it is false
@@ -1582,26 +1492,54 @@ static void tls_handle_client_hello(struct l_tls *tls,
 		TLS_DISCONNECT(TLS_ALERT_PROTOCOL_VERSION, 0,
 				"Client version too low: %02x",
 				tls->client_version);
-		return;
+		goto cleanup;
 	}
 
 	tls->negotiated_version = TLS_VERSION < tls->client_version ?
 		TLS_VERSION : tls->client_version;
 
 	/* Stop maintaining handshake message hashes other than MD1 and SHA. */
-	if (tls->negotiated_version < TLS_V12)
+	if (tls->negotiated_version < L_TLS_V12)
 		for (i = 0; i < __HANDSHAKE_HASH_COUNT; i++)
 			if (i != HANDSHAKE_HASH_SHA1 && i != HANDSHAKE_HASH_MD5)
 				tls_drop_handshake_hash(tls, i);
 
-	TLS_DEBUG("Negotiated TLS 1.%i", (tls->negotiated_version & 0xff) - 1);
+	TLS_DEBUG("Negotiated TLS " TLS_VER_FMT,
+			TLS_VER_ARGS(tls->negotiated_version));
+
+	if (!tls->cipher_suite_pref_list) {
+		TLS_DISCONNECT(TLS_ALERT_INTERNAL_ERROR, 0,
+				"No usable cipher suites");
+		return;
+	}
 
 	/* Select a cipher suite according to client's preference list */
 	while (cipher_suites_size) {
 		struct tls_cipher_suite *suite =
 			tls_find_cipher_suite(cipher_suites);
+		struct tls_cipher_suite **iter;
+		const char *error;
 
-		if (suite && tls_cipher_suite_is_compatible(tls, suite, NULL)) {
+		for (iter = tls->cipher_suite_pref_list; *iter; iter++)
+			if (*iter == suite)
+				break;
+
+		if (!suite)
+			TLS_DEBUG("non-fatal: Cipher suite %04x unknown",
+					l_get_be16(cipher_suites));
+		else if (!tls_cipher_suite_is_compatible(tls, suite, &error))
+			TLS_DEBUG("non-fatal: %s", error);
+		else if (!*iter) {
+			/*
+			 * We have at least one matching compatible suite but
+			 * it is not allowed in this security profile.  If the
+			 * handshake ends up failing then we blame the security
+			 * profile.
+			 */
+			alert_desc = TLS_ALERT_INSUFFICIENT_SECURITY;
+			TLS_DEBUG("non-fatal: Cipher suite %s disallowed "
+					"by config", suite->name);
+		} else {
 			tls->pending.cipher_suite = suite;
 			break;
 		}
@@ -1611,16 +1549,16 @@ static void tls_handle_client_hello(struct l_tls *tls,
 	}
 
 	if (!cipher_suites_size) {
-		TLS_DISCONNECT(TLS_ALERT_HANDSHAKE_FAIL, 0,
+		TLS_DISCONNECT(alert_desc, 0,
 				"No common cipher suites matching negotiated "
 				"TLS version and our certificate's key type");
-		return;
+		goto cleanup;
 	}
 
 	if (!tls_set_prf_hmac(tls)) {
 		TLS_DISCONNECT(TLS_ALERT_INTERNAL_ERROR, 0,
 				"Error selecting the PRF HMAC");
-		return;
+		goto cleanup;
 	}
 
 	TLS_DEBUG("Negotiated %s", tls->pending.cipher_suite->name);
@@ -1631,7 +1569,7 @@ static void tls_handle_client_hello(struct l_tls *tls,
 	if (!memchr(compression_methods, 0, compression_methods_size)) {
 		TLS_DISCONNECT(TLS_ALERT_HANDSHAKE_FAIL, 0,
 				"No common compression methods");
-		return;
+		goto cleanup;
 	}
 
 	while (compression_methods_size) {
@@ -1647,10 +1585,18 @@ static void tls_handle_client_hello(struct l_tls *tls,
 
 	TLS_DEBUG("Negotiated %s", tls->pending.compression_method->name);
 
-	tls_send_server_hello(tls);
+	if (!tls_send_server_hello(tls, extensions_offered))
+		goto cleanup;
+
+	l_queue_destroy(extensions_offered, NULL);
 
 	if (tls->pending.cipher_suite->key_xchg->certificate_check && tls->cert)
 		if (!tls_send_certificate(tls))
+			return;
+
+	if (tls->pending.cipher_suite->key_xchg->send_server_key_exchange)
+		if (!tls->pending.cipher_suite->key_xchg->
+				send_server_key_exchange(tls))
 			return;
 
 	/* TODO: don't bother if configured to not authenticate client */
@@ -1672,6 +1618,9 @@ static void tls_handle_client_hello(struct l_tls *tls,
 decode_error:
 	TLS_DISCONNECT(TLS_ALERT_DECODE_ERROR, 0,
 			"ClientHello decode error");
+
+cleanup:
+	l_queue_destroy(extensions_offered, NULL);
 }
 
 static void tls_handle_server_hello(struct l_tls *tls,
@@ -1679,7 +1628,10 @@ static void tls_handle_server_hello(struct l_tls *tls,
 {
 	uint8_t session_id_size, cipher_suite_id[2], compression_method_id;
 	const char *error;
+	struct tls_cipher_suite **iter;
 	int i;
+	struct l_queue *extensions_seen;
+	bool result;
 
 	/* Do we have enough for ProtocolVersion + Random + SessionID len ? */
 	if (len < 2 + 32 + 1)
@@ -1698,11 +1650,13 @@ static void tls_handle_server_hello(struct l_tls *tls,
 	compression_method_id = buf[35 + session_id_size + 2];
 	len -= session_id_size + 2 + 1;
 
-	if (len != 0) { /* We know we haven't solicited any extensions */
-		TLS_DISCONNECT(TLS_ALERT_UNSUPPORTED_EXTENSION, 0,
-				"ServerHello contains extensions");
+	extensions_seen = l_queue_new();
+	result = tls_handle_hello_extensions(tls, buf + 38 + session_id_size,
+						len, extensions_seen);
+	l_queue_destroy(extensions_seen, NULL);
+
+	if (!result)
 		return;
-	}
 
 	tls->negotiated_version = l_get_be16(buf);
 
@@ -1717,12 +1671,13 @@ static void tls_handle_server_hello(struct l_tls *tls,
 	}
 
 	/* Stop maintaining handshake message hashes other than MD1 and SHA. */
-	if (tls->negotiated_version < TLS_V12)
+	if (tls->negotiated_version < L_TLS_V12)
 		for (i = 0; i < __HANDSHAKE_HASH_COUNT; i++)
 			if (i != HANDSHAKE_HASH_SHA1 && i != HANDSHAKE_HASH_MD5)
 				tls_drop_handshake_hash(tls, i);
 
-	TLS_DEBUG("Negotiated TLS 1.%i", (tls->negotiated_version & 0xff) - 1);
+	TLS_DEBUG("Negotiated TLS " TLS_VER_FMT,
+			TLS_VER_ARGS(tls->negotiated_version));
 
 	/* Set the new cipher suite and compression method structs */
 	tls->pending.cipher_suite = tls_find_cipher_suite(cipher_suite_id);
@@ -1730,6 +1685,16 @@ static void tls_handle_server_hello(struct l_tls *tls,
 		TLS_DISCONNECT(TLS_ALERT_HANDSHAKE_FAIL, 0,
 				"Unknown cipher suite %04x",
 				l_get_be16(cipher_suite_id));
+		return;
+	}
+
+	for (iter = tls->cipher_suite_pref_list; *iter; iter++)
+		if (*iter == tls->pending.cipher_suite)
+			break;
+	if (!*iter) {
+		TLS_DISCONNECT(TLS_ALERT_INSUFFICIENT_SECURITY, 0,
+				"Selected cipher suite %s disallowed by config",
+				tls->pending.cipher_suite->name);
 		return;
 	}
 
@@ -1874,7 +1839,8 @@ static void tls_handle_certificate(struct l_tls *tls,
 
 	tls->peer_pubkey_size /= 8;
 
-	if (tls->server)
+	if (tls->server || tls->pending.cipher_suite->key_xchg->
+			handle_server_key_exchange)
 		TLS_SET_STATE(TLS_HANDSHAKE_WAIT_KEY_EXCHANGE);
 	else
 		TLS_SET_STATE(TLS_HANDSHAKE_WAIT_HELLO_DONE);
@@ -1913,7 +1879,7 @@ static void tls_handle_certificate_request(struct l_tls *tls,
 	 * lists for use in tls_send_certificate.
 	 */
 
-	if (tls->negotiated_version >= TLS_V12) {
+	if (tls->negotiated_version >= L_TLS_V12) {
 		/*
 		 * This only makes sense as a variable-length field, assume
 		 * there's a typo in RFC5246 7.4.4 here.
@@ -1942,7 +1908,8 @@ static void tls_handle_certificate_request(struct l_tls *tls,
 			hash_id = signature_hash_data[i + 0];
 
 			/* Ignore hash types for signatures other than ours */
-			if (signature_hash_data[i + 1] != tls_rsa.id)
+			if (signature_hash_data[i + 1] !=
+					tls->pending.cipher_suite->key_xchg->id)
 				continue;
 
 			if (hash_id == tls_handshake_hash_data[
@@ -2029,69 +1996,6 @@ static void tls_handle_server_hello_done(struct l_tls *tls,
 	TLS_SET_STATE(TLS_HANDSHAKE_WAIT_CHANGE_CIPHER_SPEC);
 }
 
-static void tls_handle_rsa_client_key_xchg(struct l_tls *tls,
-						const uint8_t *buf, size_t len)
-{
-	uint8_t pre_master_secret[48], random_secret[46];
-	ssize_t bytes_decrypted;
-
-	if (!tls->priv_key || !tls->priv_key_size) {
-		TLS_DISCONNECT(TLS_ALERT_INTERNAL_ERROR, TLS_ALERT_BAD_CERT,
-				"No private key");
-
-		return;
-	}
-
-	if (len != tls->priv_key_size + 2) {
-		TLS_DISCONNECT(TLS_ALERT_DECODE_ERROR, 0,
-				"ClientKeyExchange len %zi not %zi", len,
-				tls->priv_key_size + 2);
-
-		return;
-	}
-
-	len = l_get_be16(buf);
-
-	if (len != tls->priv_key_size) {
-		TLS_DISCONNECT(TLS_ALERT_DECODE_ERROR, 0,
-				"EncryptedPreMasterSecret len %zi not %zi",
-				len, tls->priv_key_size);
-
-		return;
-	}
-
-	bytes_decrypted = l_key_decrypt(tls->priv_key, L_KEY_RSA_PKCS1_V1_5,
-					L_CHECKSUM_NONE, buf + 2,
-					pre_master_secret, tls->priv_key_size,
-					48);
-
-	/*
-	 * Assume correct premaster secret client version which according
-	 * to the TLS1.2 spec is unlikely in client implementations SSLv3
-	 * and prior.  Spec suggests either not supporting them or adding
-	 * a configurable override for <= SSLv3 clients.  For now we have
-	 * no need to support them.
-	 *
-	 * On any decode error randomise the Pre Master Secret as per the
-	 * countermeasures in 7.4.7.1 and don't generate any alerts.
-	 */
-	l_getrandom(random_secret, 46);
-
-	pre_master_secret[0] = tls->client_version >> 8;
-	pre_master_secret[1] = tls->client_version >> 0;
-
-	if (bytes_decrypted != 48) {
-		memcpy(pre_master_secret + 2, random_secret, 46);
-
-		TLS_DEBUG("Error decrypting PreMasterSecret: %s",
-				strerror(-bytes_decrypted));
-	}
-
-	tls_generate_master_secret(tls, pre_master_secret, 48);
-	memset(pre_master_secret, 0, 48);
-	memset(random_secret, 0, 46);
-}
-
 static bool tls_get_prev_digest_by_id(struct l_tls *tls, uint8_t hash_id,
 					uint8_t *out, size_t *out_len,
 					enum l_checksum_type *type)
@@ -2127,7 +2031,7 @@ static void tls_handle_certificate_verify(struct l_tls *tls,
 		return;
 
 	/* Stop maintaining handshake message hashes other than the PRF hash */
-	if (tls->negotiated_version >= TLS_V12)
+	if (tls->negotiated_version >= L_TLS_V12)
 		for (i = 0; i < __HANDSHAKE_HASH_COUNT; i++)
 			if (&tls_handshake_hash_data[i] != tls->prf_hmac)
 				tls_drop_handshake_hash(tls, i);
@@ -2313,7 +2217,34 @@ static void tls_handle_handshake(struct l_tls *tls, int type,
 
 		break;
 
+	case TLS_SERVER_KEY_EXCHANGE:
+		if (tls->server) {
+			TLS_DISCONNECT(TLS_ALERT_UNEXPECTED_MESSAGE, 0,
+					"Message invalid in server mode");
+			break;
+		}
+
+		if (tls->state != TLS_HANDSHAKE_WAIT_KEY_EXCHANGE) {
+			TLS_DISCONNECT(TLS_ALERT_UNEXPECTED_MESSAGE, 0,
+					"Message invalid in state %s",
+					tls_handshake_state_to_str(tls->state));
+			break;
+		}
+
+		TLS_SET_STATE(TLS_HANDSHAKE_WAIT_HELLO_DONE);
+
+		tls->pending.cipher_suite->key_xchg->handle_server_key_exchange(
+								tls, buf, len);
+
+		break;
+
 	case TLS_CERTIFICATE_REQUEST:
+		if (tls->server) {
+			TLS_DISCONNECT(TLS_ALERT_UNEXPECTED_MESSAGE, 0,
+					"Message invalid in server mode");
+			break;
+		}
+
 		/*
 		 * Server sends this optionally so in the WAIT_HELLO_DONE
 		 * state we accept either this or a Server Hello Done (below).
@@ -2371,9 +2302,6 @@ static void tls_handle_handshake(struct l_tls *tls, int type,
 			break;
 		}
 
-		tls->pending.cipher_suite->key_xchg->handle_client_key_exchange(
-								tls, buf, len);
-
 		/*
 		 * If we accepted a client Certificate message with a
 		 * certificate that has signing capability (TODO: check
@@ -2385,6 +2313,9 @@ static void tls_handle_handshake(struct l_tls *tls, int type,
 			TLS_SET_STATE(TLS_HANDSHAKE_WAIT_CERTIFICATE_VERIFY);
 		else
 			TLS_SET_STATE(TLS_HANDSHAKE_WAIT_CHANGE_CIPHER_SPEC);
+
+		tls->pending.cipher_suite->key_xchg->handle_client_key_exchange(
+								tls, buf, len);
 
 		break;
 
@@ -2413,19 +2344,33 @@ static void tls_handle_handshake(struct l_tls *tls, int type,
 		}
 
 		/*
-		 * On the client, the server's certificate is only now
-		 * verified, based on the following logic:
+		 * On the client, the server's certificate is now verified
+		 * regardless of the key exchange method, based on the
+		 * following logic:
+		 *
 		 *  - tls->ca_certs is non-NULL so tls_handle_certificate
 		 *    (always called on the client) must have veritifed the
 		 *    server's certificate chain to be valid and additionally
 		 *    trusted by our CA.
-		 *  - the correct receival of this Finished message confirms
-		 *    that the peer owns the end-entity certificate because
-		 *    it was able to decrypt the master secret which we had
-		 *    encrypted with the public key from that certificate, and
-		 *    the posession of the master secret in turn is verified
-		 *    by both the successful decryption and the MAC of this
-		 *    message (either should be enough).
+		 *
+		 *  - the peer owns the end-entity certificate because:
+		 *    either:
+		 *
+		 *    * (RSA key exchange algorithm case) the correct
+		 *      receival of this Finished message confirms the
+		 *      posession of the master secret, it is verified by
+		 *      both the successful decryption and the MAC of this
+		 *      message (either should be enough) because we entered
+		 *      the TLS_HANDSHAKE_WAIT_FINISHED state only after
+		 *      encryption and MAC were enabled in ChangeCipherSpec.
+		 *      To obtain the master secret the server must have been
+		 *      able to decrypt the pre_master_secret which we had
+		 *      encrypted with the public key from that certificate.
+		 *
+		 *    * (ECDHE and DHE key exchange algorithms) server was
+		 *      able to sign the client random together with the
+		 *      ServerKeyExchange parameters using its certified key
+		 *      pair.
 		 */
 		if (!tls->server && tls->cipher_suite[0]->key_xchg->
 				certificate_check && tls->ca_certs)
@@ -2460,20 +2405,14 @@ LIB_EXPORT struct l_tls *l_tls_new(bool server,
 	tls->ready_handle = ready_handler;
 	tls->disconnected = disconnect_handler;
 	tls->user_data = user_data;
-
+	tls->cipher_suite_pref_list = tls_cipher_suite_pref;
 	tls->signature_hash = HANDSHAKE_HASH_SHA256;
 
-	/* If we're the client, start the handshake right away */
-	if (!tls->server) {
-		if (!tls_init_handshake_hash(tls) ||
-				!tls_send_client_hello(tls)) {
-			l_free(tls);
-
-			return NULL;
-		}
-	}
-
-	TLS_SET_STATE(TLS_HANDSHAKE_WAIT_HELLO);
+	/* If we're the server wait for the Client Hello already */
+	if (tls->server)
+		TLS_SET_STATE(TLS_HANDSHAKE_WAIT_HELLO);
+	else
+		TLS_SET_STATE(TLS_HANDSHAKE_WAIT_START);
 
 	return tls;
 }
@@ -2505,6 +2444,9 @@ LIB_EXPORT void l_tls_free(struct l_tls *tls)
 
 	if (tls->debug_destroy)
 		tls->debug_destroy(tls->debug_data);
+
+	if (tls->cipher_suite_pref_list != tls_cipher_suite_pref)
+		l_free(tls->cipher_suite_pref_list);
 
 	l_free(tls);
 }
@@ -2652,6 +2594,31 @@ bool tls_handle_message(struct l_tls *tls, const uint8_t *message,
 	return false;
 }
 
+LIB_EXPORT bool l_tls_start(struct l_tls *tls)
+{
+	if (!tls->cipher_suite_pref_list)
+		return false;
+
+	/* This is a nop in server mode */
+	if (tls->server)
+		return true;
+
+	if (tls->state != TLS_HANDSHAKE_WAIT_START) {
+		TLS_DEBUG("Call invalid in state %s",
+				tls_handshake_state_to_str(tls->state));
+		return false;
+	}
+
+	if (!tls_init_handshake_hash(tls))
+		return false;
+
+	if (!tls_send_client_hello(tls))
+		return false;
+
+	TLS_SET_STATE(TLS_HANDSHAKE_WAIT_HELLO);
+	return true;
+}
+
 LIB_EXPORT void l_tls_close(struct l_tls *tls)
 {
 	TLS_DISCONNECT(TLS_ALERT_CLOSE_NOTIFY, 0, "Closing session");
@@ -2737,6 +2704,47 @@ LIB_EXPORT bool l_tls_set_auth_data(struct l_tls *tls, const char *cert_path,
 	return true;
 }
 
+bool tls_set_cipher_suites(struct l_tls *tls, const char **suite_list)
+{
+	struct tls_cipher_suite **suite;
+
+	if (tls->cipher_suite_pref_list != tls_cipher_suite_pref)
+		l_free(tls->cipher_suite_pref_list);
+
+	if (!suite_list) {
+		/* Use our default cipher suite preference list */
+		tls->cipher_suite_pref_list = tls_cipher_suite_pref;
+		return true;
+	}
+
+	tls->cipher_suite_pref_list = l_new(struct tls_cipher_suite *,
+				l_strv_length((char **) suite_list) + 1);
+	suite = tls->cipher_suite_pref_list;
+
+	for (; *suite_list; suite_list++) {
+		unsigned int i;
+
+		for (i = 0; tls_cipher_suite_pref[i]; i++)
+			if (!strcmp(tls_cipher_suite_pref[i]->name,
+						*suite_list))
+				break;
+
+		if (tls_cipher_suite_pref[i])
+			*suite++ = tls_cipher_suite_pref[i];
+		else
+			TLS_DEBUG("Cipher suite %s is not supported",
+					*suite_list);
+	}
+
+	if (suite > tls->cipher_suite_pref_list)
+		return true;
+
+	TLS_DEBUG("None of the supplied suite names is supported");
+	l_free(suite);
+	tls->cipher_suite_pref_list = NULL;
+	return false;
+}
+
 LIB_EXPORT const char *l_tls_alert_to_str(enum l_tls_alert_desc desc)
 {
 	switch (desc) {
@@ -2800,6 +2808,7 @@ const char *tls_handshake_state_to_str(enum tls_handshake_state state)
 	static char buf[100];
 
 	switch (state) {
+	SWITCH_ENUM_TO_STR(TLS_HANDSHAKE_WAIT_START)
 	SWITCH_ENUM_TO_STR(TLS_HANDSHAKE_WAIT_HELLO)
 	SWITCH_ENUM_TO_STR(TLS_HANDSHAKE_WAIT_CERTIFICATE)
 	SWITCH_ENUM_TO_STR(TLS_HANDSHAKE_WAIT_KEY_EXCHANGE)
@@ -2812,21 +2821,6 @@ const char *tls_handshake_state_to_str(enum tls_handshake_state state)
 
 	snprintf(buf, sizeof(buf), "tls_handshake_state(%i)", state);
 	return buf;
-}
-
-struct l_cert *tls_cert_load_file(const char *filename)
-{
-	uint8_t *der;
-	size_t len;
-	struct l_cert *cert;
-
-	der = l_pem_load_certificate(filename, &len);
-	if (!der)
-		return NULL;
-
-	cert = l_cert_new_from_der(der, len);
-	l_free(der);
-	return cert;
 }
 
 int tls_parse_certificate_list(const void *data, size_t len,
