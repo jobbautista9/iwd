@@ -16,8 +16,8 @@ Forwarded: not-needed
  		unit/test-crypto unit/test-eapol unit/test-mpdu \
  		unit/test-ie unit/test-ssid-to-utf8 unit/test-ssid-security \
  		unit/test-arc4 unit/test-wsc unit/test-eap-mschapv2 \
--		unit/test-eap-sim unit/test-ecc unit/test-sae unit/test-ecdh
-+		unit/test-eap-sim unit/test-ecc unit/test-ecdh
+-		unit/test-eap-sim unit/test-sae
++		unit/test-eap-sim
  
  if CLIENT
  unit_tests += unit/test-client
