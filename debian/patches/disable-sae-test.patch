@@ -8,16 +8,24 @@ See eg. buildd logs for iwd 0.7-1 upload which failed spectacularly
 on almost all release architectures.
 Hopefully things improve in the future and we can just drop this again.
 
+Updated patch as it was detected on plummer.debian.org that creating
+sockets for AF_ALG failed, so the test should not be running on that
+machine. Updated patch adds an additional check (cipher type
+doesn't matter so using 0 for now).....
+
 Forwarded: not-needed
 
---- a/Makefile.am
-+++ b/Makefile.am
-@@ -195,7 +195,7 @@
- 		unit/test-crypto unit/test-eapol unit/test-mpdu \
- 		unit/test-ie unit/test-ssid-to-utf8 unit/test-ssid-security \
- 		unit/test-arc4 unit/test-wsc unit/test-eap-mschapv2 \
--		unit/test-eap-sim unit/test-sae
-+		unit/test-eap-sim
+--- a/unit/test-sae.c	2019-04-04 10:16:00.140940983 +0200
++++ b/unit/test-sae.c	2019-04-04 17:26:45.823558305 +0200
+@@ -550,6 +562,11 @@
+ 		goto done;
+ 	}
  
- if CLIENT
- unit_tests += unit/test-client
++	if (!l_cipher_is_supported(0)) {
++		l_info("l_cipher not supported, skipping...");
++		goto done;
++	}
++
+ 	l_test_add("SAE commit timeout", test_commit_timeout, NULL);
+ 	l_test_add("SAE confirm timeout", test_confirm_timeout, NULL);
+ 	l_test_add("SAE anti-clogging", test_clogging, NULL);
