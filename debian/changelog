@@ -1,3 +1,9 @@
+iwd (0.16-2) experimental; urgency=medium
+
+  * Update sae patch to use a smaller hammer
+
+ -- Andreas Henriksson <andreas@fatal.se>  Thu, 04 Apr 2019 17:38:57 +0200
+
 iwd (0.16-1) experimental; urgency=medium
 
   [ Salsa Pipeline ]
