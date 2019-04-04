@@ -136,6 +136,23 @@ static void check_errors_method_callback(struct l_dbus_message *message,
 	dbus_message_has_error(message);
 }
 
+static void display_station(const char *device_name,
+					const struct proxy_interface *proxy)
+{
+	const struct station *station = proxy_interface_get_data(proxy);
+	char *caption = l_strdup_printf("%s: %s", "Station", device_name);
+
+	proxy_properties_display(proxy, caption, MARGIN, 20, 47);
+	l_free(caption);
+
+	if (station->connected_network)
+		display("%s%*s  %-*s%-*s\n", MARGIN, 8, "", 20,
+				"Connected network", 47,
+				network_get_name(station->connected_network));
+
+	display_table_footer();
+}
+
 static void display_station_inline(const char *margin, const void *data)
 {
 	const struct proxy_interface *station_i = data;
@@ -199,7 +216,6 @@ static char *connect_cmd_arg_completion(const char *text, int state)
 static enum cmd_status cmd_connect(const char *device_name,
 						char **argv, int argc)
 {
-	const struct proxy_interface *station_i;
 	struct network_args network_args;
 	struct l_queue *match;
 	const struct proxy_interface *network_proxy;
@@ -208,13 +224,10 @@ static enum cmd_status cmd_connect(const char *device_name,
 	if (argc < 1)
 		return CMD_STATUS_INVALID_ARGS;
 
-	station_i = device_proxy_find(device_name, IWD_STATION_INTERFACE);
-	if (!station_i) {
-		display("No station on device: '%s'\n", device_name);
-		return CMD_STATUS_INVALID_VALUE;
-	}
-
 	device_proxy = device_proxy_find_by_name(device_name);
+	if (!device_proxy)
+		return CMD_STATUS_INVALID_VALUE;
+
 	network_args.name = argv[0];
 	network_args.type = argc >= 2 ? argv[1] : NULL;
 
@@ -578,6 +591,22 @@ static enum cmd_status cmd_scan(const char *device_name,
 	return CMD_STATUS_TRIGGERED;
 }
 
+static enum cmd_status cmd_show(const char *device_name,
+						char **argv, int argc)
+{
+	const struct proxy_interface *station =
+			device_proxy_find(device_name, IWD_STATION_INTERFACE);
+
+	if (!station) {
+		display("No station on device: '%s'\n", device_name);
+		return CMD_STATUS_INVALID_VALUE;
+	}
+
+	display_station(device_name, station);
+
+	return CMD_STATUS_DONE;
+}
+
 static const struct command station_commands[] = {
 	{ NULL, "list", NULL, cmd_list, "List devices in Station mode", true },
 	{ "<wlan>", "connect",
@@ -601,6 +630,7 @@ static const struct command station_commands[] = {
 					cmd_get_hidden_access_points,
 						"Get hidden APs", true },
 	{ "<wlan>", "scan",     NULL,   cmd_scan, "Scan for networks" },
+	{ "<wlan>", "show",     NULL,   cmd_show, "Show station info", true },
 	{ }
 };
 

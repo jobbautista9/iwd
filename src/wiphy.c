@@ -122,16 +122,20 @@ enum ie_rsn_akm_suite wiphy_select_akm(struct wiphy *wiphy,
 	} else if (security == SECURITY_PSK) {
 		/*
 		 * Prefer connecting to SAE/WPA3 network, but only if SAE is
-		 * supported. This allows us to connect to a hybrid WPA2/WPA3
-		 * AP even if SAE/WPA3 is not supported.
+		 * supported, we are MFP capable, and the AP has set the MFPR
+		 * bit. If any of these conditions are not met, we can fallback
+		 * to WPA2 (if the AKM is present).
 		 */
-		if (info.akm_suites & IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256 &&
-				wiphy_has_feature(wiphy, NL80211_FEATURE_SAE))
-			return IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256;
+		if (wiphy->supported_ciphers & IE_RSN_CIPHER_SUITE_BIP &&
+				wiphy_has_feature(wiphy, NL80211_FEATURE_SAE) &&
+				info.mfpr) {
+			if (info.akm_suites &
+					IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256)
+				return IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256;
 
-		if (info.akm_suites & IE_RSN_AKM_SUITE_SAE_SHA256 &&
-				wiphy_has_feature(wiphy, NL80211_FEATURE_SAE))
-			return IE_RSN_AKM_SUITE_SAE_SHA256;
+			if (info.akm_suites & IE_RSN_AKM_SUITE_SAE_SHA256)
+				return IE_RSN_AKM_SUITE_SAE_SHA256;
+		}
 
 		if ((info.akm_suites & IE_RSN_AKM_SUITE_FT_USING_PSK) &&
 				bss->rsne && bss->mde_present)
@@ -235,6 +239,12 @@ uint32_t wiphy_get_supported_bands(struct wiphy *wiphy)
 	return scan_freq_set_get_bands(wiphy->supported_freqs);
 }
 
+const struct scan_freq_set *wiphy_get_supported_freqs(
+						const struct wiphy *wiphy)
+{
+	return wiphy->supported_freqs;
+}
+
 bool wiphy_can_connect(struct wiphy *wiphy, struct scan_bss *bss)
 {
 	struct ie_rsn_info rsn_info;
@@ -275,6 +285,11 @@ bool wiphy_has_feature(struct wiphy *wiphy, uint32_t feature)
 	return wiphy->feature_flags & feature;
 }
 
+bool wiphy_can_randomize_mac_addr(struct wiphy *wiphy)
+{
+	return wiphy_has_feature(wiphy, NL80211_FEATURE_SCAN_RANDOM_MAC_ADDR);
+}
+
 bool wiphy_has_ext_feature(struct wiphy *wiphy, uint32_t feature)
 {
 	return feature < sizeof(wiphy->ext_features) * 8 &&
@@ -291,18 +306,22 @@ bool wiphy_supports_adhoc_rsn(struct wiphy *wiphy)
 	return wiphy->support_adhoc_rsn;
 }
 
-static char **wiphy_get_supported_iftypes(struct wiphy *wiphy)
+static char **wiphy_get_supported_iftypes(struct wiphy *wiphy, uint16_t mask)
 {
-	char **ret = l_new(char *,
-			__builtin_popcount(wiphy->supported_iftypes) + 1);
+	uint16_t supported_mask = wiphy->supported_iftypes & mask;
+	char **ret = l_new(char *, __builtin_popcount(supported_mask) + 1);
 	unsigned int i;
 	unsigned int j;
 
-	for (j = 0, i = 0; i < sizeof(wiphy->supported_iftypes) * 8; i++) {
-		if (!(wiphy->supported_iftypes & (1 << i)))
+	for (j = 0, i = 0; i < sizeof(supported_mask) * 8; i++) {
+		const char *str;
+
+		if (!(supported_mask & (1 << i)))
 			continue;
 
-		ret[j++] = l_strdup(dbus_iftype_to_string(i + 1));
+		str = dbus_iftype_to_string(i + 1);
+		if (str)
+			ret[j++] = l_strdup(str);
 	}
 
 	return ret;
@@ -369,7 +388,7 @@ static void wiphy_print_basic_info(struct wiphy *wiphy)
 	}
 
 	if (wiphy->supported_iftypes) {
-		char **iftypes = wiphy_get_supported_iftypes(wiphy);
+		char **iftypes = wiphy_get_supported_iftypes(wiphy, ~0);
 		char *joined = l_strjoinv(iftypes, ' ');
 
 		l_info("\tSupported iftypes: %s", joined);
@@ -1004,6 +1023,11 @@ static bool wiphy_property_get_name(struct l_dbus *dbus,
 	return true;
 }
 
+#define WIPHY_MODE_MASK	( \
+	(1 << (NL80211_IFTYPE_STATION - 1)) | \
+	(1 << (NL80211_IFTYPE_AP - 1)) | \
+	(1 << (NL80211_IFTYPE_ADHOC - 1)))
+
 static bool wiphy_property_get_supported_modes(struct l_dbus *dbus,
 					struct l_dbus_message *message,
 					struct l_dbus_message_builder *builder,
@@ -1011,7 +1035,7 @@ static bool wiphy_property_get_supported_modes(struct l_dbus *dbus,
 {
 	struct wiphy *wiphy = user_data;
 	unsigned int j = 0;
-	char **iftypes = wiphy_get_supported_iftypes(wiphy);
+	char **iftypes = wiphy_get_supported_iftypes(wiphy, WIPHY_MODE_MASK);
 
 	l_dbus_message_builder_enter_array(builder, "s");
 

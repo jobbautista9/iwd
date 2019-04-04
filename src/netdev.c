@@ -104,6 +104,7 @@ struct netdev {
 	uint32_t set_interface_cmd_id;
 	uint32_t rekey_offload_cmd_id;
 	enum netdev_result result;
+	uint16_t last_code; /* reason or status, depending on result */
 	struct l_timeout *neighbor_report_timeout;
 	struct l_timeout *sa_query_timeout;
 	struct l_timeout *group_handshake_timeout;
@@ -134,6 +135,9 @@ struct netdev {
 	bool in_ft : 1;
 	bool cur_rssi_low : 1;
 	bool use_4addr : 1;
+	bool ignore_connect_event : 1;
+	bool expect_connect_failure : 1;
+	bool aborting : 1;
 };
 
 struct netdev_preauth_state {
@@ -204,7 +208,7 @@ static void netdev_handshake_state_cancel_all(
 static void netdev_handshake_state_free(struct handshake_state *hs)
 {
 	struct netdev_handshake_state *nhs =
-			container_of(hs, struct netdev_handshake_state, super);
+		l_container_of(hs, struct netdev_handshake_state, super);
 
 	netdev_handshake_state_cancel_all(nhs);
 	l_free(nhs);
@@ -302,9 +306,13 @@ enum netdev_iftype netdev_get_iftype(struct netdev *netdev)
 		return NETDEV_IFTYPE_AP;
 	case NL80211_IFTYPE_ADHOC:
 		return NETDEV_IFTYPE_ADHOC;
+	case NL80211_IFTYPE_P2P_CLIENT:
+		return NETDEV_IFTYPE_P2P_CLIENT;
+	case NL80211_IFTYPE_P2P_GO:
+		return NETDEV_IFTYPE_P2P_GO;
 	default:
-		/* cant really do much here */
-		l_error("invalid iftype %u", netdev->type);
+		/* can't really do much here */
+		l_error("unknown iftype %u", netdev->type);
 		return NETDEV_IFTYPE_STATION;
 	}
 }
@@ -473,6 +481,7 @@ static void netdev_rssi_poll_cb(struct l_genl_msg *msg, void *user_data)
 	netdev_set_rssi_level_idx(netdev);
 	if (netdev->cur_rssi_level_idx != prev_rssi_level_idx)
 		netdev->event_filter(netdev, NETDEV_EVENT_RSSI_LEVEL_NOTIFY,
+					&netdev->cur_rssi_level_idx,
 					netdev->user_data);
 
 done:
@@ -580,7 +589,10 @@ static void netdev_connect_free(struct netdev *netdev)
 	netdev->event_filter = NULL;
 	netdev->user_data = NULL;
 	netdev->result = NETDEV_RESULT_OK;
+	netdev->last_code = 0;
 	netdev->in_ft = false;
+	netdev->ignore_connect_event = false;
+	netdev->expect_connect_failure = false;
 
 	netdev_rssi_polling_update(netdev);
 
@@ -593,13 +605,13 @@ static void netdev_connect_free(struct netdev *netdev)
 	}
 }
 
-static void netdev_connect_failed(struct l_genl_msg *msg, void *user_data)
+static void netdev_connect_failed(struct netdev *netdev,
+					enum netdev_result result,
+					uint16_t status_or_reason)
 {
-	struct netdev *netdev = user_data;
 	netdev_connect_cb_t connect_cb = netdev->connect_cb;
 	netdev_event_func_t event_filter = netdev->event_filter;
 	void *connect_data = netdev->user_data;
-	enum netdev_result result = netdev->result;
 
 	netdev->disconnect_cmd_id = 0;
 
@@ -607,10 +619,18 @@ static void netdev_connect_failed(struct l_genl_msg *msg, void *user_data)
 	netdev_connect_free(netdev);
 
 	if (connect_cb)
-		connect_cb(netdev, result, connect_data);
+		connect_cb(netdev, result, &status_or_reason, connect_data);
 	else if (event_filter)
 		event_filter(netdev, NETDEV_EVENT_DISCONNECT_BY_SME,
+				&status_or_reason,
 				connect_data);
+}
+
+static void netdev_disconnect_cb(struct l_genl_msg *msg, void *user_data)
+{
+	struct netdev *netdev = user_data;
+
+	netdev_connect_failed(netdev, netdev->result, netdev->last_code);
 }
 
 static void netdev_free(void *data)
@@ -700,12 +720,12 @@ static void netdev_lost_beacon(struct netdev *netdev)
 		return;
 
 	if (netdev->event_filter)
-		netdev->event_filter(netdev, NETDEV_EVENT_LOST_BEACON,
+		netdev->event_filter(netdev, NETDEV_EVENT_LOST_BEACON, NULL,
 							netdev->user_data);
 }
 
-/* -70 dBm is a popular choice for low signal threshold for roaming */
-#define LOW_SIGNAL_THRESHOLD	-70
+/* Threshold RSSI for roaming to trigger, configurable in main.conf */
+static int LOW_SIGNAL_THRESHOLD;
 
 static void netdev_cqm_event_rssi_threshold(struct netdev *netdev,
 						uint32_t rssi_event)
@@ -727,7 +747,7 @@ static void netdev_cqm_event_rssi_threshold(struct netdev *netdev,
 	event = netdev->cur_rssi_low ? NETDEV_EVENT_RSSI_THRESHOLD_LOW :
 		NETDEV_EVENT_RSSI_THRESHOLD_HIGH;
 
-	netdev->event_filter(netdev, event, netdev->user_data);
+	netdev->event_filter(netdev, event, NULL, netdev->user_data);
 }
 
 static void netdev_rssi_level_init(struct netdev *netdev)
@@ -761,7 +781,7 @@ static void netdev_cqm_event_rssi_value(struct netdev *netdev, int rssi_val)
 			NETDEV_EVENT_RSSI_THRESHOLD_HIGH;
 
 		netdev->cur_rssi_low = new_rssi_low;
-		netdev->event_filter(netdev, event, netdev->user_data);
+		netdev->event_filter(netdev, event, NULL, netdev->user_data);
 	}
 
 	if (!netdev->rssi_levels_num)
@@ -770,6 +790,7 @@ static void netdev_cqm_event_rssi_value(struct netdev *netdev, int rssi_val)
 	netdev_set_rssi_level_idx(netdev);
 	if (netdev->cur_rssi_level_idx != prev_rssi_level_idx)
 		netdev->event_filter(netdev, NETDEV_EVENT_RSSI_LEVEL_NOTIFY,
+					&netdev->cur_rssi_level_idx,
 					netdev->user_data);
 }
 
@@ -913,10 +934,10 @@ static void netdev_disconnect_event(struct l_genl_msg *msg,
 
 	if (disconnect_by_ap)
 		event_filter(netdev, NETDEV_EVENT_DISCONNECT_BY_AP,
-							event_data);
+						&reason_code, event_data);
 	else
 		event_filter(netdev, NETDEV_EVENT_DISCONNECT_BY_SME,
-							event_data);
+						&reason_code, event_data);
 }
 
 static void netdev_cmd_disconnect_cb(struct l_genl_msg *msg, void *user_data)
@@ -927,6 +948,7 @@ static void netdev_cmd_disconnect_cb(struct l_genl_msg *msg, void *user_data)
 	bool r;
 
 	netdev->disconnect_cmd_id = 0;
+	netdev->aborting = false;
 
 	if (!netdev->disconnect_cb) {
 		netdev->user_data = NULL;
@@ -1037,7 +1059,8 @@ static void netdev_connect_ok(struct netdev *netdev)
 	netdev->operational = true;
 
 	if (netdev->connect_cb) {
-		netdev->connect_cb(netdev, NETDEV_RESULT_OK, netdev->user_data);
+		netdev->connect_cb(netdev, NETDEV_RESULT_OK, NULL,
+					netdev->user_data);
 		netdev->connect_cb = NULL;
 	}
 
@@ -1045,7 +1068,7 @@ static void netdev_connect_ok(struct netdev *netdev)
 }
 
 static void netdev_setting_keys_failed(struct netdev_handshake_state *nhs,
-							uint16_t reason_code)
+						int err)
 {
 	struct netdev *netdev = nhs->netdev;
 	struct l_genl_msg *msg;
@@ -1073,19 +1096,19 @@ static void netdev_setting_keys_failed(struct netdev_handshake_state *nhs,
 	}
 
 	netdev->result = NETDEV_RESULT_KEY_SETTING_FAILED;
-
-	handshake_event(&nhs->super, HANDSHAKE_EVENT_SETTING_KEYS_FAILED, NULL);
+	handshake_event(&nhs->super, HANDSHAKE_EVENT_SETTING_KEYS_FAILED, &err);
 
 	switch (netdev->type) {
 	case NL80211_IFTYPE_STATION:
-		msg = netdev_build_cmd_disconnect(netdev, reason_code);
+		msg = netdev_build_cmd_disconnect(netdev,
+						MMPDU_REASON_CODE_UNSPECIFIED);
 		netdev->disconnect_cmd_id = l_genl_family_send(nl80211, msg,
-							netdev_connect_failed,
+							netdev_disconnect_cb,
 							netdev, NULL);
 		break;
 	case NL80211_IFTYPE_AP:
 		msg = netdev_build_cmd_del_station(netdev, nhs->super.spa,
-				reason_code, false);
+				MMPDU_REASON_CODE_UNSPECIFIED, false);
 		if (!l_genl_family_send(nl80211, msg, NULL, NULL, NULL))
 			l_error("error sending DEL_STATION");
 	}
@@ -1120,8 +1143,7 @@ static void netdev_set_station_cb(struct l_genl_msg *msg, void *user_data)
 
 	if (err < 0) {
 		l_error("Set Station failed for ifindex %d", netdev->index);
-		netdev_setting_keys_failed(nhs,
-						MMPDU_REASON_CODE_UNSPECIFIED);
+		netdev_setting_keys_failed(nhs, err);
 		return;
 	}
 
@@ -1133,18 +1155,18 @@ static void netdev_new_group_key_cb(struct l_genl_msg *msg, void *data)
 {
 	struct netdev_handshake_state *nhs = data;
 	struct netdev *netdev = nhs->netdev;
+	int err = l_genl_msg_get_error(msg);
 
 	nhs->group_new_key_cmd_id = 0;
 
-	if (l_genl_msg_get_error(msg) < 0) {
+	if (err < 0) {
 		l_error("New Key for Group Key failed for ifindex: %d",
 				netdev->index);
-		netdev_setting_keys_failed(nhs, MMPDU_REASON_CODE_UNSPECIFIED);
+		netdev_setting_keys_failed(nhs, err);
 		return;
 	}
 
 	nhs->gtk_installed = true;
-
 	try_handshake_complete(nhs);
 }
 
@@ -1153,18 +1175,18 @@ static void netdev_new_group_management_key_cb(struct l_genl_msg *msg,
 {
 	struct netdev_handshake_state *nhs = data;
 	struct netdev *netdev = nhs->netdev;
+	int err = l_genl_msg_get_error(msg);
 
 	nhs->group_management_new_key_cmd_id = 0;
 
-	if (l_genl_msg_get_error(msg) < 0) {
+	if (err < 0) {
 		l_error("New Key for Group Mgmt failed for ifindex: %d",
 				netdev->index);
-		netdev_setting_keys_failed(nhs, MMPDU_REASON_CODE_UNSPECIFIED);
+		netdev_setting_keys_failed(nhs, err);
 		return;
 	}
 
 	nhs->igtk_installed = true;
-
 	try_handshake_complete(nhs);
 }
 
@@ -1230,7 +1252,7 @@ static void netdev_set_gtk(struct handshake_state *hs, uint8_t key_index,
 				uint32_t cipher)
 {
 	struct netdev_handshake_state *nhs =
-			container_of(hs, struct netdev_handshake_state, super);
+		l_container_of(hs, struct netdev_handshake_state, super);
 	struct netdev *netdev = nhs->netdev;
 	uint8_t gtk_buf[32];
 	struct l_genl_msg *msg;
@@ -1243,14 +1265,12 @@ static void netdev_set_gtk(struct handshake_state *hs, uint8_t key_index,
 
 	if (crypto_cipher_key_len(cipher) != gtk_len) {
 		l_error("Unexpected key length: %d", gtk_len);
-		netdev_setting_keys_failed(nhs,
-					MMPDU_REASON_CODE_INVALID_GROUP_CIPHER);
+		netdev_setting_keys_failed(nhs, -ERANGE);
 		return;
 	}
 
 	if (!netdev_copy_tk(gtk_buf, gtk, cipher, false)) {
-		netdev_setting_keys_failed(nhs,
-					MMPDU_REASON_CODE_INVALID_GROUP_CIPHER);
+		netdev_setting_keys_failed(nhs, -ENOENT);
 		return;
 	}
 
@@ -1270,7 +1290,7 @@ static void netdev_set_gtk(struct handshake_state *hs, uint8_t key_index,
 		return;
 
 	l_genl_msg_unref(msg);
-	netdev_setting_keys_failed(nhs, MMPDU_REASON_CODE_UNSPECIFIED);
+	netdev_setting_keys_failed(nhs, -EIO);
 }
 
 static void netdev_set_igtk(struct handshake_state *hs, uint8_t key_index,
@@ -1279,7 +1299,7 @@ static void netdev_set_igtk(struct handshake_state *hs, uint8_t key_index,
 				uint32_t cipher)
 {
 	struct netdev_handshake_state *nhs =
-			container_of(hs, struct netdev_handshake_state, super);
+		l_container_of(hs, struct netdev_handshake_state, super);
 	uint8_t igtk_buf[16];
 	struct netdev *netdev = nhs->netdev;
 	struct l_genl_msg *msg;
@@ -1290,8 +1310,7 @@ static void netdev_set_igtk(struct handshake_state *hs, uint8_t key_index,
 
 	if (crypto_cipher_key_len(cipher) != igtk_len) {
 		l_error("Unexpected key length: %d", igtk_len);
-		netdev_setting_keys_failed(nhs,
-					MMPDU_REASON_CODE_INVALID_GROUP_CIPHER);
+		netdev_setting_keys_failed(nhs, -ERANGE);
 		return;
 	}
 
@@ -1301,8 +1320,7 @@ static void netdev_set_igtk(struct handshake_state *hs, uint8_t key_index,
 		break;
 	default:
 		l_error("Unexpected cipher: %x", cipher);
-		netdev_setting_keys_failed(nhs,
-					MMPDU_REASON_CODE_INVALID_GROUP_CIPHER);
+		netdev_setting_keys_failed(nhs, -ENOENT);
 		return;
 	}
 
@@ -1318,7 +1336,7 @@ static void netdev_set_igtk(struct handshake_state *hs, uint8_t key_index,
 		return;
 
 	l_genl_msg_unref(msg);
-	netdev_setting_keys_failed(nhs, MMPDU_REASON_CODE_UNSPECIFIED);
+	netdev_setting_keys_failed(nhs, -EIO);
 }
 
 static void netdev_new_pairwise_key_cb(struct l_genl_msg *msg, void *data)
@@ -1326,10 +1344,11 @@ static void netdev_new_pairwise_key_cb(struct l_genl_msg *msg, void *data)
 	struct netdev_handshake_state *nhs = data;
 	struct netdev *netdev = nhs->netdev;
 	const uint8_t *addr = netdev_choose_key_address(nhs);
+	int err = l_genl_msg_get_error(msg);
 
 	nhs->pairwise_new_key_cmd_id = 0;
 
-	if (l_genl_msg_get_error(msg) < 0) {
+	if (err < 0) {
 		l_error("New Key for Pairwise Key failed for ifindex: %d",
 					netdev->index);
 		goto error;
@@ -1349,8 +1368,9 @@ static void netdev_new_pairwise_key_cb(struct l_genl_msg *msg, void *data)
 		return;
 
 	l_genl_msg_unref(msg);
+	err = -EIO;
 error:
-	netdev_setting_keys_failed(nhs, MMPDU_REASON_CODE_UNSPECIFIED);
+	netdev_setting_keys_failed(nhs, err);
 }
 
 static struct l_genl_msg *netdev_build_cmd_new_key_pairwise(
@@ -1402,12 +1422,12 @@ static void netdev_set_tk(struct handshake_state *hs,
 				const uint8_t *tk, uint32_t cipher)
 {
 	struct netdev_handshake_state *nhs =
-			container_of(hs, struct netdev_handshake_state, super);
+		l_container_of(hs, struct netdev_handshake_state, super);
 	uint8_t tk_buf[32];
 	struct netdev *netdev = nhs->netdev;
 	struct l_genl_msg *msg;
-	enum mmpdu_reason_code rc;
 	const uint8_t *addr = netdev_choose_key_address(nhs);
+	int err;
 
 	/*
 	 * WPA1 does the group handshake after the 4-way finishes so we can't
@@ -1441,11 +1461,10 @@ static void netdev_set_tk(struct handshake_state *hs,
 
 	l_debug("%d", netdev->index);
 
-	rc = MMPDU_REASON_CODE_INVALID_PAIRWISE_CIPHER;
+	err = -ENOENT;
 	if (!netdev_copy_tk(tk_buf, tk, cipher, false))
 		goto invalid_key;
 
-	rc = MMPDU_REASON_CODE_UNSPECIFIED;
 	msg = netdev_build_cmd_new_key_pairwise(netdev, cipher, addr, tk_buf,
 						crypto_cipher_key_len(cipher));
 	nhs->pairwise_new_key_cmd_id =
@@ -1454,15 +1473,16 @@ static void netdev_set_tk(struct handshake_state *hs,
 	if (nhs->pairwise_new_key_cmd_id > 0)
 		return;
 
+	err = -EIO;
 	l_genl_msg_unref(msg);
 invalid_key:
-	netdev_setting_keys_failed(nhs, rc);
+	netdev_setting_keys_failed(nhs, err);
 }
 
 void netdev_handshake_failed(struct handshake_state *hs, uint16_t reason_code)
 {
 	struct netdev_handshake_state *nhs =
-			container_of(hs, struct netdev_handshake_state, super);
+		l_container_of(hs, struct netdev_handshake_state, super);
 	struct netdev *netdev = nhs->netdev;
 	struct l_genl_msg *msg;
 
@@ -1472,12 +1492,13 @@ void netdev_handshake_failed(struct handshake_state *hs, uint16_t reason_code)
 	netdev->sm = NULL;
 
 	netdev->result = NETDEV_RESULT_HANDSHAKE_FAILED;
+	netdev->last_code = reason_code;
 
 	switch (netdev->type) {
 	case NL80211_IFTYPE_STATION:
 		msg = netdev_build_cmd_disconnect(netdev, reason_code);
 		netdev->disconnect_cmd_id = l_genl_family_send(nl80211, msg,
-							netdev_connect_failed,
+							netdev_disconnect_cb,
 							netdev, NULL);
 		break;
 	case NL80211_IFTYPE_AP:
@@ -1564,12 +1585,21 @@ static void netdev_set_rekey_offload(uint32_t ifindex,
  * FT initial Mobility Domain association (12.4) or a Fast Transition
  * (12.8.5).
  */
-static bool netdev_handle_associate_resp_ies(struct handshake_state *hs,
-					const uint8_t *rsne, const uint8_t *mde,
-					const uint8_t *fte, bool transition)
+static bool netdev_ft_process_associate(struct netdev *netdev,
+					const uint8_t *frame, size_t frame_len,
+					uint16_t *out_status)
 {
+	struct handshake_state *hs = netdev->handshake;
+	const uint8_t *rsne = NULL;
+	const uint8_t *mde = NULL;
+	const uint8_t *fte = NULL;
+	bool transition = netdev->in_ft;
 	const uint8_t *sent_mde = hs->mde;
 	bool is_rsn = hs->supplicant_ie != NULL;
+
+	if (!ft_parse_associate_resp_frame(frame, frame_len, out_status, &rsne,
+					&mde, &fte))
+		return false;
 
 	/*
 	 * During a transition in an RSN, check for an RSNE containing the
@@ -1721,12 +1751,16 @@ static void netdev_connect_event(struct l_genl_msg *msg, struct netdev *netdev)
 	const void *data;
 	const uint16_t *status_code = NULL;
 	const uint8_t *ies = NULL;
-	size_t ies_len;
-	const uint8_t *rsne = NULL;
-	const uint8_t *mde = NULL;
-	const uint8_t *fte = NULL;
+	size_t ies_len = 0;
+	struct ie_tlv_iter iter;
 
 	l_debug("");
+
+	if (netdev->aborting)
+		return;
+
+	if (netdev->ignore_connect_event)
+		return;
 
 	if (!netdev->connected) {
 		l_warn("Unexpected connection related event -- "
@@ -1747,56 +1781,58 @@ static void netdev_connect_event(struct l_genl_msg *msg, struct netdev *netdev)
 		case NL80211_ATTR_STATUS_CODE:
 			if (len == sizeof(uint16_t))
 				status_code = data;
-
 			break;
-		case NL80211_ATTR_RESP_IE:
+		case NL80211_ATTR_REQ_IE:
 			ies = data;
 			ies_len = len;
 			break;
 		}
 	}
 
+	if (netdev->expect_connect_failure) {
+		/*
+		 * The kernel may think we are connected when we are actually
+		 * expecting a failure here, e.g. if Authenticate/Associate had
+		 * previously failed. If so we need to deauth to let the kernel
+		 * know.
+		 */
+		if (status_code && *status_code == 0)
+			goto deauth;
+		else
+			goto error;
+	}
+
 	/* AP Rejected the authenticate / associate */
 	if (!status_code || *status_code != 0)
 		goto error;
 
-	/* Check 802.11r IEs */
-	if (ies) {
-		struct ie_tlv_iter iter;
+	/*
+	 * The driver may have modified the IEs we passed to CMD_CONNECT
+	 * before sending them out, the actual IE sent is reflected in the
+	 * ATTR_REQ_IE sequence.  These are the values EAPoL will need to use.
+	 */
+	ie_tlv_iter_init(&iter, ies, ies_len);
 
-		ie_tlv_iter_init(&iter, ies, ies_len);
+	while (ie_tlv_iter_next(&iter)) {
+		data = ie_tlv_iter_get_data(&iter);
 
-		while (ie_tlv_iter_next(&iter)) {
-			switch (ie_tlv_iter_get_tag(&iter)) {
-			case IE_TYPE_RSN:
-				if (rsne)
-					goto error;
-
-				rsne = ie_tlv_iter_get_data(&iter) - 2;
+		switch (ie_tlv_iter_get_tag(&iter)) {
+		case IE_TYPE_RSN:
+			handshake_state_set_supplicant_rsn(netdev->handshake,
+								data - 2);
+			break;
+		case IE_TYPE_VENDOR_SPECIFIC:
+			if (!is_ie_wpa_ie(data, ie_tlv_iter_get_length(&iter)))
 				break;
 
-			case IE_TYPE_MOBILITY_DOMAIN:
-				if (mde)
-					goto error;
-
-				mde = ie_tlv_iter_get_data(&iter) - 2;
-				break;
-
-			case IE_TYPE_FAST_BSS_TRANSITION:
-				if (fte)
-					goto error;
-
-				fte = ie_tlv_iter_get_data(&iter) - 2;
-				break;
-			}
+			handshake_state_set_supplicant_wpa(netdev->handshake,
+								data - 2);
+			break;
+		case IE_TYPE_MOBILITY_DOMAIN:
+			handshake_state_set_mde(netdev->handshake, data - 2);
+			break;
 		}
 	}
-
-	/* OWE can skip this since it handles associate itself */
-	if (!netdev->owe && !netdev_handle_associate_resp_ies(netdev->handshake,
-								rsne, mde, fte,
-								netdev->in_ft))
-		goto error;
 
 	if (netdev->sm) {
 		/*
@@ -1806,32 +1842,26 @@ static void netdev_connect_event(struct l_genl_msg *msg, struct netdev *netdev)
 		if (!eapol_start(netdev->sm))
 			goto error;
 
-		if (!netdev->in_ft)
-			return;
-	}
-
-	if (netdev->in_ft) {
-		bool is_rsn = netdev->handshake->supplicant_ie != NULL;
-
-		netdev->in_ft = false;
-
-		if (is_rsn) {
-			handshake_state_install_ptk(netdev->handshake);
-			return;
-		}
-	}
-
-	/* OWE must have failed, this is handled inside netdev_owe_complete */
-	if (netdev->owe && !netdev->sm)
 		return;
+	}
 
 	netdev_connect_ok(netdev);
 
 	return;
 
 error:
-	netdev->result = NETDEV_RESULT_ASSOCIATION_FAILED;
-	netdev_connect_failed(NULL, netdev);
+	netdev_connect_failed(netdev, NETDEV_RESULT_ASSOCIATION_FAILED,
+			(status_code) ? *status_code :
+			MMPDU_STATUS_CODE_UNSPECIFIED);
+	return;
+
+deauth:
+	msg = netdev_build_cmd_deauthenticate(netdev,
+						MMPDU_REASON_CODE_UNSPECIFIED);
+	netdev->disconnect_cmd_id = l_genl_family_send(nl80211,
+							msg,
+							netdev_disconnect_cb,
+							netdev, NULL);
 }
 
 static unsigned int ie_rsn_akm_suite_to_nl80211(enum ie_rsn_akm_suite akm)
@@ -2051,17 +2081,18 @@ static void netdev_cmd_ft_reassociate_cb(struct l_genl_msg *msg,
 		struct l_genl_msg *cmd_deauth;
 
 		netdev->result = NETDEV_RESULT_ASSOCIATION_FAILED;
+		netdev->last_code = MMPDU_STATUS_CODE_UNSPECIFIED;
 		cmd_deauth = netdev_build_cmd_deauthenticate(netdev,
 						MMPDU_REASON_CODE_UNSPECIFIED);
 		netdev->disconnect_cmd_id = l_genl_family_send(nl80211,
 							cmd_deauth,
-							netdev_connect_failed,
+							netdev_disconnect_cb,
 							netdev, NULL);
 	}
 }
 
-static void netdev_ft_process(struct netdev *netdev, const uint8_t *frame,
-				size_t frame_len)
+static void netdev_ft_process_authenticate(struct netdev *netdev,
+					const uint8_t *frame, size_t frame_len)
 {
 	struct l_genl_msg *cmd_associate, *cmd_deauth;
 	uint16_t status_code;
@@ -2237,16 +2268,17 @@ static void netdev_ft_process(struct netdev *netdev, const uint8_t *frame,
 	return;
 
 auth_error:
-	netdev->result = NETDEV_RESULT_AUTHENTICATION_FAILED;
-	netdev_connect_failed(NULL, netdev);
+	netdev_connect_failed(netdev, NETDEV_RESULT_AUTHENTICATION_FAILED,
+				status_code);
 	return;
 
 ft_error:
 	netdev->result = NETDEV_RESULT_AUTHENTICATION_FAILED;
+	netdev->last_code = MMPDU_STATUS_CODE_UNSPECIFIED;
 	cmd_deauth = netdev_build_cmd_deauthenticate(netdev,
 						MMPDU_REASON_CODE_UNSPECIFIED);
 	netdev->disconnect_cmd_id = l_genl_family_send(nl80211, cmd_deauth,
-							netdev_connect_failed,
+							netdev_disconnect_cb,
 							netdev, NULL);
 }
 
@@ -2266,6 +2298,9 @@ static void netdev_authenticate_event(struct l_genl_msg *msg,
 	size_t frame_len = 0;
 
 	l_debug("");
+
+	if (netdev->aborting)
+		return;
 
 	if (!netdev->connected) {
 		l_warn("Unexpected connection related event -- "
@@ -2314,7 +2349,7 @@ static void netdev_authenticate_event(struct l_genl_msg *msg,
 		goto auth_error;
 
 	if (netdev->in_ft)
-		netdev_ft_process(netdev, frame, frame_len);
+		netdev_ft_process_authenticate(netdev, frame, frame_len);
 	else if (netdev->sae_sm)
 		netdev_sae_process(netdev,
 				((struct mmpdu_header *)frame)->address_2,
@@ -2327,8 +2362,8 @@ static void netdev_authenticate_event(struct l_genl_msg *msg,
 	return;
 
 auth_error:
-	netdev->result = NETDEV_RESULT_AUTHENTICATION_FAILED;
-	netdev_connect_failed(NULL, netdev);
+	netdev_connect_failed(netdev, NETDEV_RESULT_AUTHENTICATION_FAILED,
+				MMPDU_STATUS_CODE_UNSPECIFIED);
 }
 
 static void netdev_associate_event(struct l_genl_msg *msg,
@@ -2338,11 +2373,12 @@ static void netdev_associate_event(struct l_genl_msg *msg,
 	uint16_t type, len;
 	const void *data;
 	size_t frame_len = 0;
-	const uint8_t *frame;
+	const uint8_t *frame = NULL;
+	uint16_t status_code = MMPDU_STATUS_CODE_UNSPECIFIED;
 
 	l_debug("");
 
-	if (!netdev->owe)
+	if (netdev->aborting)
 		return;
 
 	if (!l_genl_attr_init(&attr, msg)) {
@@ -2360,14 +2396,59 @@ static void netdev_associate_event(struct l_genl_msg *msg,
 			frame = data;
 			frame_len = len;
 
-			owe_rx_associate(netdev->owe, frame, frame_len);
+			break;
+		}
+	}
+
+	if (!frame)
+		goto assoc_failed;
+
+	if (netdev->owe) {
+		owe_rx_associate(netdev->owe, frame, frame_len);
+		return;
+	}
+
+	if (!netdev_ft_process_associate(netdev, frame, frame_len,
+						&status_code))
+		goto assoc_failed;
+
+	if (status_code != 0)
+		goto assoc_failed;
+
+	/* Connection can be fully handled here, not in connect event */
+	netdev->ignore_connect_event = true;
+
+	if (netdev->sm) {
+		/*
+		 * Start processing EAPoL frames now that the state machine
+		 * has all the input data even in FT mode.
+		 */
+		if (!eapol_start(netdev->sm))
+			goto assoc_failed;
+
+		if (!netdev->in_ft)
+			return;
+	}
+
+	if (netdev->in_ft) {
+		bool is_rsn = netdev->handshake->supplicant_ie != NULL;
+
+		netdev->in_ft = false;
+
+		if (is_rsn) {
+			handshake_state_install_ptk(netdev->handshake);
 			return;
 		}
 	}
 
+	netdev_connect_ok(netdev);
+
+	return;
+
 assoc_failed:
 	netdev->result = NETDEV_RESULT_ASSOCIATION_FAILED;
-	netdev_connect_failed(NULL, netdev);
+	netdev->last_code = status_code;
+	netdev->expect_connect_failure = true;
 }
 
 static void netdev_cmd_connect_cb(struct l_genl_msg *msg, void *user_data)
@@ -2381,6 +2462,7 @@ static void netdev_cmd_connect_cb(struct l_genl_msg *msg, void *user_data)
 		if (netdev->event_filter)
 			netdev->event_filter(netdev,
 						NETDEV_EVENT_ASSOCIATING,
+						NULL,
 						netdev->user_data);
 
 		/* the SAE SM can be freed */
@@ -2402,8 +2484,8 @@ static void netdev_cmd_connect_cb(struct l_genl_msg *msg, void *user_data)
 		return;
 	}
 
-	netdev->result = NETDEV_RESULT_ASSOCIATION_FAILED;
-	netdev_connect_failed(NULL, netdev);
+	netdev_connect_failed(netdev, NETDEV_RESULT_ASSOCIATION_FAILED,
+				MMPDU_STATUS_CODE_UNSPECIFIED);
 }
 
 static struct l_genl_msg *netdev_build_cmd_authenticate(struct netdev *netdev,
@@ -2471,8 +2553,8 @@ static void netdev_sae_complete(uint16_t status, void *user_data)
 	return;
 
 auth_failed:
-	netdev->result = NETDEV_RESULT_AUTHENTICATION_FAILED;
-	netdev_connect_failed(NULL, netdev);
+	netdev_connect_failed(netdev, NETDEV_RESULT_AUTHENTICATION_FAILED,
+				MMPDU_STATUS_CODE_UNSPECIFIED);
 }
 
 static void netdev_tx_sae_frame_cb(struct l_genl_msg *msg,
@@ -2510,8 +2592,9 @@ static void netdev_owe_auth_cb(struct l_genl_msg *msg, void *user_data)
 	if (l_genl_msg_get_error(msg) < 0) {
 		l_error("Error sending CMD_AUTHENTICATE");
 
-		netdev->result = NETDEV_RESULT_AUTHENTICATION_FAILED;
-		netdev_connect_failed(NULL, netdev);
+		netdev_connect_failed(netdev,
+					NETDEV_RESULT_AUTHENTICATION_FAILED,
+					MMPDU_STATUS_CODE_UNSPECIFIED);
 		return;
 	}
 }
@@ -2528,8 +2611,9 @@ static void netdev_owe_tx_authenticate(void *user_data)
 	if (!l_genl_family_send(nl80211, msg, netdev_owe_auth_cb,
 							netdev, NULL)) {
 		l_genl_msg_unref(msg);
-		netdev->result = NETDEV_RESULT_AUTHENTICATION_FAILED;
-		netdev_connect_failed(NULL, netdev);
+		netdev_connect_failed(netdev,
+					NETDEV_RESULT_AUTHENTICATION_FAILED,
+					MMPDU_STATUS_CODE_UNSPECIFIED);
 	}
 }
 
@@ -2540,8 +2624,8 @@ static void netdev_owe_assoc_cb(struct l_genl_msg *msg, void *user_data)
 	if (l_genl_msg_get_error(msg) < 0) {
 		l_error("Error sending CMD_ASSOCIATE");
 
-		netdev->result = NETDEV_RESULT_ASSOCIATION_FAILED;
-		netdev_connect_failed(NULL, netdev);
+		netdev_connect_failed(netdev, NETDEV_RESULT_ASSOCIATION_FAILED,
+					MMPDU_STATUS_CODE_UNSPECIFIED);
 	}
 }
 
@@ -2558,31 +2642,36 @@ static void netdev_owe_tx_associate(struct iovec *ie_iov, size_t iov_len,
 	if (!l_genl_family_send(nl80211, msg, netdev_owe_assoc_cb,
 							netdev, NULL)) {
 		l_genl_msg_unref(msg);
-		netdev->result = NETDEV_RESULT_ASSOCIATION_FAILED;
-		netdev_connect_failed(NULL, netdev);
+		netdev_connect_failed(netdev, NETDEV_RESULT_ASSOCIATION_FAILED,
+					MMPDU_STATUS_CODE_UNSPECIFIED);
 	}
 }
 
 static void netdev_owe_complete(uint16_t status, void *user_data)
 {
 	struct netdev *netdev = user_data;
-	struct l_genl_msg *msg;
 
-	if (status) {
-		/*
-		 * OWE will never fail during authenticate, at least internally,
-		 * so we can always assume its association that failed.
-		 */
+	switch (status) {
+	case 0: /* success */
+		break;
+	case MMPDU_STATUS_CODE_UNSUPP_FINITE_CYCLIC_GROUP:
+		if (owe_retry(netdev->owe)) {
+			netdev->ignore_connect_event = true;
+			return;
+		}
+		/* fall through */
+	default:
 		netdev->result = NETDEV_RESULT_ASSOCIATION_FAILED;
-		msg = netdev_build_cmd_disconnect(netdev, status);
-		netdev->disconnect_cmd_id = l_genl_family_send(nl80211, msg,
-							netdev_connect_failed,
-							netdev, NULL);
+		netdev->last_code = status;
+		netdev->expect_connect_failure = true;
 		return;
 	}
 
+	netdev->ignore_connect_event = true;
+
 	netdev->sm = eapol_sm_new(netdev->handshake);
 	eapol_register(netdev->sm);
+	eapol_start(netdev->sm);
 }
 
 static struct l_genl_msg *netdev_build_cmd_connect(struct netdev *netdev,
@@ -2656,15 +2745,15 @@ static struct l_genl_msg *netdev_build_cmd_connect(struct netdev *netdev,
 
 		l_genl_msg_append_attr(msg, NL80211_ATTR_CONTROL_PORT, 0, NULL);
 
-		if (netdev->pae_over_nl80211)
-			l_genl_msg_append_attr(msg,
-					NL80211_ATTR_CONTROL_PORT_OVER_NL80211,
-					0, NULL);
-
 		iov[iov_elems].iov_base = (void *) hs->supplicant_ie;
 		iov[iov_elems].iov_len = hs->supplicant_ie[1] + 2;
 		iov_elems += 1;
 	}
+
+	if (netdev->pae_over_nl80211)
+		l_genl_msg_append_attr(msg,
+				NL80211_ATTR_CONTROL_PORT_OVER_NL80211,
+				0, NULL);
 
 	if (hs->mde) {
 		iov[iov_elems].iov_base = (void *) hs->mde;
@@ -2710,6 +2799,10 @@ static int netdev_connect_common(struct netdev *netdev,
 
 	handshake_state_set_authenticator_address(hs, bss->addr);
 	handshake_state_set_supplicant_address(hs, netdev->addr);
+
+	if (!wiphy_has_ext_feature(netdev->wiphy,
+					NL80211_EXT_FEATURE_CAN_REPLACE_PTK0))
+		handshake_state_set_no_rekey(hs, true);
 
 	if (netdev->sae_sm)
 		sae_start(netdev->sae_sm);
@@ -2829,8 +2922,13 @@ int netdev_disconnect(struct netdev *netdev,
 
 	/* Only perform this if we haven't successfully fully associated yet */
 	if (!netdev->operational) {
-		netdev->result = NETDEV_RESULT_ABORTED;
-		netdev_connect_failed(NULL, netdev);
+		if (netdev->connect_cmd_id) {
+			l_genl_family_cancel(nl80211, netdev->connect_cmd_id);
+			netdev->connect_cmd_id = 0;
+		}
+
+		netdev_connect_failed(netdev, NETDEV_RESULT_ABORTED,
+					MMPDU_REASON_CODE_UNSPECIFIED);
 	} else {
 		netdev_connect_free(netdev);
 	}
@@ -2847,6 +2945,7 @@ int netdev_disconnect(struct netdev *netdev,
 
 	netdev->disconnect_cb = cb;
 	netdev->user_data = user_data;
+	netdev->aborting = true;
 
 	return 0;
 }
@@ -3114,10 +3213,10 @@ static void netdev_cmd_authenticate_ft_cb(struct l_genl_msg *msg,
 
 	netdev->connect_cmd_id = 0;
 
-	if (l_genl_msg_get_error(msg) < 0) {
-		netdev->result = NETDEV_RESULT_AUTHENTICATION_FAILED;
-		netdev_connect_failed(NULL, netdev);
-	}
+	if (l_genl_msg_get_error(msg) < 0)
+		netdev_connect_failed(netdev,
+					NETDEV_RESULT_AUTHENTICATION_FAILED,
+					MMPDU_STATUS_CODE_UNSPECIFIED);
 }
 
 int netdev_fast_transition(struct netdev *netdev, struct scan_bss *target_bss,
@@ -3187,7 +3286,7 @@ int netdev_fast_transition(struct netdev *netdev, struct scan_bss *target_bss,
 	 * like re-keying, this way the callbacks for those commands don't
 	 * have to check if failures resulted from the transition.
 	 */
-	nhs = container_of(netdev->handshake,
+	nhs = l_container_of(netdev->handshake,
 				struct netdev_handshake_state, super);
 
 	/* reset key states just as we do in initialization */
@@ -3487,7 +3586,7 @@ static void netdev_sa_query_timeout(struct l_timeout *timeout,
 	msg = netdev_build_cmd_disconnect(netdev,
 			MMPDU_REASON_CODE_PREV_AUTH_NOT_VALID);
 	netdev->disconnect_cmd_id = l_genl_family_send(nl80211, msg,
-			netdev_connect_failed, netdev, NULL);
+			netdev_disconnect_cb, netdev, NULL);
 }
 
 static void netdev_unprot_disconnect_event(struct l_genl_msg *msg,
@@ -3671,7 +3770,7 @@ static bool netdev_frame_watch_match_prefix(const void *a, const void *b)
 {
 	const struct watchlist_item *item = a;
 	const struct netdev_frame_watch *fw =
-		container_of(item, struct netdev_frame_watch, super);
+		l_container_of(item, struct netdev_frame_watch, super);
 	const struct frame_prefix_info *info = b;
 
 	return fw->frame_type == info->frame_type &&
@@ -4057,11 +4156,6 @@ done:
 	netdev_rssi_polling_update(netdev);
 
 	return 0;
-}
-
-int netdev_get_rssi_level(struct netdev *netdev)
-{
-	return netdev->cur_rssi_level_idx;
 }
 
 static int netdev_cqm_rssi_update(struct netdev *netdev)
@@ -4563,7 +4657,7 @@ check_blacklist:
 static void netdev_frame_watch_free(struct watchlist_item *item)
 {
 	struct netdev_frame_watch *fw =
-		container_of(item, struct netdev_frame_watch, super);
+		l_container_of(item, struct netdev_frame_watch, super);
 
 	l_free(fw->prefix);
 	l_free(fw);
@@ -4960,6 +5054,8 @@ bool netdev_watch_remove(uint32_t id)
 
 bool netdev_init(const char *whitelist, const char *blacklist)
 {
+	const struct l_settings *settings = iwd_get_config();
+
 	if (rtnl)
 		return false;
 
@@ -4980,6 +5076,10 @@ bool netdev_init(const char *whitelist, const char *blacklist)
 		l_netlink_destroy(rtnl);
 		return false;
 	}
+
+	if (!l_settings_get_int(settings, "General", "roam_rssi_threshold",
+					&LOW_SIGNAL_THRESHOLD))
+		LOW_SIGNAL_THRESHOLD = -70;
 
 	watchlist_init(&netdev_watches, NULL);
 	netdev_list = l_queue_new();

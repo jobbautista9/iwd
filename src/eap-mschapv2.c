@@ -25,6 +25,7 @@
 #include <errno.h>
 #include <ell/ell.h>
 
+#include "src/missing.h"
 #include "src/eap.h"
 #include "src/eap-private.h"
 #include "src/eap-mschapv2.h"
@@ -182,45 +183,6 @@ bool mschapv2_get_master_key(const uint8_t pw_hash_hash[static 16],
 	return true;
 }
 
-/**
- * Hash the utf8 encoded nt password.
- * It is asumed, that the password is valid utf8!
- * The rfc says "unicode-char", but never specifies which encoding.
- * This function converts the password to ucs-2.
- * The example in the code uses LE for the unicode chars, so it is forced here.
- * https://tools.ietf.org/html/draft-ietf-pppext-mschap-00#ref-8
- */
-bool mschapv2_nt_password_hash(const char *password, uint8_t hash[static 16])
-{
-	size_t size = l_utf8_strlen(password);
-	size_t bsize = strlen(password);
-	uint16_t buffer[size];
-	unsigned int i, pos;
-	struct l_checksum *check;
-
-	for (i = 0, pos = 0; i < size; ++i) {
-		wchar_t val;
-		pos += l_utf8_get_codepoint(password + pos, bsize - pos, &val);
-
-		if (val > 0xFFFF) {
-			l_error("Encountered password with value not valid in ucs-2");
-			return false;
-		}
-
-		buffer[i] = L_CPU_TO_LE16(val);
-	}
-
-	check = l_checksum_new(L_CHECKSUM_MD4);
-	if (!check)
-		return false;
-
-	l_checksum_update(check, (uint8_t *) buffer, size * 2);
-	l_checksum_get_digest(check, hash, 16);
-	l_checksum_free(check);
-
-	return true;
-}
-
 static bool eap_mschapv2_reset_state(struct eap_state *eap)
 {
 	struct eap_mschapv2_state *state = eap_get_data(eap);
@@ -233,9 +195,9 @@ static bool eap_mschapv2_reset_state(struct eap_state *eap)
 
 static void eap_mschapv2_state_free(struct eap_mschapv2_state *state)
 {
-	memset(state->password_hash, 0, sizeof(state->password_hash));
+	explicit_bzero(state->password_hash, sizeof(state->password_hash));
 
-	memset(state->user, 0, state->user_len);
+	explicit_bzero(state->user, state->user_len);
 	l_free(state->user);
 	state->user_len = 0;
 
@@ -344,7 +306,7 @@ static void eap_mschapv2_handle_success(struct eap_state *eap,
 						state->user, nt_response);
 
 	if (!ret)
-		goto err;
+		goto done;
 
 	ret = mschapv2_generate_authenticator_response(password_hash_hash,
 						nt_response,
@@ -354,18 +316,18 @@ static void eap_mschapv2_handle_success(struct eap_state *eap,
 						authenticator_resp);
 
 	if (!ret)
-		goto err;
+		goto done;
 
 	/*
-	 * For iwd timing attacks are unlikly because media access will
+	 * For iwd timing attacks are unlikely because media access will
 	 * influence timing. If this code is ever taken out of iwd, memcmp
 	 * should be replaced by a constant time memcmp
 	 */
 	if (len < 42 || memcmp(authenticator_resp, pkt, 42)) {
 		l_warn("Authenticator response didn't match");
-		goto err;
+		ret = false;
+		goto done;
 	}
-
 
 	ret = mschapv2_get_master_key(password_hash_hash, nt_response,
 								master_key);
@@ -375,7 +337,7 @@ static void eap_mschapv2_handle_success(struct eap_state *eap,
 							16, false, false);
 
 	if (!ret)
-		goto err;
+		goto done;
 
 	eap_method_success(eap);
 
@@ -385,10 +347,13 @@ static void eap_mschapv2_handle_success(struct eap_state *eap,
 	/* The eapol set_key_material only needs msk, and that's all we got */
 	eap_set_key_material(eap, session_key, 32, NULL, 0, NULL, 0);
 
-	return;
+done:
+	if (!ret)
+		eap_method_error(eap);
 
-err:
-	eap_method_error(eap);
+	explicit_bzero(master_key, sizeof(master_key));
+	explicit_bzero(session_key, sizeof(session_key));
+	explicit_bzero(password_hash_hash, sizeof(password_hash_hash));
 }
 
 static void eap_mschapv2_handle_failure(struct eap_state *eap,
@@ -451,7 +416,7 @@ err:
 static bool set_password_from_string(struct eap_mschapv2_state *state,
 						const char *password)
 {
-	return mschapv2_nt_password_hash(password, state->password_hash);
+	return mschap_nt_password_hash(password, state->password_hash);
 }
 
 static int eap_mschapv2_check_settings(struct l_settings *settings,
@@ -465,6 +430,7 @@ static int eap_mschapv2_check_settings(struct l_settings *settings,
 	const struct eap_secret_info *secret;
 	char setting[64], setting2[64];
 	uint8_t hash[16];
+	int r = 0;
 
 	snprintf(setting, sizeof(setting), "%sIdentity", prefix);
 	identity = l_settings_get_string(settings, "Security", setting);
@@ -496,7 +462,8 @@ static int eap_mschapv2_check_settings(struct l_settings *settings,
 	if (password && password_hash) {
 		l_error("Exactly one of (%s, %s) must be present",
 			setting, setting2);
-		return -EEXIST;
+		r = -EEXIST;
+		goto cleanup;
 	}
 
 	if (password_hash) {
@@ -504,6 +471,9 @@ static int eap_mschapv2_check_settings(struct l_settings *settings,
 		size_t len;
 
 		tmp = l_util_from_hexstring(password_hash, &len);
+		if (tmp)
+			explicit_bzero(tmp, len);
+
 		l_free(tmp);
 
 		if (!tmp || len != 16) {
@@ -527,10 +497,12 @@ static int eap_mschapv2_check_settings(struct l_settings *settings,
 	password = l_strdup(secret->value);
 
 validate:
-	if (!mschapv2_nt_password_hash(password, hash))
-		return -EINVAL;
+	if (!mschap_nt_password_hash(password, hash))
+		r = -EINVAL;
 
-	return 0;
+cleanup:
+	explicit_bzero(password, strlen(password));
+	return r;
 }
 
 static bool eap_mschapv2_load_settings(struct eap_state *eap,
@@ -545,10 +517,8 @@ static bool eap_mschapv2_load_settings(struct eap_state *eap,
 
 	snprintf(setting, sizeof(setting), "%sIdentity", prefix);
 	state->user = l_settings_get_string(settings, "Security", setting);
-	if (!state->user) {
-		l_error("'%s' setting is missing", setting);
+	if (!state->user)
 		goto error;
-	}
 
 	state->user_len = strlen(state->user);
 
@@ -558,6 +528,7 @@ static bool eap_mschapv2_load_settings(struct eap_state *eap,
 
 	if (password) {
 		set_password_from_string(state, password);
+		explicit_bzero(password, strlen(password));
 	} else {
 		unsigned char *tmp;
 		size_t len;
@@ -565,14 +536,15 @@ static bool eap_mschapv2_load_settings(struct eap_state *eap,
 
 		snprintf(setting, sizeof(setting), "%sPassword-Hash", prefix);
 		hash_str = l_settings_get_value(settings, "Security", setting);
-		if (!hash_str) {
-			l_error("Neither '%sPassword' or '%sPassword-Hash' "
-					"setting was provided", prefix, prefix);
+		if (!hash_str)
 			goto error;
-		}
 
 		tmp = l_util_from_hexstring(hash_str, &len);
-		memcpy(state->password_hash, tmp, 16);
+		if (!tmp)
+			goto error;
+
+		memcpy(state->password_hash, tmp, len);
+		explicit_bzero(tmp, len);
 		l_free(tmp);
 	}
 

@@ -67,7 +67,7 @@ static char *passphrase = "secret123";
 static void test_handshake_state_free(struct handshake_state *hs)
 {
 	struct test_handshake_state *ths =
-			container_of(hs, struct test_handshake_state, super);
+			l_container_of(hs, struct test_handshake_state, super);
 
 	l_free(ths);
 }
@@ -245,7 +245,7 @@ static void test_clogging(const void *arg)
 	struct sae_sm *sm = test_initialize(td);
 
 	l_put_le16(1, frame);
-	l_put_le16(MMPDU_REASON_CODE_ANTI_CLOGGING_TOKEN_REQ, frame + 2);
+	l_put_le16(MMPDU_STATUS_CODE_ANTI_CLOGGING_TOKEN_REQ, frame + 2);
 	l_put_le16(19, frame + 4);
 	memcpy(frame + 6, td->test_clogging_token, 32);
 
@@ -333,7 +333,7 @@ static void test_malformed_confirm(const void *arg)
 }
 
 static uint8_t aa_commit_bad_group[] = {
-	0x01, 0x00, 0x00, 0x00, 0x14, 0x00, 0x50, 0x5b, 0xb2, 0x1f, 0xaf, 0x7d,
+	0x01, 0x00, 0x00, 0x00, 0xff, 0x00, 0x50, 0x5b, 0xb2, 0x1f, 0xaf, 0x7d,
 	0xaf, 0x14, 0x7c, 0x7b, 0x19, 0xc9, 0x72, 0x82, 0xbc, 0x1a, 0xdb, 0xa1,
 	0xbd, 0x6e, 0x5a, 0xc7, 0x58, 0x0a, 0x65, 0x1f, 0xd2, 0xde, 0xb0, 0x66,
 	0xa5, 0xf9, 0x3e, 0x95, 0x4a, 0xe1, 0x83, 0xdb, 0x8a, 0xf5, 0x47, 0x8a,
@@ -352,7 +352,7 @@ static void test_bad_group(const void *arg)
 	sae_rx_packet(sm, aa, aa_commit_bad_group, sizeof(aa_commit_bad_group));
 
 	assert(td->tx_reject_occurred);
-	assert(td->status == MMPDU_REASON_CODE_UNSUPP_FINITE_CYCLIC_GROUP);
+	assert(td->status == MMPDU_STATUS_CODE_UNSUPP_FINITE_CYCLIC_GROUP);
 
 	test_destruct(td);
 }

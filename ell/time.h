@@ -1,8 +1,8 @@
 /*
  *
- *  Wireless daemon for Linux
+ *  Embedded Linux library
  *
- *  Copyright (C) 2016  Markus Ongyerth. All rights reserved.
+ *  Copyright (C) 2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,19 +20,44 @@
  *
  */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#ifndef __ELL_TIME_H
+#define __ELL_TIME_H
+
+#ifdef __cplusplus
+extern "C" {
 #endif
 
-#include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
 
+uint64_t l_time_now(void);
 
-bool mschapv2_get_asymmetric_start_key(const uint8_t master_key[static 16],
-				uint8_t *session_key, size_t session_len,
-				bool server, bool send);
+static inline bool l_time_after(uint64_t a, uint64_t b)
+{
+	return a > b;
+}
 
-bool mschapv2_get_master_key(const uint8_t pw_hash_hash[static 16],
-					const uint8_t nt_response[static 24],
-					uint8_t master_key[static 16]);
+static inline bool l_time_before(uint64_t a, uint64_t b)
+{
+	return l_time_after(b, a);
+}
+
+static inline uint64_t l_time_offset(uint64_t time, uint64_t offset)
+{
+	/* check overflow */
+	if (offset > UINT64_MAX - time)
+		return UINT64_MAX;
+
+	return time + offset;
+}
+
+static inline uint64_t l_time_diff(uint64_t a, uint64_t b)
+{
+	return (a < b) ? b - a : a - b;
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __ELL_TIME_H */

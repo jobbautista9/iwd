@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2016  Markus Ongyerth. All rights reserved.
+ *  Copyright (C) 2013-2014  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,19 +20,10 @@
  *
  */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
+#ifndef HAVE_EXPLICIT_BZERO
+static inline void explicit_bzero(void *s, size_t n)
+{
+        memset(s, 0, n);
+        __asm__ __volatile__ ("" : : "r"(s) : "memory");
+}
 #endif
-
-#include <stdio.h>
-#include <stdint.h>
-#include <stdbool.h>
-
-
-bool mschapv2_get_asymmetric_start_key(const uint8_t master_key[static 16],
-				uint8_t *session_key, size_t session_len,
-				bool server, bool send);
-
-bool mschapv2_get_master_key(const uint8_t pw_hash_hash[static 16],
-					const uint8_t nt_response[static 24],
-					uint8_t master_key[static 16]);

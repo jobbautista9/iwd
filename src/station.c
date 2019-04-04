@@ -47,6 +47,8 @@
 #include "src/ie.h"
 #include "src/handshake.h"
 #include "src/station.h"
+#include "src/blacklist.h"
+#include "src/mpdu.h"
 
 static struct l_queue *station_list;
 static uint32_t netdev_watch;
@@ -65,7 +67,7 @@ struct station {
 	struct l_dbus_message *disconnect_pending;
 	struct l_dbus_message *scan_pending;
 	struct signal_agent *signal_agent;
-	uint32_t scan_id;
+	uint32_t dbus_scan_id;
 	uint32_t hidden_network_scan_id;
 
 	/* Roaming related members */
@@ -103,10 +105,17 @@ struct network *station_get_connected_network(struct station *station)
 bool station_is_busy(struct station *station)
 {
 	if (station->state != STATION_STATE_DISCONNECTED &&
-			station->state != STATION_STATE_AUTOCONNECT)
+			station->state != STATION_STATE_AUTOCONNECT_FULL &&
+			station->state != STATION_STATE_AUTOCONNECT_QUICK)
 		return true;
 
 	return false;
+}
+
+static bool station_is_autoconnecting(struct station *station)
+{
+	return station->state == STATION_STATE_AUTOCONNECT_FULL ||
+			station->state == STATION_STATE_AUTOCONNECT_QUICK;
 }
 
 struct autoconnect_entry {
@@ -114,6 +123,22 @@ struct autoconnect_entry {
 	struct network *network;
 	struct scan_bss *bss;
 };
+
+static void station_property_set_scanning(struct station *station,
+								bool scanning)
+{
+	if (station->scanning == scanning)
+		return;
+
+	station->scanning = scanning;
+
+	l_dbus_property_changed(dbus_get_bus(),
+				netdev_get_path(station->netdev),
+					IWD_STATION_INTERFACE, "Scanning");
+}
+
+static void station_enter_state(struct station *station,
+						enum station_state state);
 
 static void station_autoconnect_next(struct station *station)
 {
@@ -128,12 +153,18 @@ static void station_autoconnect_next(struct station *station)
 			entry->bss->frequency, entry->rank,
 			entry->bss->signal_strength);
 
-		/* TODO: Blacklist the network from auto-connect */
+		if (blacklist_contains_bss(entry->bss->addr)) {
+			l_free(entry);
+			continue;
+		}
+
 		r = network_autoconnect(entry->network, entry->bss);
 		l_free(entry);
 
-		if (!r)
+		if (!r) {
+			station_enter_state(station, STATION_STATE_CONNECTING);
 			return;
+		}
 	}
 }
 
@@ -377,6 +408,8 @@ void station_set_scan_results(struct station *station, struct l_queue *bss_list,
 	l_queue_destroy(old_bss_list, bss_free);
 }
 
+static void station_reconnect(struct station *station);
+
 static void station_handshake_event(struct handshake_state *hs,
 					enum handshake_event event,
 					void *event_data, void *user_data)
@@ -397,8 +430,11 @@ static void station_handshake_event(struct handshake_state *hs,
 	case HANDSHAKE_EVENT_FAILED:
 		netdev_handshake_failed(hs, l_get_u16(event_data));
 		break;
-	case HANDSHAKE_EVENT_SETTING_KEYS_FAILED:
+	case HANDSHAKE_EVENT_REKEY_FAILED:
+		station_reconnect(station);
+		break;
 	case HANDSHAKE_EVENT_COMPLETE:
+	case HANDSHAKE_EVENT_SETTING_KEYS_FAILED:
 		/*
 		 * currently we dont care about any other events. The
 		 * netdev_connect_cb will notify us when the connection is
@@ -576,23 +612,17 @@ not_supported:
 	return NULL;
 }
 
-static bool new_scan_results(uint32_t ifindex, int err,
-				struct l_queue *bss_list, void *userdata)
+static bool new_scan_results(int err, struct l_queue *bss_list, void *userdata)
 {
 	struct station *station = userdata;
-	struct l_dbus *dbus = dbus_get_bus();
 	bool autoconnect;
 
-	if (station->scanning) {
-		station->scanning = false;
-		l_dbus_property_changed(dbus, netdev_get_path(station->netdev),
-					IWD_STATION_INTERFACE, "Scanning");
-	}
+	station_property_set_scanning(station, false);
 
 	if (err)
 		return false;
 
-	autoconnect = station_get_state(station) == STATION_STATE_AUTOCONNECT;
+	autoconnect = station_is_autoconnecting(station);
 	station_set_scan_results(station, bss_list, autoconnect);
 
 	if (autoconnect)
@@ -604,32 +634,51 @@ static bool new_scan_results(uint32_t ifindex, int err,
 static void periodic_scan_trigger(int err, void *user_data)
 {
 	struct station *station = user_data;
-	struct l_dbus *dbus = dbus_get_bus();
 
-	station->scanning = true;
-	l_dbus_property_changed(dbus, netdev_get_path(station->netdev),
-				IWD_STATION_INTERFACE, "Scanning");
+	station_property_set_scanning(station, true);
 }
 
 static void periodic_scan_stop(struct station *station)
 {
-	struct l_dbus *dbus = dbus_get_bus();
 	uint32_t index = netdev_get_ifindex(station->netdev);
 
 	scan_periodic_stop(index);
 
-	if (station->scanning) {
-		station->scanning = false;
-		l_dbus_property_changed(dbus, netdev_get_path(station->netdev),
-					IWD_STATION_INTERFACE, "Scanning");
-	}
+	station_property_set_scanning(station, false);
 }
 
-static void station_scan_destroy(void *userdata)
+static bool station_needs_hidden_network_scan(struct station *station)
 {
-	struct station *station = userdata;
+	return !l_queue_isempty(station->hidden_bss_list_sorted) &&
+						known_networks_has_hidden();
+}
 
-	station->scan_id = 0;
+static uint32_t station_scan_trigger(struct station *station,
+					struct scan_freq_set *freqs,
+					scan_trigger_func_t triggered,
+					scan_notify_func_t notify,
+					scan_destroy_func_t destroy)
+{
+	uint32_t index = netdev_get_ifindex(station->netdev);
+
+	if (wiphy_can_randomize_mac_addr(station->wiphy) ||
+				station_needs_hidden_network_scan(station) ||
+						station->connected_bss) {
+		struct scan_parameters params;
+
+		memset(&params, 0, sizeof(params));
+
+		/* If we're connected, HW cannot randomize our MAC */
+		if (!station->connected_bss)
+			params.randomize_mac_addr_hint = true;
+
+		params.freqs = freqs;
+
+		return scan_active_full(index, &params, triggered, notify,
+							station, destroy);
+	}
+
+	return scan_passive(index, freqs, triggered, notify, station, destroy);
 }
 
 static const char *station_state_to_string(enum station_state state)
@@ -637,8 +686,10 @@ static const char *station_state_to_string(enum station_state state)
 	switch (state) {
 	case STATION_STATE_DISCONNECTED:
 		return "disconnected";
-	case STATION_STATE_AUTOCONNECT:
-		return "autoconnect";
+	case STATION_STATE_AUTOCONNECT_QUICK:
+		return "autoconnect_quick";
+	case STATION_STATE_AUTOCONNECT_FULL:
+		return "autoconnect_full";
 	case STATION_STATE_CONNECTING:
 		return "connecting";
 	case STATION_STATE_CONNECTED:
@@ -663,21 +714,28 @@ static void station_enter_state(struct station *station,
 			station_state_to_string(station->state),
 			station_state_to_string(state));
 
-	disconnected = station->state <= STATION_STATE_AUTOCONNECT;
+	disconnected = !station_is_busy(station);
 
-	if ((disconnected && state > STATION_STATE_AUTOCONNECT) ||
+	if ((disconnected && state > STATION_STATE_AUTOCONNECT_FULL) ||
 			(!disconnected && state != station->state))
 		l_dbus_property_changed(dbus, netdev_get_path(station->netdev),
 					IWD_STATION_INTERFACE, "State");
 
 	switch (state) {
-	case STATION_STATE_AUTOCONNECT:
+	case STATION_STATE_AUTOCONNECT_QUICK:
+	case STATION_STATE_AUTOCONNECT_FULL:
 		scan_periodic_start(index, periodic_scan_trigger,
 					new_scan_results, station);
 		break;
+	case STATION_STATE_CONNECTING:
+		l_dbus_property_changed(dbus, netdev_get_path(station->netdev),
+				IWD_STATION_INTERFACE, "ConnectedNetwork");
+		l_dbus_property_changed(dbus,
+				network_get_path(station->connected_network),
+				IWD_NETWORK_INTERFACE, "Connected");
+		/* fall through */
 	case STATION_STATE_DISCONNECTED:
 	case STATION_STATE_CONNECTED:
-	case STATION_STATE_CONNECTING:
 		periodic_scan_stop(station);
 		break;
 	case STATION_STATE_DISCONNECTING:
@@ -717,9 +775,9 @@ bool station_set_autoconnect(struct station *station, bool autoconnect)
 	station->autoconnect = autoconnect;
 
 	if (station->state == STATION_STATE_DISCONNECTED && autoconnect)
-		station_enter_state(station, STATION_STATE_AUTOCONNECT);
+		station_enter_state(station, STATION_STATE_AUTOCONNECT_QUICK);
 
-	if (station->state == STATION_STATE_AUTOCONNECT && !autoconnect)
+	if (station_is_autoconnecting(station) && !autoconnect)
 		station_enter_state(station, STATION_STATE_DISCONNECTED);
 
 	return true;
@@ -771,23 +829,22 @@ static void station_disassociated(struct station *station)
 	station_enter_state(station, STATION_STATE_DISCONNECTED);
 
 	if (station->autoconnect)
-		station_enter_state(station, STATION_STATE_AUTOCONNECT);
+		station_enter_state(station, STATION_STATE_AUTOCONNECT_QUICK);
 }
 
-static void station_disconnect_event(struct station *station)
+static void station_connect_cb(struct netdev *netdev, enum netdev_result result,
+					void *event_data, void *user_data);
+
+static void station_disconnect_event(struct station *station, void *event_data)
 {
 	l_debug("%u", netdev_get_ifindex(station->netdev));
 
-	if (station->connect_pending) {
-		struct network *network = station->connected_network;
-
-		dbus_pending_reply(&station->connect_pending,
-				dbus_error_failed(station->connect_pending));
-
-		network_connect_failed(network);
-	}
-
-	station_disassociated(station);
+	if (station->connect_pending)
+		station_connect_cb(station->netdev,
+					NETDEV_RESULT_HANDSHAKE_FAILED,
+					event_data, station);
+	else
+		station_disassociated(station);
 }
 
 static void station_roam_timeout_rearm(struct station *station, int seconds);
@@ -827,6 +884,7 @@ static void station_roam_failed(struct station *station)
 
 static void station_reassociate_cb(struct netdev *netdev,
 					enum netdev_result result,
+					void *event_data,
 					void *user_data)
 {
 	struct station *station = user_data;
@@ -845,6 +903,7 @@ static void station_reassociate_cb(struct netdev *netdev,
 
 static void station_fast_transition_cb(struct netdev *netdev,
 					enum netdev_result result,
+					void *event_data,
 					void *user_data)
 {
 	struct station *station = user_data;
@@ -862,7 +921,7 @@ static void station_fast_transition_cb(struct netdev *netdev,
 }
 
 static void station_netdev_event(struct netdev *netdev, enum netdev_event event,
-					void *user_data);
+					void *event_data, void *user_data);
 
 static void station_transition_reassociate(struct station *station,
 						struct scan_bss *bss,
@@ -1053,8 +1112,7 @@ static void station_roam_scan_triggered(int err, void *user_data)
 	 */
 }
 
-static bool station_roam_scan_notify(uint32_t ifindex, int err,
-					struct l_queue *bss_list,
+static bool station_roam_scan_notify(int err, struct l_queue *bss_list,
 					void *userdata)
 {
 	struct station *station = userdata;
@@ -1124,6 +1182,9 @@ static bool station_roam_scan_notify(uint32_t ifindex, int err,
 		seen = true;
 
 		if (!wiphy_can_connect(station->wiphy, bss))
+			goto next;
+
+		if (blacklist_contains_bss(bss->addr))
 			goto next;
 
 		rank = bss->rank;
@@ -1423,6 +1484,19 @@ static void station_roam_timeout_rearm(struct station *station, int seconds)
 								station, NULL);
 }
 
+static bool station_cannot_roam(struct station *station)
+{
+	const struct l_settings *config = iwd_get_config();
+	bool disabled;
+
+	if (!l_settings_get_bool(config, "Scan", "disable_roaming_scan",
+								&disabled))
+		disabled = false;
+
+	return disabled || station->preparing_roam ||
+					station->state == STATION_STATE_ROAMING;
+}
+
 static void station_lost_beacon(struct station *station)
 {
 	l_debug("%u", netdev_get_ifindex(station->netdev));
@@ -1440,7 +1514,7 @@ static void station_lost_beacon(struct station *station)
 	 */
 	station->roam_no_orig_ap = true;
 
-	if (station->preparing_roam || station->state == STATION_STATE_ROAMING)
+	if (station_cannot_roam(station))
 		return;
 
 	station_roam_trigger_cb(NULL, station);
@@ -1459,7 +1533,7 @@ void station_ap_directed_roam(struct station *station,
 	uint16_t dtimer;
 	uint8_t valid_interval;
 
-	if (station->preparing_roam || station->state == STATION_STATE_ROAMING)
+	if (station_cannot_roam(station))
 		return;
 
 	if (body_len < 7)
@@ -1536,8 +1610,7 @@ static void station_low_rssi(struct station *station)
 
 	station->signal_low = true;
 
-	if (station->preparing_roam ||
-			station->state == STATION_STATE_ROAMING)
+	if (station_cannot_roam(station))
 		return;
 
 	/* Set a 5-second initial timeout */
@@ -1552,10 +1625,11 @@ static void station_ok_rssi(struct station *station)
 	station->signal_low = false;
 }
 
-static void station_rssi_level_changed(struct station *station);
+static void station_rssi_level_changed(struct station *station,
+					uint8_t level_idx);
 
 static void station_netdev_event(struct netdev *netdev, enum netdev_event event,
-					void *user_data)
+					void *event_data, void *user_data)
 {
 	struct station *station = user_data;
 
@@ -1571,7 +1645,7 @@ static void station_netdev_event(struct netdev *netdev, enum netdev_event event,
 		break;
 	case NETDEV_EVENT_DISCONNECT_BY_AP:
 	case NETDEV_EVENT_DISCONNECT_BY_SME:
-		station_disconnect_event(station);
+		station_disconnect_event(station, event_data);
 		break;
 	case NETDEV_EVENT_RSSI_THRESHOLD_LOW:
 		station_low_rssi(station);
@@ -1580,37 +1654,130 @@ static void station_netdev_event(struct netdev *netdev, enum netdev_event event,
 		station_ok_rssi(station);
 		break;
 	case NETDEV_EVENT_RSSI_LEVEL_NOTIFY:
-		station_rssi_level_changed(station);
+		station_rssi_level_changed(station, l_get_u8(event_data));
 		break;
 	};
 }
 
+static bool station_try_next_bss(struct station *station)
+{
+	struct scan_bss *next;
+	int ret;
+
+	next = network_bss_select(station->connected_network, false);
+
+	if (!next)
+		return false;
+
+	ret = __station_connect_network(station, station->connected_network,
+						next);
+	if (ret < 0)
+		return false;
+
+	l_debug("Attempting to connect to next BSS "MAC, MAC_STR(next->addr));
+
+	return true;
+}
+
+static bool station_retry_with_reason(struct station *station,
+					uint16_t reason_code)
+{
+	/*
+	 * We dont want to cause a retry and blacklist if the password was
+	 * incorrect. Otherwise we would just continue to fail.
+	 *
+	 * Other reason codes can be added here if its decided we want to
+	 * fail in those cases.
+	 */
+	if (reason_code == MMPDU_REASON_CODE_PREV_AUTH_NOT_VALID ||
+			reason_code == MMPDU_REASON_CODE_IEEE8021X_FAILED)
+		return false;
+
+	blacklist_add_bss(station->connected_bss->addr);
+
+	return station_try_next_bss(station);
+}
+
+/* A bit more consise for trying to fit these into 80 characters */
+#define IS_TEMPORARY_STATUS(code) \
+	((code) == MMPDU_STATUS_CODE_DENIED_UNSUFFICIENT_BANDWIDTH || \
+	(code) == MMPDU_STATUS_CODE_DENIED_POOR_CHAN_CONDITIONS || \
+	(code) == MMPDU_STATUS_CODE_REJECTED_WITH_SUGG_BSS_TRANS || \
+	(code) == MMPDU_STATUS_CODE_DENIED_NO_MORE_STAS)
+
+static bool station_retry_with_status(struct station *station,
+					uint16_t status_code)
+{
+	/*
+	 * Certain Auth/Assoc failures should not cause a timeout blacklist.
+	 * In these cases we want to only temporarily blacklist the BSS until
+	 * the connection is complete.
+	 *
+	 * TODO: The WITH_SUGG_BSS_TRANS case should also include a neighbor
+	 *       report IE in the frame. This would allow us to target a
+	 *       specific BSS on our next attempt. There is currently no way to
+	 *       obtain that IE, but this should be done in the future.
+	 */
+	if (IS_TEMPORARY_STATUS(status_code))
+		network_blacklist_add(station->connected_network,
+						station->connected_bss);
+	else
+		blacklist_add_bss(station->connected_bss->addr);
+
+	return station_try_next_bss(station);
+}
+
+static void station_connect_dbus_reply(struct station *station,
+					enum netdev_result result)
+{
+	struct l_dbus_message *reply;
+
+	switch (result) {
+	case NETDEV_RESULT_ABORTED:
+		reply = dbus_error_aborted(station->connect_pending);
+		break;
+	case NETDEV_RESULT_OK:
+		reply = l_dbus_message_new_method_return(
+					station->connect_pending);
+		break;
+	default:
+		reply = dbus_error_failed(station->connect_pending);
+		break;
+	}
+
+	dbus_pending_reply(&station->connect_pending, reply);
+}
+
 static void station_connect_cb(struct netdev *netdev, enum netdev_result result,
-					void *user_data)
+					void *event_data, void *user_data)
 {
 	struct station *station = user_data;
 
 	l_debug("%u, result: %d", netdev_get_ifindex(station->netdev), result);
 
-	if (station->connect_pending) {
-		struct l_dbus_message *reply;
+	switch (result) {
+	case NETDEV_RESULT_OK:
+		blacklist_remove_bss(station->connected_bss->addr);
+		break;
+	case NETDEV_RESULT_HANDSHAKE_FAILED:
+		/* reason code in this case */
+		if (station_retry_with_reason(station, l_get_u16(event_data)))
+			return;
 
-		switch (result) {
-		case NETDEV_RESULT_ABORTED:
-			reply = dbus_error_aborted(station->connect_pending);
-			break;
-		case NETDEV_RESULT_OK:
-			reply = l_dbus_message_new_method_return(
-						station->connect_pending);
-			l_dbus_message_set_arguments(reply, "");
-			break;
-		default:
-			reply = dbus_error_failed(station->connect_pending);
-			break;
-		}
+		break;
+	case NETDEV_RESULT_AUTHENTICATION_FAILED:
+	case NETDEV_RESULT_ASSOCIATION_FAILED:
+		/* status code in this case */
+		if (station_retry_with_status(station, l_get_u16(event_data)))
+			return;
 
-		dbus_pending_reply(&station->connect_pending, reply);
+		break;
+	default:
+		break;
 	}
+
+	if (station->connect_pending)
+		station_connect_dbus_reply(station, result);
 
 	if (result != NETDEV_RESULT_OK) {
 		if (result != NETDEV_RESULT_ABORTED) {
@@ -1628,13 +1795,8 @@ static void station_connect_cb(struct netdev *netdev, enum netdev_result result,
 int __station_connect_network(struct station *station, struct network *network,
 				struct scan_bss *bss)
 {
-	struct l_dbus *dbus = dbus_get_bus();
-	struct netdev *netdev = station->netdev;
 	struct handshake_state *hs;
 	int r;
-
-	if (station_is_busy(station))
-		return -EBUSY;
 
 	hs = station_handshake_setup(station, network, bss);
 	if (!hs)
@@ -1650,13 +1812,6 @@ int __station_connect_network(struct station *station, struct network *network,
 	station->connected_bss = bss;
 	station->connected_network = network;
 
-	station_enter_state(station, STATION_STATE_CONNECTING);
-
-	l_dbus_property_changed(dbus, netdev_get_path(netdev),
-				IWD_STATION_INTERFACE, "ConnectedNetwork");
-	l_dbus_property_changed(dbus, network_get_path(network),
-				IWD_NETWORK_INTERFACE, "Connected");
-
 	return 0;
 }
 
@@ -1664,17 +1819,27 @@ void station_connect_network(struct station *station, struct network *network,
 				struct scan_bss *bss,
 				struct l_dbus_message *message)
 {
-	int err = __station_connect_network(station, network, bss);
+	struct l_dbus *dbus = dbus_get_bus();
+	int err;
 
-	if (err < 0) {
-		struct l_dbus *dbus = dbus_get_bus();
-
-		l_dbus_send(dbus, dbus_error_from_errno(err, message));
-		return;
+	if (station_is_busy(station)) {
+		err = -EBUSY;
+		goto error;
 	}
+
+	err = __station_connect_network(station, network, bss);
+	if (err < 0)
+		goto error;
+
+	station_enter_state(station, STATION_STATE_CONNECTING);
 
 	station->connect_pending = l_dbus_message_ref(message);
 	station->autoconnect = true;
+
+	return;
+
+error:
+	l_dbus_send(dbus, dbus_error_from_errno(err, message));
 }
 
 static void station_hidden_network_scan_triggered(int err, void *user_data)
@@ -1690,7 +1855,7 @@ static void station_hidden_network_scan_triggered(int err, void *user_data)
 				dbus_error_failed(station->connect_pending));
 }
 
-static bool station_hidden_network_scan_results(uint32_t ifindex, int err,
+static bool station_hidden_network_scan_results(int err,
 						struct l_queue *bss_list,
 						void *userdata)
 {
@@ -1811,6 +1976,28 @@ static struct l_dbus_message *station_dbus_connect_hidden_network(
 	return NULL;
 }
 
+static void station_disconnect_reconnect_cb(struct netdev *netdev, bool success,
+					void *user_data)
+{
+	struct station *station = user_data;
+
+	if (__station_connect_network(station, station->connected_network,
+					station->connected_bss) < 0)
+		station_disassociated(station);
+}
+
+static void station_reconnect(struct station *station)
+{
+	/*
+	 * Rather than doing 4 or so state changes, lets just go into
+	 * roaming for the duration of this reconnect.
+	 */
+	station_enter_state(station, STATION_STATE_ROAMING);
+
+	netdev_disconnect(station->netdev, station_disconnect_reconnect_cb,
+				station);
+}
+
 static void station_disconnect_cb(struct netdev *netdev, bool success,
 					void *user_data)
 {
@@ -1837,7 +2024,7 @@ static void station_disconnect_cb(struct netdev *netdev, bool success,
 	station_enter_state(station, STATION_STATE_DISCONNECTED);
 
 	if (station->autoconnect)
-		station_enter_state(station, STATION_STATE_AUTOCONNECT);
+		station_enter_state(station, STATION_STATE_AUTOCONNECT_QUICK);
 }
 
 int station_disconnect(struct station *station)
@@ -1879,8 +2066,7 @@ static struct l_dbus_message *station_dbus_disconnect(struct l_dbus *dbus,
 	 */
 	station_set_autoconnect(station, false);
 
-	if (station->state == STATION_STATE_AUTOCONNECT ||
-			station->state == STATION_STATE_DISCONNECTED)
+	if (!station_is_busy(station))
 		return l_dbus_message_new_method_return(message);
 
 	result = station_disconnect(station);
@@ -1981,7 +2167,6 @@ static void station_dbus_scan_triggered(int err, void *user_data)
 {
 	struct station *station = user_data;
 	struct l_dbus_message *reply;
-	struct l_dbus *dbus = dbus_get_bus();
 
 	l_debug("station_scan_triggered: %i", err);
 
@@ -1997,9 +2182,14 @@ static void station_dbus_scan_triggered(int err, void *user_data)
 	l_dbus_message_set_arguments(reply, "");
 	dbus_pending_reply(&station->scan_pending, reply);
 
-	station->scanning = true;
-	l_dbus_property_changed(dbus, netdev_get_path(station->netdev),
-				IWD_STATION_INTERFACE, "Scanning");
+	station_property_set_scanning(station, true);
+}
+
+static void station_dbus_scan_destroy(void *userdata)
+{
+	struct station *station = userdata;
+
+	station->dbus_scan_id = 0;
 }
 
 static struct l_dbus_message *station_dbus_scan(struct l_dbus *dbus,
@@ -2007,40 +2197,18 @@ static struct l_dbus_message *station_dbus_scan(struct l_dbus *dbus,
 						void *user_data)
 {
 	struct station *station = user_data;
-	uint32_t index = netdev_get_ifindex(station->netdev);
 
 	l_debug("Scan called from DBus");
 
-	if (station->scan_id)
+	if (station->dbus_scan_id)
 		return dbus_error_busy(message);
 
-	/*
-	 * If we're not connected and no hidden networks are seen & configured,
-	 * use passive scanning to hide our MAC address
-	 */
-	if (!station->connected_bss &&
-			!(!l_queue_isempty(station->hidden_bss_list_sorted) &&
-				known_networks_has_hidden())) {
-		station->scan_id = scan_passive(index,
-					station_dbus_scan_triggered,
-					new_scan_results, station,
-					station_scan_destroy);
-	} else {
-		struct scan_parameters params;
+	station->dbus_scan_id = station_scan_trigger(station, NULL,
+						station_dbus_scan_triggered,
+						new_scan_results,
+						station_dbus_scan_destroy);
 
-		memset(&params, 0, sizeof(params));
-
-		/* If we're connected, HW cannot randomize our MAC */
-		if (!station->connected_bss)
-			params.randomize_mac_addr_hint = true;
-
-		station->scan_id = scan_active_full(index, &params,
-					station_dbus_scan_triggered,
-					new_scan_results, station,
-					station_scan_destroy);
-	}
-
-	if (!station->scan_id)
+	if (!station->dbus_scan_id)
 		return dbus_error_failed(message);
 
 	station->scan_pending = l_dbus_message_ref(message);
@@ -2055,22 +2223,22 @@ struct signal_agent {
 };
 
 static void station_signal_agent_notify(struct signal_agent *agent,
-					const char *device_path, int level)
+					const char *device_path, uint8_t level)
 {
 	struct l_dbus_message *msg;
-	uint8_t value = level;
 
 	msg = l_dbus_message_new_method_call(dbus_get_bus(),
 						agent->owner, agent->path,
 						IWD_SIGNAL_AGENT_INTERFACE,
 						"Changed");
-	l_dbus_message_set_arguments(msg, "oy", device_path, value);
+	l_dbus_message_set_arguments(msg, "oy", device_path, level);
 	l_dbus_message_set_no_reply(msg, true);
 
 	l_dbus_send(dbus_get_bus(), msg);
 }
 
-static void station_rssi_level_changed(struct station *station)
+static void station_rssi_level_changed(struct station *station,
+					uint8_t level_idx)
 {
 	struct netdev *netdev = station->netdev;
 
@@ -2078,8 +2246,7 @@ static void station_rssi_level_changed(struct station *station)
 		return;
 
 	station_signal_agent_notify(station->signal_agent,
-					netdev_get_path(netdev),
-					netdev_get_rssi_level(netdev));
+					netdev_get_path(netdev), level_idx);
 }
 
 static void station_signal_agent_release(struct signal_agent *agent,
@@ -2243,11 +2410,13 @@ static bool station_property_get_state(struct l_dbus *dbus,
 					void *user_data)
 {
 	struct station *station = user_data;
-	const char *statestr = station_state_to_string(station->state);
+	const char *statestr;
 
-	/* Special case.  For now we treat AUTOCONNECT as disconnected */
-	if (station->state == STATION_STATE_AUTOCONNECT)
+	if (!station_is_busy(station))
+		/* Special case. For now we treat AUTOCONNECT as disconnected */
 		statestr = "disconnected";
+	else
+		statestr = station_state_to_string(station->state);
 
 	l_dbus_message_builder_append_basic(builder, 's', statestr);
 	return true;
@@ -2339,9 +2508,9 @@ static void station_free(struct station *station)
 		dbus_pending_reply(&station->scan_pending,
 			dbus_error_aborted(station->scan_pending));
 
-	if (station->scan_id)
+	if (station->dbus_scan_id)
 		scan_cancel(netdev_get_ifindex(station->netdev),
-				station->scan_id);
+				station->dbus_scan_id);
 
 	if (station->hidden_network_scan_id)
 		scan_cancel(netdev_get_ifindex(station->netdev),

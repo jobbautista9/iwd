@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <ell/ell.h>
 
+#include "src/missing.h"
 #include "src/eap.h"
 #include "src/eap-private.h"
 #include "src/eap-tls-common.h"
@@ -49,6 +50,8 @@ static bool eap_tls_tunnel_ready(struct eap_state *eap,
 									iv, 64);
 
 	eap_set_key_material(eap, msk_emsk + 0, 64, msk_emsk + 64, 64, iv, 64);
+	explicit_bzero(msk_emsk, sizeof(msk_emsk));
+	explicit_bzero(iv, sizeof(iv));
 
 	eap_tls_common_send_empty_response(eap);
 
@@ -89,7 +92,7 @@ static bool eap_tls_settings_load(struct eap_state *eap,
 }
 
 static struct eap_method eap_tls = {
-	.request_type = EAP_TYPE_TLS_EAP,
+	.request_type = EAP_TYPE_TLS,
 	.exports_msk = true,
 	.name = "TLS",
 

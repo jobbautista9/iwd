@@ -24,14 +24,21 @@
 #include <config.h>
 #endif
 
+#define _GNU_SOURCE
+#include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <string.h>
 
-#include "private.h"
 #include "ecc.h"
 #include "ecc-private.h"
 #include "random.h"
+#include "private.h"
+#include "missing.h"
 
+/*
+ * RFC 5114 - Section 2.6 256-bit Random ECP Group
+ */
 #define P256_CURVE_P { 0xFFFFFFFFFFFFFFFFull, 0x00000000FFFFFFFFull, \
 			0x0000000000000000ull, 0xFFFFFFFF00000001ull }
 #define P256_CURVE_GX { 0xF4A13945D898C296ull, 0x77037D812DEB33A0ull,   \
@@ -44,7 +51,9 @@
 			0xB3EBBD55769886BCull, 0x5AC635D8AA3A93E7ull }
 
 static const struct l_ecc_curve p256 = {
-	.group = 19,
+	.name = "secp256r1",
+	.ike_group = 19,
+	.tls_group = 23,
 	.ndigits = 4,
 	.g = {
 		.x = P256_CURVE_GX,
@@ -56,6 +65,9 @@ static const struct l_ecc_curve p256 = {
 	.b = P256_CURVE_B,
 };
 
+/*
+ * RFC 5114 - Section 2.7 384-bit Random ECP Group
+ */
 #define P384_CURVE_P {	0x00000000FFFFFFFFull, 0xFFFFFFFF00000000ull, \
 			0xFFFFFFFFFFFFFFFEull, 0xFFFFFFFFFFFFFFFFull, \
 			0xFFFFFFFFFFFFFFFFull, 0xFFFFFFFFFFFFFFFFull }
@@ -73,7 +85,9 @@ static const struct l_ecc_curve p256 = {
 			0x988E056BE3F82D19ull, 0xB3312FA7E23EE7E4ull }
 
 static const struct l_ecc_curve p384 = {
-	.group = 20,
+	.name = "secp384r1",
+	.ike_group = 20,
+	.tls_group = 24,
 	.ndigits = 6,
 	.g = {
 		.x = P384_CURVE_GX,
@@ -90,16 +104,97 @@ static const struct l_ecc_curve *curves[] = {
 	&p384,
 };
 
-LIB_EXPORT const struct l_ecc_curve *l_ecc_curve_get(unsigned int group)
+LIB_EXPORT const struct l_ecc_curve *l_ecc_curve_get(const char *name)
 {
 	int i;
 
+	if (unlikely(!name))
+		return NULL;
+
 	for (i = 0; curves[i]; i++) {
-		if (curves[i]->group == group)
+		if (!strcmp(curves[i]->name, name))
 			return curves[i];
 	}
 
 	return NULL;
+}
+
+LIB_EXPORT const char *l_ecc_curve_get_name(const struct l_ecc_curve *curve)
+{
+	if (unlikely(!curve))
+		return NULL;
+
+	return curve->name;
+}
+
+LIB_EXPORT size_t l_ecc_curve_get_scalar_bytes(const struct l_ecc_curve *curve)
+{
+	if (unlikely(!curve))
+		return 0;
+
+	return curve->ndigits * 8;
+}
+
+LIB_EXPORT const struct l_ecc_curve *l_ecc_curve_get_ike_group(
+							unsigned int group)
+{
+	unsigned int i;
+
+	for (i = 0; i < L_ARRAY_SIZE(curves); i++) {
+		if (curves[i]->ike_group == group)
+			return curves[i];
+	}
+
+	return NULL;
+}
+
+LIB_EXPORT const struct l_ecc_curve *l_ecc_curve_get_tls_group(
+							unsigned int group)
+{
+	unsigned int i;
+
+	for (i = 0; i < L_ARRAY_SIZE(curves); i++) {
+		if (curves[i]->tls_group == group)
+			return curves[i];
+	}
+
+	return NULL;
+}
+
+LIB_EXPORT const unsigned int *l_ecc_curve_get_supported_ike_groups(void)
+{
+	static unsigned int supported_ike_groups[L_ARRAY_SIZE(curves) + 1];
+	static bool ike_first = true;
+
+	if (ike_first) {
+		unsigned int i;
+
+		for (i = 0; i < L_ARRAY_SIZE(curves); i++)
+			supported_ike_groups[i] = curves[i]->ike_group;
+
+		supported_ike_groups[i] = 0;
+		ike_first = false;
+	}
+
+	return supported_ike_groups;
+}
+
+LIB_EXPORT const unsigned int *l_ecc_curve_get_supported_tls_groups(void)
+{
+	static unsigned int supported_tls_groups[L_ARRAY_SIZE(curves) + 1];
+	static bool tls_first = true;
+
+	if (tls_first) {
+		unsigned int i;
+
+		for (i = 0; i < L_ARRAY_SIZE(curves); i++)
+			supported_tls_groups[i] = curves[i]->tls_group;
+
+		supported_tls_groups[i] = 0;
+		tls_first = false;
+	}
+
+	return supported_tls_groups;
 }
 
 static bool ecc_valid_point(struct l_ecc_point *point)
@@ -450,6 +545,11 @@ LIB_EXPORT ssize_t l_ecc_point_get_data(const struct l_ecc_point *p, void *buf,
 
 LIB_EXPORT void l_ecc_point_free(struct l_ecc_point *p)
 {
+	if (unlikely(!p))
+		return;
+
+	explicit_bzero(p->x, p->curve->ndigits * 8);
+	explicit_bzero(p->y, p->curve->ndigits * 8);
 	l_free(p);
 }
 
@@ -506,7 +606,6 @@ LIB_EXPORT struct l_ecc_scalar *l_ecc_scalar_new_random(
 }
 
 LIB_EXPORT ssize_t l_ecc_scalar_get_data(const struct l_ecc_scalar *c,
-
 						void *buf, size_t len)
 {
 	if (len < c->curve->ndigits * 8)
@@ -522,7 +621,7 @@ LIB_EXPORT void l_ecc_scalar_free(struct l_ecc_scalar *c)
 	if (unlikely(!c))
 		return;
 
-	memset(c->c, 0, c->curve->ndigits * 8);
+	explicit_bzero(c->c, c->curve->ndigits * 8);
 	l_free(c);
 }
 

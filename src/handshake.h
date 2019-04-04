@@ -48,7 +48,8 @@ enum handshake_event {
 	HANDSHAKE_EVENT_SETTING_KEYS,
 	HANDSHAKE_EVENT_SETTING_KEYS_FAILED,
 	HANDSHAKE_EVENT_COMPLETE,
-	HANDSHAKE_EVENT_FAILED
+	HANDSHAKE_EVENT_FAILED,
+	HANDSHAKE_EVENT_REKEY_FAILED,
 };
 
 typedef void (*handshake_event_func_t)(struct handshake_state *hs,
@@ -87,9 +88,10 @@ struct handshake_state {
 	enum ie_rsn_cipher_suite group_management_cipher;
 	enum ie_rsn_akm_suite akm_suite;
 	uint8_t pmk[64];
+	size_t pmk_len;
 	uint8_t snonce[32];
 	uint8_t anonce[32];
-	uint8_t ptk[64];
+	uint8_t ptk[80];
 	uint8_t pmk_r0[32];
 	uint8_t pmk_r0_name[16];
 	uint8_t pmk_r1[32];
@@ -105,6 +107,7 @@ struct handshake_state {
 	bool have_pmkid : 1;
 	bool authenticator : 1;
 	bool wait_for_gtk : 1;
+	bool no_rekey : 1;
 	uint8_t ssid[32];
 	size_t ssid_len;
 	char *passphrase;
@@ -132,7 +135,6 @@ void handshake_state_set_pmk(struct handshake_state *s, const uint8_t *pmk,
 				size_t pmk_len);
 void handshake_state_set_8021x_config(struct handshake_state *s,
 					struct l_settings *settings);
-struct l_settings *handshake_state_get_8021x_config(struct handshake_state *s);
 bool handshake_state_set_supplicant_rsn(struct handshake_state *s,
 					const uint8_t *rsn_ie);
 bool handshake_state_set_authenticator_rsn(struct handshake_state *s,
@@ -156,6 +158,7 @@ void handshake_state_set_event_func(struct handshake_state *s,
 					void *user_data);
 void handshake_state_set_passphrase(struct handshake_state *s,
 					const char *passphrase);
+void handshake_state_set_no_rekey(struct handshake_state *s, bool no_rekey);
 
 void handshake_state_new_snonce(struct handshake_state *s);
 void handshake_state_new_anonce(struct handshake_state *s);
@@ -163,7 +166,9 @@ void handshake_state_set_anonce(struct handshake_state *s,
 				const uint8_t *anonce);
 void handshake_state_set_pmkid(struct handshake_state *s, const uint8_t *pmkid);
 bool handshake_state_derive_ptk(struct handshake_state *s);
-const struct crypto_ptk *handshake_state_get_ptk(struct handshake_state *s);
+size_t handshake_state_get_ptk_size(struct handshake_state *s);
+const uint8_t *handshake_state_get_kck(struct handshake_state *s);
+const uint8_t *handshake_state_get_kek(struct handshake_state *s);
 void handshake_state_install_ptk(struct handshake_state *s);
 
 void handshake_state_install_gtk(struct handshake_state *s,

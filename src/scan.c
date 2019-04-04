@@ -133,13 +133,12 @@ static void scan_request_failed(struct scan_context *sc,
 	sc->current_sr = NULL;
 	sc->triggered = false;
 	sc->start_cmd_id = 0;
-	sc->state = SCAN_STATE_NOT_RUNNING;
 	l_queue_remove(sc->requests, sr);
 
 	if (sr->trigger)
 		sr->trigger(err, sr->userdata);
 	else if (sr->callback)
-		sr->callback(sc->ifindex, err, NULL, sr->userdata);
+		sr->callback(err, NULL, sr->userdata);
 
 	scan_request_free(sr);
 }
@@ -219,21 +218,7 @@ bool scan_ifindex_remove(uint32_t ifindex)
 	return true;
 }
 
-static unsigned int scan_send_start(struct l_genl_msg **msg,
-			scan_func_t callback, void *user_data)
-{
-	unsigned int id = l_genl_family_send(nl80211, *msg, callback,
-						user_data, NULL);
-
-	if (id)
-		*msg = NULL;
-	else
-		l_error("Sending NL80211_CMD_TRIGGER_SCAN failed");
-
-	return id;
-}
-
-static void scan_triggered(struct l_genl_msg *msg, void *userdata)
+static void scan_request_triggered(struct l_genl_msg *msg, void *userdata)
 {
 	struct scan_context *sc = userdata;
 	struct scan_request *sr = sc->current_sr;
@@ -262,7 +247,9 @@ static void scan_triggered(struct l_genl_msg *msg, void *userdata)
 	sc->state = sr->passive ? SCAN_STATE_PASSIVE : SCAN_STATE_ACTIVE;
 	l_debug("%s scan triggered for ifindex: %u",
 		sr->passive ? "Passive" : "Active", sc->ifindex);
+
 	sc->triggered = true;
+	l_genl_msg_unref(l_queue_pop_head(sr->cmds));
 
 	if (sr->trigger) {
 		sr->trigger(0, sr->userdata);
@@ -299,11 +286,17 @@ static void scan_build_attr_scan_frequencies(struct l_genl_msg *msg,
 	l_genl_msg_leave_nested(msg);
 }
 
-static void scan_freq_count(uint32_t freq, void *user_data)
+static bool scan_mac_address_randomization_is_disabled(void)
 {
-	int *count = user_data;
+	const struct l_settings *config = iwd_get_config();
+	bool disabled;
 
-	*count += 1;
+	if (!l_settings_get_bool(config, "Scan",
+					"disable_mac_address_randomization",
+					&disabled))
+		return false;
+
+	return disabled;
 }
 
 static struct l_genl_msg *scan_build_cmd(struct scan_context *sc,
@@ -311,16 +304,9 @@ static struct l_genl_msg *scan_build_cmd(struct scan_context *sc,
 					const struct scan_parameters *params)
 {
 	struct l_genl_msg *msg;
-	int n_channels = 0;
 	uint32_t flags = 0;
 
-	if (params->freqs)
-		scan_freq_set_foreach(params->freqs, scan_freq_count,
-					&n_channels);
-
-	msg = l_genl_msg_new_sized(NL80211_CMD_TRIGGER_SCAN,
-						64 + params->extra_ie_size +
-						4 * n_channels);
+	msg = l_genl_msg_new(NL80211_CMD_TRIGGER_SCAN);
 
 	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &sc->ifindex);
 
@@ -335,20 +321,14 @@ static struct l_genl_msg *scan_build_cmd(struct scan_context *sc,
 	if (params->flush && !ignore_flush_flag)
 		flags |= NL80211_SCAN_FLAG_FLUSH;
 
-	/*
-	 * TODO: Discovery of the hidden networks with randomization flag set
-	 * works with real hardware, but fails when used in simulated
-	 * environment with mac80211_hwsim. This needs to be investigated.
-	 *
-	 * if (params->randomize_mac_addr_hint &&
-	 *		wiphy_has_feature(sc->wiphy,
-	 *				  NL80211_FEATURE_SCAN_RANDOM_MAC_ADDR))
-	 *
-	 *	Randomizing 46 bits (locally administered 1 and multicast 0
-	 *	is assumed).
-	 *
-	 *	flags |= NL80211_SCAN_FLAG_RANDOM_ADDR;
-	*/
+	if (params->randomize_mac_addr_hint &&
+			wiphy_can_randomize_mac_addr(sc->wiphy) &&
+				!scan_mac_address_randomization_is_disabled())
+		/*
+		 * Randomizing 46 bits (locally administered 1 and multicast 0
+		 * is assumed).
+		 */
+		flags |= NL80211_SCAN_FLAG_RANDOM_ADDR;
 
 	if (flags)
 		l_genl_msg_append_attr(msg, NL80211_ATTR_SCAN_FLAGS, 4, &flags);
@@ -436,21 +416,27 @@ static void scan_cmds_add(struct l_queue *cmds, struct scan_context *sc,
 	l_queue_push_tail(cmds, cmd);
 }
 
-static int scan_request_send_next(struct scan_context *sc,
+static int scan_request_send_trigger(struct scan_context *sc,
 					struct scan_request *sr)
 {
-	struct l_genl_msg *cmd = l_queue_pop_head(sr->cmds);
+	struct l_genl_msg *cmd = l_queue_peek_head(sr->cmds);
 	if (!cmd)
 		return -ENOMSG;
 
-	sc->start_cmd_id = scan_send_start(&cmd, scan_triggered, sc);
+	sc->start_cmd_id = l_genl_family_send(nl80211, cmd,
+						scan_request_triggered, sc,
+									NULL);
 	if (sc->start_cmd_id) {
+		l_genl_msg_ref(cmd);
+
 		sc->triggered = false;
 		sc->current_sr = sr;
+
 		return 0;
 	}
 
-	l_genl_msg_unref(cmd);
+	l_error("Scan request: failed to trigger scan.");
+
 	return -EIO;
 }
 
@@ -483,10 +469,11 @@ static uint32_t scan_common(uint32_t ifindex, bool passive,
 	if (l_queue_length(sc->requests) > 0)
 		goto done;
 
-	if (sc->state != SCAN_STATE_NOT_RUNNING || sc->start_cmd_id)
+	if (sc->state != SCAN_STATE_NOT_RUNNING ||
+					sc->start_cmd_id || sc->triggered)
 		goto done;
 
-	if (!scan_request_send_next(sc, sr))
+	if (!scan_request_send_trigger(sc, sr))
 		goto done;
 
 	sr->destroy = NULL;	/* Don't call destroy when returning error */
@@ -498,11 +485,11 @@ done:
 	return sr->id;
 }
 
-uint32_t scan_passive(uint32_t ifindex, scan_trigger_func_t trigger,
-			scan_notify_func_t notify, void *userdata,
-			scan_destroy_func_t destroy)
+uint32_t scan_passive(uint32_t ifindex, struct scan_freq_set *freqs,
+			scan_trigger_func_t trigger, scan_notify_func_t notify,
+			void *userdata, scan_destroy_func_t destroy)
 {
-	struct scan_parameters params = {};
+	struct scan_parameters params = { .freqs = freqs };
 
 	return scan_common(ifindex, true, &params, trigger, notify,
 							userdata, destroy);
@@ -572,24 +559,6 @@ bool scan_cancel(uint32_t ifindex, uint32_t id)
 	return true;
 }
 
-void scan_sched_start(struct l_genl_family *nl80211, uint32_t ifindex,
-			uint32_t scan_interval,
-			scan_func_t callback, void *user_data)
-{
-	struct l_genl_msg *msg;
-
-	scan_interval *= 1000;	/* in kernel the interval is in msecs */
-
-	msg = l_genl_msg_new_sized(NL80211_CMD_START_SCHED_SCAN, 32);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &ifindex);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_SCHED_SCAN_INTERVAL,
-							4, &scan_interval);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_SOCKET_OWNER, 0, NULL);
-
-	if (!l_genl_family_send(nl80211, msg, callback, user_data, NULL))
-		l_error("Starting scheduled scan failed");
-}
-
 static void scan_periodic_triggered(struct l_genl_msg *msg, void *user_data)
 {
 	struct scan_context *sc = user_data;
@@ -623,7 +592,7 @@ static void scan_periodic_triggered(struct l_genl_msg *msg, void *user_data)
 		sc->sp.trigger(0, sc->sp.userdata);
 }
 
-static bool scan_periodic_send_start(struct scan_context *sc)
+static bool scan_periodic_send_trigger(struct scan_context *sc)
 {
 	struct l_genl_msg *cmd;
 	struct scan_parameters params = {};
@@ -643,7 +612,9 @@ static bool scan_periodic_send_start(struct scan_context *sc)
 	if (!cmd)
 		return false;
 
-	sc->start_cmd_id = scan_send_start(&cmd, scan_periodic_triggered, sc);
+	sc->start_cmd_id = l_genl_family_send(nl80211, cmd,
+						scan_periodic_triggered, sc,
+									NULL);
 	if (!sc->start_cmd_id) {
 		l_genl_msg_unref(cmd);
 		return false;
@@ -759,20 +730,21 @@ static bool start_next_scan_request(struct scan_context *sc)
 {
 	struct scan_request *sr;
 
-	if (sc->state != SCAN_STATE_NOT_RUNNING || sc->start_cmd_id)
+	if (sc->state != SCAN_STATE_NOT_RUNNING ||
+					sc->start_cmd_id || sc->triggered)
 		return true;
 
 	while (!l_queue_isempty(sc->requests)) {
 		sr = l_queue_peek_head(sc->requests);
 
-		if (!scan_request_send_next(sc, sr))
+		if (!scan_request_send_trigger(sc, sr))
 			return true;
 
 		scan_request_failed(sc, sr, -EIO);
 	}
 
 	if (sc->sp.retry) {
-		if (scan_periodic_send_start(sc)) {
+		if (scan_periodic_send_trigger(sc)) {
 			sc->sp.retry = false;
 			return true;
 		}
@@ -802,12 +774,16 @@ static bool scan_parse_bss_information_elements(struct scan_bss *bss,
 			have_ssid = true;
 			break;
 		case IE_TYPE_SUPPORTED_RATES:
+			if (iter.len > 8)
+				return false;
+
+			bss->has_sup_rates =  true;
+			memcpy(bss->supp_rates_ie, iter.data - 2, iter.len + 2);
+
+			break;
 		case IE_TYPE_EXTENDED_SUPPORTED_RATES:
-			if (ie_parse_supported_rates(&iter,
-						&bss->supported_rates) < 0)
-				l_warn("Unable to parse [Extended] "
-					"Supported Rates IE for "
-					MAC, MAC_STR(bss->addr));
+			bss->ext_supp_rates_ie = l_memdup(iter.data - 2,
+								iter.len + 2);
 			break;
 		case IE_TYPE_RSN:
 			if (!bss->rsne)
@@ -853,6 +829,22 @@ static bool scan_parse_bss_information_elements(struct scan_bss *bss,
 			bss->cc[1] = iter.data[1];
 			bss->cc[2] = iter.data[2];
 			bss->cc_present = true;
+
+			break;
+		case IE_TYPE_HT_CAPABILITIES:
+			if (iter.len != 26)
+				return false;
+
+			bss->ht_capable = true;
+			memcpy(bss->ht_ie, iter.data - 2, iter.len + 2);
+
+			break;
+		case IE_TYPE_VHT_CAPABILITIES:
+			if (iter.len != 12)
+				return false;
+
+			bss->vht_capable = true;
+			memcpy(bss->vht_ie, iter.data - 2, iter.len + 2);
 
 			break;
 		}
@@ -988,17 +980,19 @@ static struct scan_bss *scan_parse_result(struct l_genl_msg *msg,
 	return bss;
 }
 
+/* User configurable options */
+static double RANK_5G_FACTOR;
+
 static void scan_bss_compute_rank(struct scan_bss *bss)
 {
 	static const double RANK_RSNE_FACTOR = 1.2;
 	static const double RANK_WPA_FACTOR = 1.0;
 	static const double RANK_OPEN_FACTOR = 0.5;
 	static const double RANK_NO_PRIVACY_FACTOR = 0.5;
-	static const double RANK_5G_FACTOR = 1.1;
 	static const double RANK_HIGH_UTILIZATION_FACTOR = 0.8;
 	static const double RANK_LOW_UTILIZATION_FACTOR = 1.2;
-	static const double RANK_MIN_SUPPORTED_RATE_FACTOR = 0.8;
-	static const double RANK_MAX_SUPPORTED_RATE_FACTOR = 1.1;
+	static const double RANK_MIN_SUPPORTED_RATE_FACTOR = 0.6;
+	static const double RANK_MAX_SUPPORTED_RATE_FACTOR = 1.3;
 	double rank;
 	uint32_t irank;
 
@@ -1035,17 +1029,27 @@ static void scan_bss_compute_rank(struct scan_bss *bss)
 	else if (bss->utilization <= 63)
 		rank *= RANK_LOW_UTILIZATION_FACTOR;
 
-	if (bss->supported_rates) {
-		uint8_t max = l_uintset_find_max(bss->supported_rates);
-		double factor = RANK_MAX_SUPPORTED_RATE_FACTOR -
+	if (bss->has_sup_rates || bss->ext_supp_rates_ie) {
+		uint64_t data_rate;
+
+		if (ie_parse_data_rates(bss->has_sup_rates ?
+					bss->supp_rates_ie : NULL,
+					bss->ext_supp_rates_ie,
+					bss->ht_capable ? bss->ht_ie : NULL,
+					bss->vht_capable ? bss->vht_ie : NULL,
+					bss->signal_strength / 100,
+					&data_rate) == 0) {
+			double factor = RANK_MAX_SUPPORTED_RATE_FACTOR -
 					RANK_MIN_SUPPORTED_RATE_FACTOR;
 
-		/*
-		 * Maximum rate is 54 Mbps, see DATA_RATE in 802.11-2012,
-		 * Section 6.5.5.2
-		 */
-		factor = factor * max / 108 + RANK_MIN_SUPPORTED_RATE_FACTOR;
-		rank *= factor;
+			/*
+			 * Maximum rate is 2340Mbps (VHT)
+			 */
+			factor = factor * data_rate / 2340000000U +
+						RANK_MIN_SUPPORTED_RATE_FACTOR;
+			rank *= factor;
+		} else
+			rank *= RANK_MIN_SUPPORTED_RATE_FACTOR;
 	}
 
 	irank = rank;
@@ -1058,7 +1062,7 @@ static void scan_bss_compute_rank(struct scan_bss *bss)
 
 void scan_bss_free(struct scan_bss *bss)
 {
-	l_uintset_free(bss->supported_rates);
+	l_free(bss->ext_supp_rates_ie);
 	l_free(bss->rsne);
 	l_free(bss->wpa);
 	l_free(bss->wsc);
@@ -1172,13 +1176,12 @@ static void scan_finished(struct scan_context *sc, uint32_t wiphy,
 	}
 
 	if (callback)
-		new_owner = callback(sc->ifindex, err, bss_list, userdata);
+		new_owner = callback(err, bss_list, userdata);
 
 	if (sr)
 		scan_request_free(sr);
 
 	sc->triggered = false;
-	sc->state = SCAN_STATE_NOT_RUNNING;
 
 	if (!start_next_scan_request(sc) && sc->sp.rearm)
 		scan_periodic_rearm(sc);
@@ -1243,7 +1246,7 @@ static bool scan_send_next_cmd(struct scan_context *sc)
 		return false;
 
 	if (sr) {
-		err = scan_request_send_next(sc, sr);
+		err = scan_request_send_trigger(sc, sr);
 		if (!err)
 			return true;
 
@@ -1265,8 +1268,9 @@ static bool scan_send_next_cmd(struct scan_context *sc)
 
 		sc->triggered = false;
 
-		sc->start_cmd_id = scan_send_start(&cmd,
-						scan_periodic_triggered, sc);
+		sc->start_cmd_id = l_genl_family_send(nl80211, cmd,
+							scan_periodic_triggered,
+								sc, NULL);
 
 		if (!sc->start_cmd_id) {
 			l_genl_msg_unref(cmd);
@@ -1343,10 +1347,11 @@ static void scan_notify(struct l_genl_msg *msg, void *user_data)
 
 	switch (cmd) {
 	case NL80211_CMD_NEW_SCAN_RESULTS:
-	case NL80211_CMD_SCHED_SCAN_RESULTS:
 	{
 		struct l_genl_msg *scan_msg;
 		struct scan_results *results;
+
+		sc->state = SCAN_STATE_NOT_RUNNING;
 
 		if (scan_send_next_cmd(sc))
 			return;
@@ -1375,6 +1380,8 @@ static void scan_notify(struct l_genl_msg *msg, void *user_data)
 		break;
 
 	case NL80211_CMD_SCAN_ABORTED:
+		sc->state = SCAN_STATE_NOT_RUNNING;
+
 		scan_finished(sc, attr_wiphy, -ECANCELED, NULL);
 
 		break;
@@ -1650,29 +1657,69 @@ uint32_t scan_freq_set_get_bands(struct scan_freq_set *freqs)
 	return bands;
 }
 
-void scan_freq_set_foreach(struct scan_freq_set *freqs,
+static void scan_channels_5ghz_add(uint32_t channel, void *user_data)
+{
+	struct l_uintset *to = user_data;
+
+	l_uintset_put(to, channel);
+}
+
+void scan_freq_set_merge(struct scan_freq_set *to,
+					const struct scan_freq_set *from)
+{
+	to->channels_2ghz |= from->channels_2ghz;
+
+	l_uintset_foreach(from->channels_5ghz, scan_channels_5ghz_add,
+							to->channels_5ghz);
+}
+
+struct channels_5ghz_foreach_data {
+	scan_freq_set_func_t func;
+	void *user_data;
+};
+
+static void scan_channels_5ghz_frequency(uint32_t channel, void *user_data)
+{
+	const struct channels_5ghz_foreach_data *channels_5ghz_data = user_data;
+	uint32_t freq;
+
+	freq = scan_channel_to_freq(channel, SCAN_BAND_5_GHZ);
+
+	channels_5ghz_data->func(freq, channels_5ghz_data->user_data);
+}
+
+void scan_freq_set_foreach(const struct scan_freq_set *freqs,
 				scan_freq_set_func_t func, void *user_data)
 {
+	struct channels_5ghz_foreach_data data = { };
 	uint8_t channel;
 	uint32_t freq;
 
-	for (channel = 1; channel <= 14; channel++)
+	if (unlikely(!freqs || !func))
+		return;
+
+	data.func = func;
+	data.user_data = user_data;
+
+	l_uintset_foreach(freqs->channels_5ghz, scan_channels_5ghz_frequency,
+									&data);
+
+	if (!freqs->channels_2ghz)
+		return;
+
+	for (channel = 1; channel <= 14; channel++) {
 		if (freqs->channels_2ghz & (1 << (channel - 1))) {
 			freq = scan_channel_to_freq(channel, SCAN_BAND_2_4_GHZ);
 
 			func(freq, user_data);
 		}
-
-	for (channel = 1; channel <= 200; channel++)
-		if (l_uintset_contains(freqs->channels_5ghz, channel)) {
-			freq = scan_channel_to_freq(channel, SCAN_BAND_5_GHZ);
-
-			func(freq, user_data);
-		}
+	}
 }
 
 bool scan_init(struct l_genl_family *in)
 {
+	const struct l_settings *config = iwd_get_config();
+
 	nl80211 = in;
 	scan_id = l_genl_family_register(nl80211, "scan", scan_notify,
 						NULL, NULL);
@@ -1683,6 +1730,10 @@ bool scan_init(struct l_genl_family *in)
 	}
 
 	scan_contexts = l_queue_new();
+
+	if (!l_settings_get_double(config, "Rank", "rank_5g_factor",
+					&RANK_5G_FACTOR))
+		RANK_5G_FACTOR = 1.0;
 
 	return true;
 }

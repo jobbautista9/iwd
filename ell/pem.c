@@ -30,6 +30,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/mman.h>
+#include <strings.h>
 
 #include "util.h"
 #include "private.h"
@@ -43,6 +44,7 @@
 #include "pkcs5-private.h"
 #include "cipher.h"
 #include "cert-private.h"
+#include "missing.h"
 
 #define PEM_START_BOUNDARY	"-----BEGIN "
 #define PEM_END_BOUNDARY	"-----END "
@@ -405,7 +407,7 @@ LIB_EXPORT struct l_key *l_pem_load_private_key(const char *filename,
 		}
 
 		l_cipher_free(alg);
-		memset(content, 0, len);
+		explicit_bzero(content, len);
 		l_free(content);
 		content = decrypted;
 		len = data_len;
@@ -443,7 +445,7 @@ done:
 
 err:
 	if (content) {
-		memset(content, 0, len);
+		explicit_bzero(content, len);
 		l_free(content);
 	}
 
