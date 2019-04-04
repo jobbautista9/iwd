@@ -1,5 +1,5 @@
 AC_PREREQ(2.60)
-AC_INIT(iwd, 0.14)
+AC_INIT(iwd, 0.16)
 
 AC_CONFIG_HEADERS(config.h)
 AC_CONFIG_AUX_DIR(build-aux)
@@ -124,6 +124,8 @@ AC_DEFINE_UNQUOTED(DAEMON_CONFIGDIR, "/etc/iwd",
 AC_DEFINE_UNQUOTED(WIRED_STORAGEDIR, "${wired_storagedir}",
 			[Directory for Ethernet daemon storage files])
 
+AC_CHECK_FUNCS(explicit_bzero)
+
 AC_CHECK_HEADERS(linux/types.h linux/if_alg.h)
 
 # In maintainer mode: try to build with application backtrace and disable PIE.
@@ -209,6 +211,19 @@ if (test "${enable_systemd_service}" != "no" && test -z "${path_systemd_unitdir}
 fi
 AC_SUBST(SYSTEMD_UNITDIR, [${path_systemd_unitdir}])
 
+AC_ARG_WITH([systemd-modloaddir], AC_HELP_STRING([--with-systemd-modloaddir=DIR],
+				[path to systemd modules load directory]),
+					[path_systemd_modloaddir=${withval}])
+if (test "${enable_systemd_service}" != "no" && test -z "${path_systemd_modloaddir}"); then
+	AC_MSG_CHECKING([systemd modules load directory])
+	path_systemd_modloaddir="`$PKG_CONFIG --variable=modulesloaddir systemd`"
+	if (test -z "${path_systemd_modloaddir}"); then
+		AC_MSG_ERROR([systemd modules load directory is required])
+	fi
+	AC_MSG_RESULT([${path_systemd_modloaddir}])
+fi
+AC_SUBST(SYSTEMD_MODLOADDIR, [${path_systemd_modloaddir}])
+
 AC_ARG_ENABLE([external_ell], AC_HELP_STRING([--enable-external-ell],
 				[enable external Embedded Linux library]),
 					[enable_external_ell=${enableval}])
@@ -218,7 +233,7 @@ if (test "${enable_external_ell}" = "yes"); then
 			test "${enable_monitor}" != "no" ||
 			test "${enable_wired}" = "yes" ||
 			test "${enable_hwsim}" = "yes"); then
-		ell_min_version="0.16"
+		ell_min_version="0.18"
 	else
 		ell_min_version="0.5"
 	fi

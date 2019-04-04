@@ -31,6 +31,7 @@
 
 #include <ell/ell.h>
 
+#include "src/missing.h"
 #include "src/crypto.h"
 
 /* RFC 3526, Section 2 */
@@ -95,6 +96,13 @@ bool hmac_sha256(const void *key, size_t key_len,
 				output, size);
 }
 
+bool hmac_sha384(const void *key, size_t key_len,
+		const void *data, size_t data_len, void *output, size_t size)
+{
+	return hmac_common(L_CHECKSUM_SHA384, key, key_len, data, data_len,
+				output, size);
+}
+
 bool cmac_aes(const void *key, size_t key_len,
 		const void *data, size_t data_len, void *output, size_t size)
 {
@@ -122,7 +130,7 @@ bool cmac_aes(const void *key, size_t key_len,
  *
  * NOTE: Buffers @in and @out can overlap
  */
-bool aes_unwrap(const uint8_t *kek, const uint8_t *in, size_t len,
+bool aes_unwrap(const uint8_t *kek, size_t kek_len, const uint8_t *in, size_t len,
 			uint8_t *out)
 {
 	uint64_t b[2];
@@ -132,7 +140,7 @@ bool aes_unwrap(const uint8_t *kek, const uint8_t *in, size_t len,
 	struct l_cipher *cipher;
 	uint64_t t = n * 6;
 
-	cipher = l_cipher_new(L_CIPHER_AES, kek, 16);
+	cipher = l_cipher_new(L_CIPHER_AES, kek, kek_len);
 	if (!cipher)
 		return false;
 
@@ -154,6 +162,7 @@ bool aes_unwrap(const uint8_t *kek, const uint8_t *in, size_t len,
 	}
 
 	l_cipher_free(cipher);
+	explicit_bzero(&b[1], 8);
 
 	/* Check IV */
 	if (b[0] != 0xa6a6a6a6a6a6a6a6)
@@ -318,6 +327,7 @@ int crypto_psk_from_passphrase(const char *passphrase,
 	if (out_psk)
 		memcpy(out_psk, psk, sizeof(psk));
 
+	explicit_bzero(psk, sizeof(psk));
 	return 0;
 }
 
@@ -411,19 +421,24 @@ bool kdf_sha256(const void *key, size_t key_len,
  *
  * Null key equates to a zero key (makes calls in EAP-PWD more convenient)
  */
-bool hkdf_extract_sha256(const uint8_t *key, size_t key_len, uint8_t num_args,
-			uint8_t *out, ...)
+bool hkdf_extract(enum l_checksum_type type, const uint8_t *key,
+				size_t key_len, uint8_t num_args,
+				uint8_t *out, ...)
 {
 	struct l_checksum *hmac;
 	struct iovec iov[num_args];
-	const uint8_t zero_key[32] = { 0 };
+	const uint8_t zero_key[64] = { 0 };
+	size_t dlen = l_checksum_digest_length(type);
 	const uint8_t *k = key ? key : zero_key;
-	size_t k_len = key ? key_len : 32;
+	size_t k_len = key ? key_len : dlen;
 	va_list va;
 	int i;
 	int ret;
 
-	hmac = l_checksum_new_hmac(L_CHECKSUM_SHA256, k, k_len);
+	if (dlen <= 0)
+		return false;
+
+	hmac = l_checksum_new_hmac(type, k, k_len);
 	if (!hmac)
 		return false;
 
@@ -439,27 +454,30 @@ bool hkdf_extract_sha256(const uint8_t *key, size_t key_len, uint8_t num_args,
 		return false;
 	}
 
-	ret = l_checksum_get_digest(hmac, out, 32);
+	ret = l_checksum_get_digest(hmac, out, dlen);
 	l_checksum_free(hmac);
 
 	va_end(va);
-	return (ret == 32);
+	return (ret == (int) dlen);
 }
 
-bool hkdf_expand_sha256(const uint8_t *key, size_t key_len, const char *info,
-			size_t info_len, void *out, size_t out_len)
+bool hkdf_expand(enum l_checksum_type type, const uint8_t *key, size_t key_len,
+			const char *info, size_t info_len, void *out,
+			size_t out_len)
 {
-	uint8_t t[32];
+	uint8_t *t = out;
 	size_t t_len = 0;
-	struct iovec iov[3];
 	struct l_checksum *hmac;
 	uint8_t count = 1;
 	uint8_t *out_ptr = out;
 
+	hmac = l_checksum_new_hmac(type, key, key_len);
+	if (!hmac)
+		return false;
+
 	while (out_len > 0) {
 		ssize_t ret;
-
-		hmac = l_checksum_new_hmac(L_CHECKSUM_SHA256, key, key_len);
+		struct iovec iov[3];
 
 		iov[0].iov_base = t;
 		iov[0].iov_len = t_len;
@@ -473,26 +491,28 @@ bool hkdf_expand_sha256(const uint8_t *key, size_t key_len, const char *info,
 			return false;
 		}
 
-		ret = l_checksum_get_digest(hmac, t,
-						(out_len > 32) ? 32 : out_len);
+		ret = l_checksum_get_digest(hmac, out_ptr, out_len);
 		if (ret < 0) {
 			l_checksum_free(hmac);
 			return false;
 		}
 
-		memcpy(out_ptr, t, ret);
-		out_len -= ret;
-		out_ptr += ret;
-
 		/*
 		 * RFC specifies that T(0) = empty string, so after the first
 		 * iteration we update the length for T(1)...T(N)
 		 */
-		t_len = 32;
+		t_len = ret;
+		t = out_ptr;
 		count++;
 
-		l_checksum_free(hmac);
+		out_len -= ret;
+		out_ptr += ret;
+
+		if (out_len)
+			l_checksum_reset(hmac);
 	}
+
+	l_checksum_free(hmac);
 
 	return true;
 }
@@ -545,7 +565,6 @@ static bool crypto_derive_ptk(const uint8_t *pmk, size_t pmk_len,
 	}
 
 	pos += 64;
-
 	if (use_sha256)
 		return kdf_sha256(pmk, pmk_len, label, strlen(label),
 					data, sizeof(data), out_ptk, ptk_len);
@@ -554,15 +573,15 @@ static bool crypto_derive_ptk(const uint8_t *pmk, size_t pmk_len,
 					data, sizeof(data), out_ptk, ptk_len);
 }
 
-bool crypto_derive_pairwise_ptk(const uint8_t *pmk,
+bool crypto_derive_pairwise_ptk(const uint8_t *pmk, size_t pmk_len,
 				const uint8_t *addr1, const uint8_t *addr2,
 				const uint8_t *nonce1, const uint8_t *nonce2,
-				struct crypto_ptk *out_ptk, size_t ptk_len,
+				uint8_t *out_ptk, size_t ptk_len,
 				bool use_sha256)
 {
-	return crypto_derive_ptk(pmk, 32, "Pairwise key expansion",
+	return crypto_derive_ptk(pmk, pmk_len, "Pairwise key expansion",
 					addr1, addr2, nonce1, nonce2,
-					(uint8_t *) out_ptk, ptk_len,
+					out_ptk, ptk_len,
 					use_sha256);
 }
 
@@ -617,8 +636,8 @@ bool crypto_derive_pmk_r0(const uint8_t *xxkey,
 	r = true;
 
 exit:
-	memset(context, 0, pos);
-	memset(output, 0, 48);
+	explicit_bzero(context, pos);
+	explicit_bzero(output, 48);
 
 	return r;
 }
@@ -649,7 +668,7 @@ bool crypto_derive_pmk_r1(const uint8_t *pmk_r0,
 
 	sha256 = l_checksum_new(L_CHECKSUM_SHA256);
 	if (!sha256) {
-		memset(out_pmk_r1, 0, 32);
+		explicit_bzero(out_pmk_r1, 32);
 		goto exit;
 	}
 
@@ -661,7 +680,7 @@ bool crypto_derive_pmk_r1(const uint8_t *pmk_r0,
 	r = true;
 
 exit:
-	memset(context, 0, sizeof(context));
+	explicit_bzero(context, sizeof(context));
 
 	return r;
 }
@@ -670,7 +689,7 @@ exit:
 bool crypto_derive_ft_ptk(const uint8_t *pmk_r1, const uint8_t *pmk_r1_name,
 				const uint8_t *addr1, const uint8_t *addr2,
 				const uint8_t *nonce1, const uint8_t *nonce2,
-				struct crypto_ptk *out_ptk, size_t ptk_len,
+				uint8_t *out_ptk, size_t ptk_len,
 				uint8_t *out_ptk_name)
 {
 	uint8_t context[ETH_ALEN * 2 + 64];
@@ -696,7 +715,7 @@ bool crypto_derive_ft_ptk(const uint8_t *pmk_r1, const uint8_t *pmk_r1_name,
 
 	sha256 = l_checksum_new(L_CHECKSUM_SHA256);
 	if (!sha256) {
-		memset(out_ptk, 0, ptk_len);
+		explicit_bzero(out_ptk, ptk_len);
 		goto exit;
 	}
 
@@ -708,7 +727,7 @@ bool crypto_derive_ft_ptk(const uint8_t *pmk_r1, const uint8_t *pmk_r1_name,
 	r = true;
 
 exit:
-	memset(context, 0, sizeof(context));
+	explicit_bzero(context, sizeof(context));
 
 	return r;
 }

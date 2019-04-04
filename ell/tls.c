@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <stdio.h>
+#include <strings.h>
 
 #include "util.h"
 #include "private.h"
@@ -42,6 +43,7 @@
 #include "key.h"
 #include "asn1-private.h"
 #include "strv.h"
+#include "missing.h"
 
 bool tls10_prf(const void *secret, size_t secret_len,
 		const char *label,
@@ -62,8 +64,7 @@ bool tls10_prf(const void *secret, size_t secret_len,
 	 * the first byte of S2.
 	 */
 
-	if (!tls12_prf(L_CHECKSUM_MD5, 16,
-			secret, l_s1,
+	if (!tls12_prf(L_CHECKSUM_MD5, secret, l_s1,
 			label, seed, seed_len,
 			out, out_len))
 		return false;
@@ -71,8 +72,7 @@ bool tls10_prf(const void *secret, size_t secret_len,
 	if (secret_len > 0)
 		secret += secret_len - l_s1;
 
-	if (!tls12_prf(L_CHECKSUM_SHA1, 20,
-			secret, l_s1,
+	if (!tls12_prf(L_CHECKSUM_SHA1, secret, l_s1,
 			label, seed, seed_len,
 			p_hash2, out_len))
 		return false;
@@ -83,7 +83,7 @@ bool tls10_prf(const void *secret, size_t secret_len,
 	return true;
 }
 
-bool tls12_prf(enum l_checksum_type type, size_t hash_len,
+bool tls12_prf(enum l_checksum_type type,
 		const void *secret, size_t secret_len,
 		const char *label,
 		const void *seed, size_t seed_len,
@@ -107,16 +107,14 @@ bool tls12_prf(enum l_checksum_type type, size_t hash_len,
 		/* Generate A(i) */
 		l_checksum_reset(hmac);
 		l_checksum_update(hmac, a, a_len);
-		l_checksum_get_digest(hmac, a, hash_len);
-		a_len = hash_len;
+		a_len = l_checksum_get_digest(hmac, a, sizeof(a));
 
 		/* Append seed & generate output */
 		memcpy(a + a_len, prfseed, prfseed_len);
 		l_checksum_reset(hmac);
 		l_checksum_update(hmac, a, a_len + prfseed_len);
 
-		chunk_len = out_len < hash_len ? out_len : hash_len;
-		l_checksum_get_digest(hmac, out, chunk_len);
+		chunk_len = l_checksum_get_digest(hmac, out, out_len);
 		out += chunk_len;
 		out_len -= chunk_len;
 	}
@@ -132,7 +130,7 @@ static bool tls_prf_get_bytes(struct l_tls *tls,
 				uint8_t *buf, size_t len)
 {
 	if (tls->negotiated_version >= L_TLS_V12)
-		return tls12_prf(tls->prf_hmac->l_id, tls->prf_hmac->length,
+		return tls12_prf(tls->prf_hmac->l_id,
 					secret, secret_len, label,
 					seed, seed_len, buf, len);
 	else
@@ -158,7 +156,7 @@ LIB_EXPORT bool l_tls_prf_get_bytes(struct l_tls *tls, bool use_master_secret,
 	else
 		r = tls_prf_get_bytes(tls, "", 0, label, seed, 64, buf, len);
 
-	memset(seed, 0, 64);
+	explicit_bzero(seed, 64);
 
 	return r;
 }
@@ -184,7 +182,7 @@ static void tls_reset_handshake(struct l_tls *tls)
 {
 	enum handshake_hash_type hash;
 
-	memset(tls->pending.key_block, 0, sizeof(tls->pending.key_block));
+	explicit_bzero(tls->pending.key_block, sizeof(tls->pending.key_block));
 
 	if (tls->pending.cipher_suite &&
 			tls->pending.cipher_suite->key_xchg->free_params)
@@ -209,9 +207,9 @@ static void tls_reset_handshake(struct l_tls *tls)
 
 static void tls_cleanup_handshake(struct l_tls *tls)
 {
-	memset(tls->pending.client_random, 0, 32);
-	memset(tls->pending.server_random, 0, 32);
-	memset(tls->pending.master_secret, 0, 48);
+	explicit_bzero(tls->pending.client_random, 32);
+	explicit_bzero(tls->pending.server_random, 32);
+	explicit_bzero(tls->pending.master_secret, 48);
 }
 
 static bool tls_change_cipher_spec(struct l_tls *tls, bool txrx,
@@ -246,7 +244,7 @@ static bool tls_change_cipher_spec(struct l_tls *tls, bool txrx,
 	tls->record_iv_length[txrx] = 0;
 
 	if (tls->fixed_iv_length[txrx]) {
-		memset(tls->fixed_iv[txrx], 0, tls->fixed_iv_length[txrx]);
+		explicit_bzero(tls->fixed_iv[txrx], tls->fixed_iv_length[txrx]);
 		tls->fixed_iv_length[txrx] = 0;
 	}
 
@@ -271,7 +269,8 @@ static bool tls_change_cipher_spec(struct l_tls *tls, bool txrx,
 						key_offset, mac->mac_length);
 
 		/* Wipe out the now unneeded part of the key block */
-		memset(tls->pending.key_block + key_offset, 0, mac->mac_length);
+		explicit_bzero(tls->pending.key_block + key_offset,
+				mac->mac_length);
 
 		if (!tls->mac[txrx]) {
 			if (error) {
@@ -313,7 +312,8 @@ static bool tls_change_cipher_spec(struct l_tls *tls, bool txrx,
 		}
 
 		/* Wipe out the now unneeded part of the key block */
-		memset(tls->pending.key_block + key_offset, 0, enc->key_length);
+		explicit_bzero(tls->pending.key_block + key_offset,
+				enc->key_length);
 
 		if (!cipher) {
 			if (error) {
@@ -353,7 +353,8 @@ static bool tls_change_cipher_spec(struct l_tls *tls, bool txrx,
 				key_offset, enc->iv_length);
 
 		/* Wipe out the now unneeded part of the key block */
-		memset(tls->pending.key_block + key_offset, 0, enc->iv_length);
+		explicit_bzero(tls->pending.key_block + key_offset,
+				enc->iv_length);
 	} else if (tls->cipher_suite[txrx]->encryption &&
 			tls->cipher_suite[txrx]->encryption->fixed_iv_length) {
 		enc = tls->cipher_suite[txrx]->encryption;
@@ -367,8 +368,8 @@ static bool tls_change_cipher_spec(struct l_tls *tls, bool txrx,
 			enc->fixed_iv_length);
 
 		/* Wipe out the now unneeded part of the key block */
-		memset(tls->pending.key_block + key_offset, 0,
-			enc->fixed_iv_length);
+		explicit_bzero(tls->pending.key_block + key_offset,
+				enc->fixed_iv_length);
 	}
 
 	return true;
@@ -383,26 +384,29 @@ static void tls_reset_cipher_spec(struct l_tls *tls, bool txrx)
 	tls_change_cipher_spec(tls, txrx, NULL);
 }
 
-static bool tls_cipher_suite_is_compatible(struct l_tls *tls,
+bool tls_cipher_suite_is_compatible(struct l_tls *tls,
 					const struct tls_cipher_suite *suite,
 					const char **error)
 {
 	static char error_buf[200];
 	struct l_cert *leaf;
+	enum l_tls_version min_version =
+		tls->negotiated_version ?: tls->min_version;
+	enum l_tls_version max_version =
+		tls->negotiated_version ?: tls->max_version;
 
 	if (suite->encryption &&
 			suite->encryption->cipher_type == TLS_CIPHER_AEAD) {
-		enum l_tls_version negotiated = tls->negotiated_version;
-
-		if (negotiated && negotiated < L_TLS_V12) {
+		if (max_version < L_TLS_V12) {
 			if (error) {
 				*error = error_buf;
 				snprintf(error_buf, sizeof(error_buf),
 						"Cipher suite %s uses an AEAD "
 						"cipher (TLS 1.2+) but "
-						TLS_VER_FMT " was negotiated",
-						suite->name,
-						TLS_VER_ARGS(negotiated));
+						TLS_VER_FMT
+						" was negotiated or is the max "
+						"version allowed", suite->name,
+						TLS_VER_ARGS(tls->max_version));
 			}
 
 			return false;
@@ -446,10 +450,11 @@ static bool tls_cipher_suite_is_compatible(struct l_tls *tls,
 		return false;
 	}
 
-	if ((tls->negotiated_version && tls->negotiated_version < L_TLS_V12 &&
-			(!l_checksum_is_supported(L_CHECKSUM_MD5, true) ||
-			 !l_checksum_is_supported(L_CHECKSUM_SHA1, true))) ||
-			(tls->negotiated_version >= L_TLS_V12 &&
+	if (
+			(max_version < L_TLS_V12 &&
+			 (!l_checksum_is_supported(L_CHECKSUM_MD5, true) ||
+			  !l_checksum_is_supported(L_CHECKSUM_SHA1, true))) ||
+			(min_version >= L_TLS_V12 &&
 			 !l_checksum_is_supported(
 					suite->prf_hmac != L_CHECKSUM_NONE ?
 					suite->prf_hmac : L_CHECKSUM_SHA256,
@@ -477,14 +482,21 @@ static bool tls_cipher_suite_is_compatible(struct l_tls *tls,
 		return false;
 	}
 
+	/*
+	 * If the certificate is compatible with the signature algorithm it
+	 * also must be compatible with the key exchange mechanism because
+	 * the cipher suites are defined so that the same certificates can
+	 * be used by both.
+	 */
 	leaf = l_certchain_get_leaf(tls->cert);
-	if (leaf && !suite->key_xchg->validate_cert_key_type(leaf)) {
+	if (leaf && suite->signature &&
+			!suite->signature->validate_cert_key_type(leaf)) {
 		if (error) {
 			*error = error_buf;
 			snprintf(error_buf, sizeof(error_buf),
 					"Local certificate has key type "
 					"incompatible with cipher suite %s's "
-					"key xchg mechanism", suite->name);
+					"signature algorithm", suite->name);
 		}
 
 		return false;
@@ -556,17 +568,23 @@ static struct tls_compression_method *tls_find_compression_method(
 }
 
 const struct tls_hash_algorithm tls_handshake_hash_data[] = {
-	[HANDSHAKE_HASH_SHA384]	= { 5, L_CHECKSUM_SHA384, 48, "SHA384" },
-	[HANDSHAKE_HASH_SHA256]	= { 4, L_CHECKSUM_SHA256, 32, "SHA256" },
-	[HANDSHAKE_HASH_MD5]	= { 1, L_CHECKSUM_MD5, 16, "MD5" },
-	[HANDSHAKE_HASH_SHA1]	= { 2, L_CHECKSUM_SHA1, 20, "SHA1" },
+	[HANDSHAKE_HASH_SHA384]	= { 5, L_CHECKSUM_SHA384, "SHA384" },
+	[HANDSHAKE_HASH_SHA256]	= { 4, L_CHECKSUM_SHA256, "SHA256" },
+	[HANDSHAKE_HASH_MD5]	= { 1, L_CHECKSUM_MD5, "MD5" },
+	[HANDSHAKE_HASH_SHA1]	= { 2, L_CHECKSUM_SHA1, "SHA1" },
 };
 
 static bool tls_init_handshake_hash(struct l_tls *tls)
 {
 	enum handshake_hash_type hash;
+	bool tls10 = tls->max_version < L_TLS_V12;
 
 	for (hash = 0; hash < __HANDSHAKE_HASH_COUNT; hash++) {
+		/* Skip hash types we already know we won't need */
+		if (tls10 && hash != HANDSHAKE_HASH_SHA1 &&
+				hash != HANDSHAKE_HASH_MD5)
+			continue;
+
 		if (tls->handshake_hash[hash]) {
 			TLS_DEBUG("Handshake hash %s already exists",
 					tls_handshake_hash_data[hash].name);
@@ -793,8 +811,8 @@ static bool tls_send_client_hello(struct l_tls *tls)
 
 	/* Fill in the Client Hello body */
 
-	*ptr++ = (uint8_t) (TLS_VERSION >> 8);
-	*ptr++ = (uint8_t) (TLS_VERSION >> 0);
+	*ptr++ = (uint8_t) (tls->max_version >> 8);
+	*ptr++ = (uint8_t) (tls->max_version >> 0);
 
 	tls_write_random(tls->pending.client_random);
 	memcpy(ptr, tls->pending.client_random, 32);
@@ -818,7 +836,8 @@ static bool tls_send_client_hello(struct l_tls *tls)
 	}
 
 	if (ptr == len_ptr + 2) {
-		TLS_DEBUG("No compatible cipher suites, check kernel config");
+		TLS_DEBUG("No compatible cipher suites, check kernel config, "
+				"certificate's key type and TLS version range");
 		return false;
 	}
 
@@ -907,7 +926,6 @@ static bool tls_send_certificate(struct l_tls *tls)
 {
 	uint8_t *buf, *ptr;
 	size_t total;
-	struct l_cert *leaf;
 
 	if (tls->server && !tls->cert) {
 		TLS_DISCONNECT(TLS_ALERT_INTERNAL_ERROR, TLS_ALERT_BAD_CERT,
@@ -922,22 +940,10 @@ static bool tls_send_certificate(struct l_tls *tls)
 		return false;
 	}
 
-	/* TODO: might want check this earlier and exclude the cipher suite */
-	leaf = l_certchain_get_leaf(tls->cert);
-	if (leaf && !tls->pending.cipher_suite->key_xchg->
-			validate_cert_key_type(leaf)) {
-		TLS_DISCONNECT(TLS_ALERT_INTERNAL_ERROR, TLS_ALERT_CERT_UNKNOWN,
-				"Local certificate has key type incompatible "
-				"with pending cipher suite %s",
-				tls->pending.cipher_suite->name);
-
-		return false;
-	}
-
 	/*
 	 * TODO: check that the certificate is compatible with hash and
 	 * signature algorithms lists supplied to us in the Client Hello
-	 * extensions (if we're a server) or in the Certificate Request
+	 * extensions (if we're a 1.2+ server) or in the Certificate Request
 	 * (if we act as a 1.2+ client).
 	 *
 	 *  - for the hash and signature_algorithms list, check all
@@ -974,26 +980,20 @@ static bool tls_send_certificate(struct l_tls *tls)
 	return true;
 }
 
+/*
+ * Note: ClientCertificateType.rsa_sign value coincides with the
+ * SignatureAlgorithm.rsa value but other values in those enum are
+ * different so we don't mix them, can't extract them from
+ * tls->pending.cipher_suite->signature.
+ */
 static uint8_t tls_cert_type_pref[] = {
 	1, /* RSA_sign */
 };
 
-struct tls_signature_hash_algorithms {
-	uint8_t hash_id;
-	uint8_t signature_id;
-};
-
-static struct tls_signature_hash_algorithms tls_signature_hash_pref[] = {
-	{ 6, 1 }, /* SHA512 + RSA */
-	{ 5, 1 }, /* SHA384 + RSA */
-	{ 4, 1 }, /* SHA256 + RSA */
-	{ 2, 1 }, /* SHA1 + RSA */
-	{ 1, 1 }, /* MD5 + RSA */
-};
-
 static bool tls_send_certificate_request(struct l_tls *tls)
 {
-	uint8_t *buf, *ptr, *dn_ptr, *signature_hash_ptr;
+	uint8_t *buf, *ptr, *dn_ptr;
+	size_t len;
 	const struct l_queue_entry *entry;
 	unsigned int i;
 	size_t dn_total = 0;
@@ -1007,9 +1007,8 @@ static bool tls_send_certificate_request(struct l_tls *tls)
 			dn_total += 10 + dn_size;
 	}
 
-	buf = l_malloc(128 + L_ARRAY_SIZE(tls_cert_type_pref) +
-			2 * L_ARRAY_SIZE(tls_signature_hash_pref) +
-			dn_total);
+	len = 256 + L_ARRAY_SIZE(tls_cert_type_pref) + dn_total;
+	buf = l_malloc(len);
 	ptr = buf + TLS_HANDSHAKE_HEADER_SIZE;
 
 	/* Fill in the Certificate Request body */
@@ -1018,27 +1017,19 @@ static bool tls_send_certificate_request(struct l_tls *tls)
 	for (i = 0; i < L_ARRAY_SIZE(tls_cert_type_pref); i++)
 		*ptr++ = tls_cert_type_pref[i];
 
-	/*
-	 * This only makes sense as a variable-length field, assume there's
-	 * a typo in RFC5246 7.4.4 here.
-	 *
-	 * TODO: we support the full list of hash algorithms when used
-	 * in the client certificate chain but we can only verify the
-	 * Certificate Verify signature when the hash algorithm matches
-	 * one of HANDSHAKE_HASH_*.  The values we include here will
-	 * affect both of these steps so revisit which set we're passing
-	 * here.
-	 */
 	if (tls->negotiated_version >= L_TLS_V12) {
-		signature_hash_ptr = ptr;
-		ptr += 2;
+		ssize_t ret = tls_write_signature_algorithms(tls, ptr,
+							buf + len - ptr);
 
-		for (i = 0; i < L_ARRAY_SIZE(tls_signature_hash_pref); i++) {
-			*ptr++ = tls_signature_hash_pref[i].hash_id;
-			*ptr++ = tls_signature_hash_pref[i].signature_id;
+		if (ret < 0) {
+			TLS_DISCONNECT(TLS_ALERT_INTERNAL_ERROR, 0,
+					"tls_write_signature_algorithms: %s",
+					strerror(-ret));
+			l_free(buf);
+			return false;
 		}
 
-		l_put_be16(ptr - (signature_hash_ptr + 2), signature_hash_ptr);
+		ptr += ret;
 	}
 
 	dn_ptr = ptr;
@@ -1125,7 +1116,7 @@ void tls_generate_master_secret(struct l_tls *tls,
 				"key expansion", seed, 64,
 				tls->pending.key_block, key_block_size);
 
-	memset(seed, 0, 64);
+	explicit_bzero(seed, 64);
 }
 
 static void tls_get_handshake_hash(struct l_tls *tls,
@@ -1137,32 +1128,25 @@ static void tls_get_handshake_hash(struct l_tls *tls,
 	if (!hash)
 		return;
 
-	l_checksum_get_digest(hash, out, tls_handshake_hash_data[type].length);
-
+	l_checksum_get_digest(hash, out, l_checksum_digest_length(
+					tls_handshake_hash_data[type].l_id));
 	l_checksum_free(hash);
 }
 
-static bool tls_get_handshake_hash_by_id(struct l_tls *tls, uint8_t hash_id,
-					uint8_t *out, size_t *len,
-					enum l_checksum_type *type)
+static bool tls_get_handshake_hash_by_type(struct l_tls *tls,
+					enum handshake_hash_type type,
+					const uint8_t *data, size_t data_len,
+					uint8_t *out, size_t *out_len)
 {
-	enum handshake_hash_type hash;
+	if (!tls->handshake_hash[type])
+		return false;
 
-	for (hash = 0; hash < __HANDSHAKE_HASH_COUNT; hash++)
-		if (tls_handshake_hash_data[hash].tls_id == hash_id &&
-				tls->handshake_hash[hash]) {
-			tls_get_handshake_hash(tls, hash, out);
+	if (out_len)
+		*out_len = l_checksum_digest_length(
+					tls_handshake_hash_data[type].l_id);
 
-			if (len)
-				*len = tls_handshake_hash_data[hash].length;
-
-			if (type)
-				*type = tls_handshake_hash_data[hash].l_id;
-
-			return true;
-		}
-
-	return false;
+	tls_get_handshake_hash(tls, type, out);
+	return true;
 }
 
 static bool tls_send_certificate_verify(struct l_tls *tls)
@@ -1173,10 +1157,11 @@ static bool tls_send_certificate_verify(struct l_tls *tls)
 
 	/* Fill in the Certificate Verify body */
 
-	sign_len = tls->pending.cipher_suite->key_xchg->sign(tls,
+	sign_len = tls->pending.cipher_suite->signature->sign(tls,
 					buf + TLS_HANDSHAKE_HEADER_SIZE,
 					2048 - TLS_HANDSHAKE_HEADER_SIZE,
-					tls_get_handshake_hash_by_id);
+					tls_get_handshake_hash_by_type,
+					NULL, 0);
 
 	if (sign_len < 0)
 		return false;
@@ -1216,7 +1201,7 @@ static void tls_send_finished(struct l_tls *tls)
 				break;
 
 		tls_get_handshake_hash(tls, hash, seed);
-		seed_len = tls_handshake_hash_data[hash].length;
+		seed_len = l_checksum_digest_length(tls->prf_hmac->l_id);
 	} else {
 		tls_get_handshake_hash(tls, HANDSHAKE_HASH_MD5, seed + 0);
 		tls_get_handshake_hash(tls, HANDSHAKE_HASH_SHA1, seed + 16);
@@ -1256,7 +1241,7 @@ static bool tls_verify_finished(struct l_tls *tls, const uint8_t *received,
 				break;
 
 		seed = tls->prev_digest[hash];
-		seed_len = tls_handshake_hash_data[hash].length;
+		seed_len = l_checksum_digest_length(tls->prf_hmac->l_id);
 	} else {
 		seed = alloca(36);
 		memcpy(seed + 0, tls->prev_digest[HANDSHAKE_HASH_MD5], 16);
@@ -1478,25 +1463,18 @@ static void tls_handle_client_hello(struct l_tls *tls,
 	 * trying to connect somewhere else.  We might want to throw an error.
 	 */
 
-	/*
-	 * TODO: Obligatory in 1.2: check for signature_algorithms extension,
-	 * store the list of algorithms for later checking in
-	 * tls_send_certificate on both server and client sides.  If not
-	 * present assume only SHA1+RSA (7.4.1.4.1).
-	 */
-
 	/* Save client_version for Premaster Secret verification */
 	tls->client_version = l_get_be16(buf);
 
-	if (tls->client_version < TLS_MIN_VERSION) {
+	if (tls->client_version < tls->min_version) {
 		TLS_DISCONNECT(TLS_ALERT_PROTOCOL_VERSION, 0,
 				"Client version too low: %02x",
 				tls->client_version);
 		goto cleanup;
 	}
 
-	tls->negotiated_version = TLS_VERSION < tls->client_version ?
-		TLS_VERSION : tls->client_version;
+	tls->negotiated_version = tls->client_version > tls->max_version ?
+		tls->max_version : tls->client_version;
 
 	/* Stop maintaining handshake message hashes other than MD1 and SHA. */
 	if (tls->negotiated_version < L_TLS_V12)
@@ -1590,7 +1568,7 @@ static void tls_handle_client_hello(struct l_tls *tls,
 
 	l_queue_destroy(extensions_offered, NULL);
 
-	if (tls->pending.cipher_suite->key_xchg->certificate_check && tls->cert)
+	if (tls->pending.cipher_suite->signature && tls->cert)
 		if (!tls_send_certificate(tls))
 			return;
 
@@ -1600,15 +1578,13 @@ static void tls_handle_client_hello(struct l_tls *tls,
 			return;
 
 	/* TODO: don't bother if configured to not authenticate client */
-	if (tls->pending.cipher_suite->key_xchg->certificate_check &&
-			tls->ca_certs)
+	if (tls->pending.cipher_suite->signature && tls->ca_certs)
 		if (!tls_send_certificate_request(tls))
 			return;
 
 	tls_send_server_hello_done(tls);
 
-	if (tls->pending.cipher_suite->key_xchg->certificate_check &&
-			tls->ca_certs)
+	if (tls->pending.cipher_suite->signature && tls->ca_certs)
 		TLS_SET_STATE(TLS_HANDSHAKE_WAIT_CERTIFICATE);
 	else
 		TLS_SET_STATE(TLS_HANDSHAKE_WAIT_KEY_EXCHANGE);
@@ -1660,9 +1636,9 @@ static void tls_handle_server_hello(struct l_tls *tls,
 
 	tls->negotiated_version = l_get_be16(buf);
 
-	if (tls->negotiated_version < TLS_MIN_VERSION ||
-			tls->negotiated_version > TLS_VERSION) {
-		TLS_DISCONNECT(tls->negotiated_version < TLS_MIN_VERSION ?
+	if (tls->negotiated_version < tls->min_version ||
+			tls->negotiated_version > tls->max_version) {
+		TLS_DISCONNECT(tls->negotiated_version < tls->min_version ?
 				TLS_ALERT_PROTOCOL_VERSION :
 				TLS_ALERT_ILLEGAL_PARAM, 0,
 				"Unsupported version %02x",
@@ -1725,7 +1701,7 @@ static void tls_handle_server_hello(struct l_tls *tls,
 
 	TLS_DEBUG("Negotiated %s", tls->pending.compression_method->name);
 
-	if (tls->pending.cipher_suite->key_xchg->certificate_check)
+	if (tls->pending.cipher_suite->signature)
 		TLS_SET_STATE(TLS_HANDSHAKE_WAIT_CERTIFICATE);
 	else
 		TLS_SET_STATE(TLS_HANDSHAKE_WAIT_KEY_EXCHANGE);
@@ -1806,7 +1782,7 @@ static void tls_handle_certificate(struct l_tls *tls,
 	 * algorithm."
 	 */
 	leaf = l_certchain_get_leaf(certchain);
-	if (!tls->pending.cipher_suite->key_xchg->
+	if (!tls->pending.cipher_suite->signature->
 			validate_cert_key_type(leaf)) {
 		TLS_DISCONNECT(TLS_ALERT_UNSUPPORTED_CERT, 0,
 				"Peer certificate key type incompatible with "
@@ -1858,18 +1834,24 @@ done:
 static void tls_handle_certificate_request(struct l_tls *tls,
 						const uint8_t *buf, size_t len)
 {
-	int cert_type_len, signature_hash_len, dn_len, i;
-	enum handshake_hash_type first_supported, hash;
-	const uint8_t *signature_hash_data;
-	uint8_t hash_id;
+	unsigned int cert_type_len, dn_len, i;
 
 	tls->cert_requested = 1;
 
 	cert_type_len = *buf++;
-	if (len < (size_t) 1 + cert_type_len + 2)
+	if (len < 1 + cert_type_len + 2)
 		goto decode_error;
 
-	/* Skip certificate_types */
+	for (i = 0; i < sizeof(tls_cert_type_pref); i++)
+		if (memchr(buf, tls_cert_type_pref[i], cert_type_len))
+			break;
+
+	if (i == sizeof(tls_cert_type_pref)) {
+		TLS_DISCONNECT(TLS_ALERT_UNSUPPORTED_CERT, 0,
+				"Requested certificate types not supported");
+		return;
+	}
+
 	buf += cert_type_len;
 	len -= 1 + cert_type_len;
 
@@ -1880,64 +1862,20 @@ static void tls_handle_certificate_request(struct l_tls *tls,
 	 */
 
 	if (tls->negotiated_version >= L_TLS_V12) {
-		/*
-		 * This only makes sense as a variable-length field, assume
-		 * there's a typo in RFC5246 7.4.4 here.
-		 */
-		signature_hash_len = l_get_be16(buf);
-		signature_hash_data = buf + 2;
+		enum handshake_hash_type hash;
+		ssize_t ret = tls_parse_signature_algorithms(tls, buf, len);
 
-		if (len < (size_t) 2 + signature_hash_len + 2 ||
-				(signature_hash_len & 1))
-			goto decode_error;
-
-		len -= 2 + signature_hash_len;
-		buf += 2 + signature_hash_len;
-
-		/*
-		 * In 1.2 SHA256 is the default because that is most likely
-		 * to be supported in all the scenarios and optimal because
-		 * SHA256 is required independently for the Finished hash
-		 * meaning that we'll just need one hash type instead of
-		 * two.  If not available fall back to the first common
-		 * hash algorithm.
-		 */
-		first_supported = -1;
-
-		for (i = 0; i < signature_hash_len; i += 2) {
-			hash_id = signature_hash_data[i + 0];
-
-			/* Ignore hash types for signatures other than ours */
-			if (signature_hash_data[i + 1] !=
-					tls->pending.cipher_suite->key_xchg->id)
-				continue;
-
-			if (hash_id == tls_handshake_hash_data[
-						HANDSHAKE_HASH_SHA256].tls_id)
-				break;
-
-			if ((int) first_supported != -1)
-				continue;
-
-			for (hash = 0; hash < __HANDSHAKE_HASH_COUNT; hash++)
-				if (hash_id == tls_handshake_hash_data[hash].
-						tls_id &&
-						tls->handshake_hash[hash]) {
-					first_supported = hash;
-					break;
-				}
-		}
-
-		if (i < signature_hash_len)
-			tls->signature_hash = HANDSHAKE_HASH_SHA256;
-		else if ((int) first_supported != -1)
-			tls->signature_hash = first_supported;
-		else {
+		if (ret == -ENOTSUP) {
 			TLS_DISCONNECT(TLS_ALERT_UNSUPPORTED_CERT, 0,
 					"No supported signature hash type");
-
 			return;
 		}
+
+		if (ret < 0)
+			goto decode_error;
+
+		len -= ret;
+		buf += ret;
 
 		/*
 		 * We can now safely stop maintaining handshake message
@@ -1951,7 +1889,7 @@ static void tls_handle_certificate_request(struct l_tls *tls,
 	}
 
 	dn_len = l_get_be16(buf);
-	if ((size_t) 2 + dn_len != len)
+	if (2 + dn_len != len)
 		goto decode_error;
 
 	return;
@@ -1996,27 +1934,21 @@ static void tls_handle_server_hello_done(struct l_tls *tls,
 	TLS_SET_STATE(TLS_HANDSHAKE_WAIT_CHANGE_CIPHER_SPEC);
 }
 
-static bool tls_get_prev_digest_by_id(struct l_tls *tls, uint8_t hash_id,
-					uint8_t *out, size_t *out_len,
-					enum l_checksum_type *type)
+static bool tls_get_prev_digest_by_type(struct l_tls *tls,
+					enum handshake_hash_type type,
+					const uint8_t *data, size_t data_len,
+					uint8_t *out, size_t *out_len)
 {
-	enum handshake_hash_type hash;
 	size_t len;
 
-	for (hash = 0; hash < __HANDSHAKE_HASH_COUNT; hash++)
-		if (tls_handshake_hash_data[hash].tls_id == hash_id &&
-				tls->handshake_hash[hash]) {
-			len = tls_handshake_hash_data[hash].length;
-			memcpy(out, tls->prev_digest[hash], len);
+	if (!tls->handshake_hash[type])
+		return false;
 
-			if (out_len)
-				*out_len = len;
+	len = l_checksum_digest_length(tls_handshake_hash_data[type].l_id);
+	memcpy(out, tls->prev_digest[type], len);
 
-			if (type)
-				*type = tls_handshake_hash_data[hash].l_id;
-
-			return len;
-		}
+	if (out_len)
+		*out_len = len;
 
 	return 0;
 }
@@ -2026,8 +1958,9 @@ static void tls_handle_certificate_verify(struct l_tls *tls,
 {
 	int i;
 
-	if (!tls->pending.cipher_suite->key_xchg->verify(tls, buf, len,
-						tls_get_prev_digest_by_id))
+	if (!tls->pending.cipher_suite->signature->verify(tls, buf, len,
+						tls_get_prev_digest_by_type,
+						NULL, 0))
 		return;
 
 	/* Stop maintaining handshake message hashes other than the PRF hash */
@@ -2046,7 +1979,7 @@ static void tls_handle_certificate_verify(struct l_tls *tls,
 	 *   - If tls->ca_certs is non-NULL then tls_handle_certificate
 	 *     will have checked the whole certificate chain to be valid and
 	 *     additionally trusted by our CAs if known.
-	 *   - Additionally cipher_suite->key_xchg->verify has just confirmed
+	 *   - Additionally cipher_suite->signature->verify has just confirmed
 	 *     that the peer owns the end-entity certificate because it was
 	 *     able to sign the contents of the handshake messages and that
 	 *     signature could be verified with the public key from that
@@ -2251,8 +2184,7 @@ static void tls_handle_handshake(struct l_tls *tls, int type,
 		 */
 		if (tls->state != TLS_HANDSHAKE_WAIT_HELLO_DONE ||
 				tls->cert_requested ||
-				!tls->pending.cipher_suite->key_xchg->
-				certificate_check) {
+				!tls->pending.cipher_suite->signature) {
 			TLS_DISCONNECT(TLS_ALERT_UNEXPECTED_MESSAGE, 0,
 					"Message invalid in current state "
 					"or certificate check not supported "
@@ -2305,7 +2237,7 @@ static void tls_handle_handshake(struct l_tls *tls, int type,
 		/*
 		 * If we accepted a client Certificate message with a
 		 * certificate that has signing capability (TODO: check
-		 * usage bitmask), Certiifcate Verify is received next.  It
+		 * usage bitmask), Certificate Verify is received next.  It
 		 * sounds as if this is mandatory for the client although
 		 * this isn't 100% clear.
 		 */
@@ -2372,8 +2304,8 @@ static void tls_handle_handshake(struct l_tls *tls, int type,
 		 *      ServerKeyExchange parameters using its certified key
 		 *      pair.
 		 */
-		if (!tls->server && tls->cipher_suite[0]->key_xchg->
-				certificate_check && tls->ca_certs)
+		if (!tls->server && tls->cipher_suite[0]->signature &&
+				tls->ca_certs)
 			tls->peer_authenticated = true;
 
 		tls_finished(tls);
@@ -2406,7 +2338,8 @@ LIB_EXPORT struct l_tls *l_tls_new(bool server,
 	tls->disconnected = disconnect_handler;
 	tls->user_data = user_data;
 	tls->cipher_suite_pref_list = tls_cipher_suite_pref;
-	tls->signature_hash = HANDSHAKE_HASH_SHA256;
+	tls->min_version = TLS_MIN_VERSION;
+	tls->max_version = TLS_MAX_VERSION;
 
 	/* If we're the server wait for the Client Hello already */
 	if (tls->server)
@@ -2596,6 +2529,9 @@ bool tls_handle_message(struct l_tls *tls, const uint8_t *message,
 
 LIB_EXPORT bool l_tls_start(struct l_tls *tls)
 {
+	if (tls->max_version < tls->min_version)
+		return false;
+
 	if (!tls->cipher_suite_pref_list)
 		return false;
 
@@ -2743,6 +2679,18 @@ bool tls_set_cipher_suites(struct l_tls *tls, const char **suite_list)
 	l_free(suite);
 	tls->cipher_suite_pref_list = NULL;
 	return false;
+}
+
+LIB_EXPORT void l_tls_set_version_range(struct l_tls *tls,
+					enum l_tls_version min_version,
+					enum l_tls_version max_version)
+{
+	tls->min_version =
+		(min_version && min_version > TLS_MIN_VERSION) ?
+		min_version : TLS_MIN_VERSION;
+	tls->max_version =
+		(max_version && max_version < TLS_MAX_VERSION) ?
+		max_version : TLS_MAX_VERSION;
 }
 
 LIB_EXPORT const char *l_tls_alert_to_str(enum l_tls_alert_desc desc)

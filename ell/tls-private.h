@@ -20,14 +20,7 @@
  *
  */
 
-enum l_tls_version {
-	L_TLS_V10 = ((3 << 8) | 1),
-	L_TLS_V11 = ((3 << 8) | 2),
-	L_TLS_V12 = ((3 << 8) | 3),
-	L_TLS_V13 = ((3 << 8) | 4),	/* Not supported */
-};
-
-#define TLS_VERSION	L_TLS_V12
+#define TLS_MAX_VERSION	L_TLS_V12
 #define TLS_MIN_VERSION	L_TLS_V10
 
 enum tls_cipher_type {
@@ -52,24 +45,51 @@ struct tls_bulk_encryption_algorithm {
 struct tls_hash_algorithm {
 	uint8_t tls_id;
 	enum l_checksum_type l_id;
-	size_t length;
 	const char *name;
 };
 
+/*
+ * Support the minimum required set of handshake hash types for the
+ * Certificate Verify digital signature and the Finished PRF seed so we
+ * don't have to accumulate all of messages full contents until the
+ * Finished message.  If we're sent a hash of a different type (in TLS 1.2+)
+ * and need to verify we'll give up.
+ * SHA1 and MD5 are explicitly required by versions < 1.2 and 1.2 requires
+ * that the Finished hash is the same as used for the PRF so we need to
+ * keep at least the hashes our supported cipher suites specify for the PRF.
+ */
+enum handshake_hash_type {
+	HANDSHAKE_HASH_SHA384,
+	HANDSHAKE_HASH_SHA256,
+	HANDSHAKE_HASH_MD5,
+	HANDSHAKE_HASH_SHA1,
+	__HANDSHAKE_HASH_COUNT,
+};
+#define HANDSHAKE_HASH_MAX_SIZE	48
+
 extern const struct tls_hash_algorithm tls_handshake_hash_data[];
 
-typedef bool (*tls_get_hash_t)(struct l_tls *tls, uint8_t tls_id,
-				uint8_t *out, size_t *len,
-				enum l_checksum_type *type);
+typedef bool (*tls_get_hash_t)(struct l_tls *tls,
+				enum handshake_hash_type type,
+				const uint8_t *data, size_t data_len,
+				uint8_t *out, size_t *out_len);
 
-struct tls_key_exchange_algorithm {
+struct tls_signature_algorithm {
 	uint8_t id;
 
-	bool certificate_check;
+	bool (*validate_cert_key_type)(struct l_cert *cert);
+
+	ssize_t (*sign)(struct l_tls *tls, uint8_t *out, size_t out_len,
+			tls_get_hash_t get_hash,
+			const uint8_t *data, size_t data_len);
+	bool (*verify)(struct l_tls *tls, const uint8_t *in, size_t in_len,
+			tls_get_hash_t get_hash,
+			const uint8_t *data, size_t data_len);
+};
+
+struct tls_key_exchange_algorithm {
 	bool need_ecc;
 	bool need_ffdh;
-
-	bool (*validate_cert_key_type)(struct l_cert *cert);
 
 	bool (*send_server_key_exchange)(struct l_tls *tls);
 	void (*handle_server_key_exchange)(struct l_tls *tls,
@@ -78,11 +98,6 @@ struct tls_key_exchange_algorithm {
 	bool (*send_client_key_exchange)(struct l_tls *tls);
 	void (*handle_client_key_exchange)(struct l_tls *tls,
 						const uint8_t *buf, size_t len);
-
-	ssize_t (*sign)(struct l_tls *tls, uint8_t *out, size_t len,
-			tls_get_hash_t get_hash);
-	bool (*verify)(struct l_tls *tls, const uint8_t *in, size_t len,
-			tls_get_hash_t get_hash);
 
 	void (*free_params)(struct l_tls *tls);
 };
@@ -99,6 +114,7 @@ struct tls_cipher_suite {
 	int verify_data_length;
 
 	struct tls_bulk_encryption_algorithm *encryption;
+	struct tls_signature_algorithm *signature;
 	struct tls_key_exchange_algorithm *key_xchg;
 	struct tls_mac_algorithm *mac;
 	enum l_checksum_type prf_hmac;
@@ -140,10 +156,6 @@ struct tls_named_group {
 	} type;
 	union {
 		struct {
-			unsigned int l_group;
-			size_t point_bytes;
-		} ec;
-		struct {
 			const uint8_t *prime;
 			size_t prime_len;
 			unsigned int generator;
@@ -183,25 +195,6 @@ enum tls_handshake_type {
 	TLS_FINISHED		= 20,
 };
 
-/*
- * Support the minimum required set of handshake hash types for the
- * Certificate Verify digital signature and the Finished PRF seed so we
- * don't have to accumulate all of messages full contents until the
- * Finished message.  If we're sent a hash of a different type (in TLS 1.2+)
- * and need to verify we'll give up.
- * SHA1 and MD5 are explicitly required by versions < 1.2 and 1.2 requires
- * that the Finished hash is the same as used for the PRF so we need to
- * keep at least the hashes our supported cipher suites specify for the PRF.
- */
-enum handshake_hash_type {
-	HANDSHAKE_HASH_SHA384,
-	HANDSHAKE_HASH_SHA256,
-	HANDSHAKE_HASH_MD5,
-	HANDSHAKE_HASH_SHA1,
-	__HANDSHAKE_HASH_COUNT,
-};
-#define HANDSHAKE_HASH_MAX_SIZE	48
-
 struct l_tls {
 	bool server;
 
@@ -212,6 +205,8 @@ struct l_tls {
 	l_tls_debug_cb_t debug_handler;
 	l_tls_destroy_cb_t debug_destroy;
 	void *debug_data;
+	enum l_tls_version min_version;
+	enum l_tls_version max_version;
 
 	struct l_queue *ca_certs;
 	struct l_certchain *cert;
@@ -295,7 +290,7 @@ bool tls10_prf(const void *secret, size_t secret_len,
 		const void *seed, size_t seed_len,
 		uint8_t *out, size_t out_len);
 
-bool tls12_prf(enum l_checksum_type type, size_t hash_len,
+bool tls12_prf(enum l_checksum_type type,
 		const void *secret, size_t secret_len,
 		const char *label,
 		const void *seed, size_t seed_len,
@@ -313,6 +308,10 @@ bool tls_handle_message(struct l_tls *tls, const uint8_t *message,
 
 void tls_tx_handshake(struct l_tls *tls, int type, uint8_t *buf, size_t length);
 
+bool tls_cipher_suite_is_compatible(struct l_tls *tls,
+					const struct tls_cipher_suite *suite,
+					const char **error);
+
 /* Optionally limit allowed cipher suites to a custom set */
 bool tls_set_cipher_suites(struct l_tls *tls, const char **suite_list);
 
@@ -325,6 +324,11 @@ const struct tls_named_group *tls_find_ff_group(const uint8_t *prime,
 						size_t prime_len,
 						const uint8_t *generator,
 						size_t generator_len);
+
+ssize_t tls_write_signature_algorithms(struct l_tls *tls,
+					uint8_t *buf, size_t len);
+ssize_t tls_parse_signature_algorithms(struct l_tls *tls,
+					const uint8_t *buf, size_t len);
 
 int tls_parse_certificate_list(const void *data, size_t len,
 				struct l_certchain **out_certchain);

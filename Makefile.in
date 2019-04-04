@@ -146,8 +146,8 @@ am__ell_libell_internal_la_SOURCES_DIST = ell/util.h ell/test.h \
 	ell/random.h ell/uintset.h ell/base64.h ell/pem.h ell/tls.h \
 	ell/uuid.h ell/key.h ell/pkcs5.h ell/file.h ell/dir.h \
 	ell/net.h ell/dhcp.h ell/cert.h ell/ecc.h ell/ecdh.h \
-	ell/private.h ell/missing.h ell/util.c ell/test.c ell/strv.c \
-	ell/utf8.c ell/queue.c ell/hashmap.c ell/string.c \
+	ell/time.h ell/private.h ell/missing.h ell/util.c ell/test.c \
+	ell/strv.c ell/utf8.c ell/queue.c ell/hashmap.c ell/string.c \
 	ell/settings.c ell/main.c ell/idle.c ell/signal.c \
 	ell/timeout.c ell/io.c ell/ringbuf.c ell/log.c ell/plugin.c \
 	ell/checksum.c ell/netlink-private.h ell/netlink.c \
@@ -162,7 +162,8 @@ am__ell_libell_internal_la_SOURCES_DIST = ell/util.h ell/test.h \
 	ell/pkcs5-private.h ell/pkcs5.c ell/file.c ell/dir.c ell/net.c \
 	ell/dhcp-private.h ell/dhcp.c ell/dhcp-transport.c \
 	ell/dhcp-lease.c ell/cert-private.h ell/cert.c \
-	ell/ecc-external.c ell/ecc-private.h ell/ecc.c ell/ecdh.c
+	ell/ecc-external.c ell/ecc-private.h ell/ecc.c ell/ecdh.c \
+	ell/time.c
 am__objects_1 =
 am__dirstamp = $(am__leading_dot)dirstamp
 @EXTERNAL_ELL_FALSE@am__objects_2 = ell/util.lo ell/test.lo \
@@ -184,7 +185,8 @@ am__dirstamp = $(am__leading_dot)dirstamp
 @EXTERNAL_ELL_FALSE@	ell/file.lo ell/dir.lo ell/net.lo \
 @EXTERNAL_ELL_FALSE@	ell/dhcp.lo ell/dhcp-transport.lo \
 @EXTERNAL_ELL_FALSE@	ell/dhcp-lease.lo ell/cert.lo \
-@EXTERNAL_ELL_FALSE@	ell/ecc-external.lo ell/ecc.lo ell/ecdh.lo
+@EXTERNAL_ELL_FALSE@	ell/ecc-external.lo ell/ecc.lo ell/ecdh.lo \
+@EXTERNAL_ELL_FALSE@	ell/time.lo
 @EXTERNAL_ELL_FALSE@am_ell_libell_internal_la_OBJECTS =  \
 @EXTERNAL_ELL_FALSE@	$(am__objects_1) $(am__objects_2)
 ell_libell_internal_la_OBJECTS = $(am_ell_libell_internal_la_OBJECTS)
@@ -198,7 +200,8 @@ am__v_lt_1 =
 @HWSIM_TRUE@am__EXEEXT_3 = tools/hwsim$(EXEEXT)
 am__installdirs = "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libexecdir)" \
 	"$(DESTDIR)$(man1dir)" "$(DESTDIR)$(dbus_busdir)" \
-	"$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_unitdir)"
+	"$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_modloaddir)" \
+	"$(DESTDIR)$(systemd_unitdir)"
 @DAEMON_TRUE@am__EXEEXT_4 = src/iwd$(EXEEXT)
 @WIRED_TRUE@am__EXEEXT_5 = wired/ead$(EXEEXT)
 @TOOLS_TRUE@am__EXEEXT_6 = tools/test-runner$(EXEEXT)
@@ -254,8 +257,8 @@ am__monitor_iwmon_SOURCES_DIST = monitor/main.c linux/nl80211.h \
 monitor_iwmon_OBJECTS = $(am_monitor_iwmon_OBJECTS)
 @MONITOR_TRUE@monitor_iwmon_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
-	src/plugin.h src/plugin.c src/netdev.h src/netdev.c \
-	src/wiphy.h src/wiphy.c src/device.h src/device.c \
+	src/missing.h src/plugin.h src/plugin.c src/netdev.h \
+	src/netdev.c src/wiphy.h src/wiphy.c src/device.h src/device.c \
 	src/station.h src/station.c src/ie.h src/ie.c src/dbus.h \
 	src/dbus.c src/mpdu.h src/mpdu.c src/eapol.h src/eapol.c \
 	src/eapolutil.h src/eapolutil.c src/handshake.h \
@@ -266,15 +269,16 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/knownnetworks.c src/rfkill.h src/rfkill.c src/ftutil.h \
 	src/ftutil.c src/ap.h src/ap.c src/adhoc.h src/adhoc.c \
 	src/sae.h src/sae.c src/nl80211util.h src/nl80211util.c \
-	src/owe.h src/owe.c src/eap.c src/eap.h src/eap-private.h \
-	src/eap-wsc.c src/eap-wsc.h src/eap-md5.c src/eap-tls.c \
-	src/eap-ttls.c src/eap-mschapv2.c src/eap-mschapv2.h \
-	src/eap-sim.c src/eap-aka.c src/eap-peap.c src/eap-gtc.c \
-	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
-	src/wscutil.h src/wscutil.c src/simutil.h src/simutil.c \
-	src/simauth.h src/simauth.c src/watchlist.h src/watchlist.c \
-	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
-	src/mschaputil.c plugins/sim_hardcoded.c plugins/ofono.c
+	src/owe.h src/owe.c src/blacklist.h src/blacklist.c src/eap.c \
+	src/eap.h src/eap-private.h src/eap-wsc.c src/eap-wsc.h \
+	src/eap-md5.c src/eap-tls.c src/eap-ttls.c src/eap-mschapv2.c \
+	src/eap-mschapv2.h src/eap-sim.c src/eap-aka.c src/eap-peap.c \
+	src/eap-gtc.c src/eap-pwd.c src/util.h src/util.c src/crypto.h \
+	src/crypto.c src/wscutil.h src/wscutil.c src/simutil.h \
+	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
+	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c \
+	src/mschaputil.h src/mschaputil.c plugins/sim_hardcoded.c \
+	plugins/ofono.c
 am__objects_3 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
 	src/eap-md5.$(OBJEXT) src/eap-tls.$(OBJEXT) \
 	src/eap-ttls.$(OBJEXT) src/eap-mschapv2.$(OBJEXT) \
@@ -301,7 +305,8 @@ am__objects_6 = $(am__objects_4) $(am__objects_5)
 @DAEMON_TRUE@	src/ftutil.$(OBJEXT) src/ap.$(OBJEXT) \
 @DAEMON_TRUE@	src/adhoc.$(OBJEXT) src/sae.$(OBJEXT) \
 @DAEMON_TRUE@	src/nl80211util.$(OBJEXT) src/owe.$(OBJEXT) \
-@DAEMON_TRUE@	$(am__objects_3) $(am__objects_6)
+@DAEMON_TRUE@	src/blacklist.$(OBJEXT) $(am__objects_3) \
+@DAEMON_TRUE@	$(am__objects_6)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am__tools_hwsim_SOURCES_DIST = tools/hwsim.c src/mpdu.h src/util.h \
 	src/util.c src/storage.h src/storage.c src/common.h \
@@ -364,7 +369,6 @@ am_unit_test_eapol_OBJECTS = unit/test-eapol.$(OBJEXT) \
 	src/eap-md5.$(OBJEXT) src/util.$(OBJEXT) \
 	src/eap-tls-common.$(OBJEXT) src/mschaputil.$(OBJEXT)
 unit_test_eapol_OBJECTS = $(am_unit_test_eapol_OBJECTS)
-unit_test_eapol_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_unit_test_hmac_md5_OBJECTS = unit/test-hmac-md5.$(OBJEXT) \
 	src/crypto.$(OBJEXT)
 unit_test_hmac_md5_OBJECTS = $(am_unit_test_hmac_md5_OBJECTS)
@@ -530,7 +534,7 @@ NROFF = nroff
 MANS = $(dist_man_MANS)
 am__dist_dbus_data_DATA_DIST = src/iwd-dbus.conf wired/ead-dbus.conf \
 	tools/hwsim-dbus.conf
-DATA = $(dbus_bus_DATA) $(dist_dbus_data_DATA) $(noinst_DATA) \
+DATA = $(dbus_bus_DATA) $(dist_dbus_data_DATA) $(systemd_modload_DATA) \
 	$(systemd_unit_DATA)
 am__tagged_files = $(HEADERS) $(SOURCES) $(TAGS_FILES) \
 	$(LISP)config.h.in
@@ -817,6 +821,7 @@ SED = @SED@
 SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
 STRIP = @STRIP@
+SYSTEMD_MODLOADDIR = @SYSTEMD_MODLOADDIR@
 SYSTEMD_UNITDIR = @SYSTEMD_UNITDIR@
 VERSION = @VERSION@
 abs_builddir = @abs_builddir@
@@ -922,7 +927,8 @@ builtin_sources = $(am__append_3) $(am__append_5)
 @EXTERNAL_ELL_FALSE@			ell/dhcp.h \
 @EXTERNAL_ELL_FALSE@			ell/cert.h \
 @EXTERNAL_ELL_FALSE@			ell/ecc.h \
-@EXTERNAL_ELL_FALSE@			ell/ecdh.h
+@EXTERNAL_ELL_FALSE@			ell/ecdh.h \
+@EXTERNAL_ELL_FALSE@			ell/time.h
 
 @EXTERNAL_ELL_FALSE@ell_sources = ell/private.h \
 @EXTERNAL_ELL_FALSE@			ell/missing.h \
@@ -987,7 +993,8 @@ builtin_sources = $(am__append_3) $(am__append_5)
 @EXTERNAL_ELL_FALSE@			ell/ecc-external.c \
 @EXTERNAL_ELL_FALSE@			ell/ecc-private.h \
 @EXTERNAL_ELL_FALSE@			ell/ecc.c \
-@EXTERNAL_ELL_FALSE@			ell/ecdh.c
+@EXTERNAL_ELL_FALSE@			ell/ecdh.c \
+@EXTERNAL_ELL_FALSE@			ell/time.c
 
 @EXTERNAL_ELL_FALSE@ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources)
 @DBUS_POLICY_TRUE@dbus_datadir = @DBUS_DATADIR@/dbus-1/system.d
@@ -998,6 +1005,8 @@ builtin_sources = $(am__append_3) $(am__append_5)
 @SYSTEMD_SERVICE_TRUE@	$(am__append_15)
 @SYSTEMD_SERVICE_TRUE@dbus_busdir = @DBUS_BUSDIR@
 @SYSTEMD_SERVICE_TRUE@dbus_bus_DATA = $(am__append_9) $(am__append_16)
+@SYSTEMD_SERVICE_TRUE@systemd_modloaddir = @SYSTEMD_MODLOADDIR@
+@SYSTEMD_SERVICE_TRUE@systemd_modload_DATA = src/pkcs8.conf
 eap_sources = src/eap.c src/eap.h src/eap-private.h \
 				src/eap-wsc.c src/eap-wsc.h \
 				src/eap-md5.c \
@@ -1018,7 +1027,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 				src/eap-tls-common.h src/eap-tls-common.c \
 				src/mschaputil.h src/mschaputil.c
 
-@DAEMON_TRUE@src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h \
+@DAEMON_TRUE@src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h src/missing.h \
 @DAEMON_TRUE@					src/plugin.h src/plugin.c \
 @DAEMON_TRUE@					src/netdev.h src/netdev.c \
 @DAEMON_TRUE@					src/wiphy.h src/wiphy.c \
@@ -1046,6 +1055,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/sae.h src/sae.c \
 @DAEMON_TRUE@					src/nl80211util.h src/nl80211util.c \
 @DAEMON_TRUE@					src/owe.h src/owe.c \
+@DAEMON_TRUE@					src/blacklist.h src/blacklist.c \
 @DAEMON_TRUE@					$(eap_sources) \
 @DAEMON_TRUE@					$(builtin_sources)
 
@@ -1107,7 +1117,6 @@ ell_pem_files = cert-ca-key.pem cert-client-key.pem cert-client-key-pkcs8.pem \
 		cert-server-key.pem cert-server-key-pkcs8.pem \
 		cert-ca.pem cert-client.pem cert-server.pem
 
-@MAINTAINER_MODE_TRUE@noinst_DATA = ell/unit/test_data
 unit_test_eap_sim_SOURCES = unit/test-eap-sim.c \
 		src/crypto.h src/crypto.c src/simutil.h src/simutil.c \
 		src/ie.h src/ie.c \
@@ -1174,6 +1183,7 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 				src/mschaputil.h src/mschaputil.c
 
 unit_test_eapol_LDADD = $(ell_ldadd)
+unit_test_eapol_DEPENDENCIES = ell/unit/test_data
 unit_test_ssid_to_utf8_SOURCES = src/util.h src/util.c \
 				unit/test-ssid-to-utf8.c
 
@@ -1223,9 +1233,11 @@ manual_pages = doc/iwmon.1
 @BUILD_DOCS_TRUE@dist_man_MANS = $(manual_pages)
 EXTRA_DIST = src/genbuiltin src/iwd.service.in src/net.connman.iwd.service \
 			wired/ead.service.in wired/net.connman.ead.service \
-			doc/main.conf $(manual_pages:.1=.txt)
+			src/pkcs8.conf doc/main.conf $(manual_pages:.1=.txt)
 
-AM_CFLAGS = $(ell_cflags) -fvisibility=hidden
+AM_CFLAGS = $(ell_cflags) -fvisibility=hidden \
+			-DELL_UNIT_TEST_DATA=\"$(abs_builddir)/ell/unit/\"
+
 CLEANFILES = src/iwd.service wired/ead.service
 DISTCHECK_CONFIGURE_FLAGS = --disable-dbus-policy --disable-systemd-service \
 				--enable-sim-hardcoded \
@@ -1367,6 +1379,7 @@ ell/cert.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/ecc-external.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/ecc.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/ecdh.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/time.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 
 ell/libell-internal.la: $(ell_libell_internal_la_OBJECTS) $(ell_libell_internal_la_DEPENDENCIES) $(EXTRA_ell_libell_internal_la_DEPENDENCIES) ell/$(am__dirstamp)
 	$(AM_V_CCLD)$(LINK) $(am_ell_libell_internal_la_rpath) $(ell_libell_internal_la_OBJECTS) $(ell_libell_internal_la_LIBADD) $(LIBS)
@@ -1589,6 +1602,8 @@ src/sae.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/nl80211util.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/owe.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/blacklist.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
 src/eap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/eap-wsc.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
@@ -1855,6 +1870,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/string.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/strv.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/test.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/time.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/timeout.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/tls-extensions.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/tls-record.Plo@am__quote@
@@ -1874,6 +1890,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/agent.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/backtrace.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/blacklist.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/common.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/crypto.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/dbus.Po@am__quote@
@@ -2065,6 +2082,27 @@ uninstall-dist_dbus_dataDATA:
 	@list='$(dist_dbus_data_DATA)'; test -n "$(dbus_datadir)" || list=; \
 	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
 	dir='$(DESTDIR)$(dbus_datadir)'; $(am__uninstall_files_from_dir)
+install-systemd_modloadDATA: $(systemd_modload_DATA)
+	@$(NORMAL_INSTALL)
+	@list='$(systemd_modload_DATA)'; test -n "$(systemd_modloaddir)" || list=; \
+	if test -n "$$list"; then \
+	  echo " $(MKDIR_P) '$(DESTDIR)$(systemd_modloaddir)'"; \
+	  $(MKDIR_P) "$(DESTDIR)$(systemd_modloaddir)" || exit 1; \
+	fi; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  echo "$$d$$p"; \
+	done | $(am__base_list) | \
+	while read files; do \
+	  echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(systemd_modloaddir)'"; \
+	  $(INSTALL_DATA) $$files "$(DESTDIR)$(systemd_modloaddir)" || exit $$?; \
+	done
+
+uninstall-systemd_modloadDATA:
+	@$(NORMAL_UNINSTALL)
+	@list='$(systemd_modload_DATA)'; test -n "$(systemd_modloaddir)" || list=; \
+	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
+	dir='$(DESTDIR)$(systemd_modloaddir)'; $(am__uninstall_files_from_dir)
 install-systemd_unitDATA: $(systemd_unit_DATA)
 	@$(NORMAL_INSTALL)
 	@list='$(systemd_unit_DATA)'; test -n "$(systemd_unitdir)" || list=; \
@@ -2596,7 +2634,7 @@ check: $(BUILT_SOURCES)
 	$(MAKE) $(AM_MAKEFLAGS) check-am
 all-am: Makefile $(LTLIBRARIES) $(PROGRAMS) $(MANS) $(DATA) config.h
 installdirs:
-	for dir in "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libexecdir)" "$(DESTDIR)$(man1dir)" "$(DESTDIR)$(dbus_busdir)" "$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_unitdir)"; do \
+	for dir in "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libexecdir)" "$(DESTDIR)$(man1dir)" "$(DESTDIR)$(dbus_busdir)" "$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_modloaddir)" "$(DESTDIR)$(systemd_unitdir)"; do \
 	  test -z "$$dir" || $(MKDIR_P) "$$dir"; \
 	done
 install: $(BUILT_SOURCES)
@@ -2656,8 +2694,8 @@ maintainer-clean-generic:
 clean: clean-am
 
 clean-am: clean-binPROGRAMS clean-generic clean-libexecPROGRAMS \
-	clean-libtool clean-noinstLTLIBRARIES clean-noinstPROGRAMS \
-	mostlyclean-am
+	clean-libtool clean-local clean-noinstLTLIBRARIES \
+	clean-noinstPROGRAMS mostlyclean-am
 
 distclean: distclean-am
 	-rm -f $(am__CONFIG_DISTCLEAN_FILES)
@@ -2679,7 +2717,8 @@ info: info-am
 info-am:
 
 install-data-am: install-dbus_busDATA install-dist_dbus_dataDATA \
-	install-man install-systemd_unitDATA
+	install-man install-systemd_modloadDATA \
+	install-systemd_unitDATA
 
 install-dvi: install-dvi-am
 
@@ -2730,7 +2769,8 @@ ps-am:
 
 uninstall-am: uninstall-binPROGRAMS uninstall-dbus_busDATA \
 	uninstall-dist_dbus_dataDATA uninstall-libexecPROGRAMS \
-	uninstall-man uninstall-systemd_unitDATA
+	uninstall-man uninstall-systemd_modloadDATA \
+	uninstall-systemd_unitDATA
 
 uninstall-man: uninstall-man1
 
@@ -2738,19 +2778,20 @@ uninstall-man: uninstall-man1
 
 .PHONY: CTAGS GTAGS TAGS all all-am am--refresh check check-TESTS \
 	check-am clean clean-binPROGRAMS clean-cscope clean-generic \
-	clean-libexecPROGRAMS clean-libtool clean-noinstLTLIBRARIES \
-	clean-noinstPROGRAMS cscope cscopelist-am ctags ctags-am dist \
-	dist-all dist-bzip2 dist-gzip dist-lzip dist-shar dist-tarZ \
-	dist-xz dist-zip distcheck distclean distclean-compile \
-	distclean-generic distclean-hdr distclean-libtool \
-	distclean-tags distcleancheck distdir distuninstallcheck dvi \
-	dvi-am html html-am info info-am install install-am \
-	install-binPROGRAMS install-data install-data-am \
-	install-dbus_busDATA install-dist_dbus_dataDATA install-dvi \
-	install-dvi-am install-exec install-exec-am install-html \
-	install-html-am install-info install-info-am \
-	install-libexecPROGRAMS install-man install-man1 install-pdf \
-	install-pdf-am install-ps install-ps-am install-strip \
+	clean-libexecPROGRAMS clean-libtool clean-local \
+	clean-noinstLTLIBRARIES clean-noinstPROGRAMS cscope \
+	cscopelist-am ctags ctags-am dist dist-all dist-bzip2 \
+	dist-gzip dist-lzip dist-shar dist-tarZ dist-xz dist-zip \
+	distcheck distclean distclean-compile distclean-generic \
+	distclean-hdr distclean-libtool distclean-tags distcleancheck \
+	distdir distuninstallcheck dvi dvi-am html html-am info \
+	info-am install install-am install-binPROGRAMS install-data \
+	install-data-am install-dbus_busDATA \
+	install-dist_dbus_dataDATA install-dvi install-dvi-am \
+	install-exec install-exec-am install-html install-html-am \
+	install-info install-info-am install-libexecPROGRAMS \
+	install-man install-man1 install-pdf install-pdf-am install-ps \
+	install-ps-am install-strip install-systemd_modloadDATA \
 	install-systemd_unitDATA installcheck installcheck-am \
 	installdirs maintainer-clean maintainer-clean-generic \
 	maintainer-clean-local mostlyclean mostlyclean-compile \
@@ -2758,7 +2799,8 @@ uninstall-man: uninstall-man1
 	recheck tags tags-am uninstall uninstall-am \
 	uninstall-binPROGRAMS uninstall-dbus_busDATA \
 	uninstall-dist_dbus_dataDATA uninstall-libexecPROGRAMS \
-	uninstall-man uninstall-man1 uninstall-systemd_unitDATA
+	uninstall-man uninstall-man1 uninstall-systemd_modloadDATA \
+	uninstall-systemd_unitDATA
 
 
 ell/internal: Makefile
@@ -2776,10 +2818,10 @@ ell/ell.h: Makefile
 	done
 
 ell/unit/test_data: Makefile
-	$(AM_V_at)$(MKDIR_P) ell/unit
+	$(AM_V_at)$(MKDIR_P) $(abs_builddir)/ell/unit
 	$(AM_V_GEN)for f in $(ell_pem_files) ; do \
 		if [ ! -f $$f ] ; then \
-			$(LN_S) -t ell/unit -f $(abs_srcdir)/../ell/unit/$$f ; \
+			$(LN_S) -t $(abs_builddir)/ell/unit -f $(abs_srcdir)/../ell/unit/$$f ; \
 		fi \
 	done > $@
 
@@ -2788,6 +2830,9 @@ ell/unit/test_data: Makefile
 
 %.1: %.txt
 	$(AM_V_GEN)$(A2X) --doctype manpage --format manpage $(srcdir)/$<
+
+clean-local:
+	-rm -rf $(abs_builddir)/ell/unit/*.pem $(abs_builddir)/ell/unit/test_data
 
 maintainer-clean-local:
 	-rm -rf build-aux ell

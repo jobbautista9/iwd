@@ -57,7 +57,8 @@ ell_headers = ell/util.h \
 			ell/dhcp.h \
 			ell/cert.h \
 			ell/ecc.h \
-			ell/ecdh.h
+			ell/ecdh.h \
+			ell/time.h
 
 ell_sources = ell/private.h \
 			ell/missing.h \
@@ -122,7 +123,8 @@ ell_sources = ell/private.h \
 			ell/ecc-external.c \
 			ell/ecc-private.h \
 			ell/ecc.c \
-			ell/ecdh.c
+			ell/ecdh.c \
+			ell/time.c
 
 ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources)
 endif
@@ -142,6 +144,9 @@ systemd_unit_DATA =
 
 dbus_busdir = @DBUS_BUSDIR@
 dbus_bus_DATA =
+
+systemd_modloaddir = @SYSTEMD_MODLOADDIR@
+systemd_modload_DATA = src/pkcs8.conf
 endif
 
 eap_sources = src/eap.c src/eap.h src/eap-private.h \
@@ -167,7 +172,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 if DAEMON
 libexec_PROGRAMS += src/iwd
 
-src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h \
+src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h src/missing.h \
 					src/plugin.h src/plugin.c \
 					src/netdev.h src/netdev.c \
 					src/wiphy.h src/wiphy.c \
@@ -195,6 +200,7 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h \
 					src/sae.h src/sae.c \
 					src/nl80211util.h src/nl80211util.c \
 					src/owe.h src/owe.c \
+					src/blacklist.h src/blacklist.c \
 					$(eap_sources) \
 					$(builtin_sources)
 src_iwd_LDADD = $(ell_ldadd) -ldl
@@ -321,7 +327,6 @@ ell_pem_files = cert-ca-key.pem cert-client-key.pem cert-client-key-pkcs8.pem \
 
 if MAINTAINER_MODE
 noinst_PROGRAMS += $(unit_tests)
-noinst_DATA = ell/unit/test_data
 endif
 
 unit_test_eap_sim_SOURCES = unit/test-eap-sim.c \
@@ -392,6 +397,7 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 				src/eap-tls-common.h src/eap-tls-common.c \
 				src/mschaputil.h src/mschaputil.c
 unit_test_eapol_LDADD = $(ell_ldadd)
+unit_test_eapol_DEPENDENCIES = ell/unit/test_data
 
 unit_test_ssid_to_utf8_SOURCES = src/util.h src/util.c \
 				unit/test-ssid-to-utf8.c
@@ -450,9 +456,10 @@ endif
 
 EXTRA_DIST = src/genbuiltin src/iwd.service.in src/net.connman.iwd.service \
 			wired/ead.service.in wired/net.connman.ead.service \
-			doc/main.conf $(manual_pages:.1=.txt)
+			src/pkcs8.conf doc/main.conf $(manual_pages:.1=.txt)
 
-AM_CFLAGS = $(ell_cflags) -fvisibility=hidden
+AM_CFLAGS = $(ell_cflags) -fvisibility=hidden \
+			-DELL_UNIT_TEST_DATA=\"$(abs_builddir)/ell/unit/\"
 
 CLEANFILES = src/iwd.service wired/ead.service
 
@@ -484,10 +491,10 @@ ell/ell.h: Makefile
 	done
 
 ell/unit/test_data: Makefile
-	$(AM_V_at)$(MKDIR_P) ell/unit
+	$(AM_V_at)$(MKDIR_P) $(abs_builddir)/ell/unit
 	$(AM_V_GEN)for f in $(ell_pem_files) ; do \
 		if [ ! -f $$f ] ; then \
-			$(LN_S) -t ell/unit -f $(abs_srcdir)/../ell/unit/$$f ; \
+			$(LN_S) -t $(abs_builddir)/ell/unit -f $(abs_srcdir)/../ell/unit/$$f ; \
 		fi \
 	done > $@
 
@@ -500,6 +507,9 @@ SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && \
 
 %.1: %.txt
 	$(AM_V_GEN)$(A2X) --doctype manpage --format manpage $(srcdir)/$<
+
+clean-local:
+	-rm -rf $(abs_builddir)/ell/unit/*.pem $(abs_builddir)/ell/unit/test_data
 
 maintainer-clean-local:
 	-rm -rf build-aux ell

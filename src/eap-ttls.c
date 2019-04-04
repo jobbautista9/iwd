@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <ell/ell.h>
 
+#include "src/missing.h"
 #include "src/util.h"
 #include "src/mschaputil.h"
 #include "src/eap.h"
@@ -155,6 +156,7 @@ static uint8_t *avp_builder_free(struct avp_builder *builder, bool free_data,
 	uint8_t *ret;
 
 	if (free_data) {
+		explicit_bzero(builder->buf, builder->pos);
 		l_free(builder->buf);
 		builder->buf = NULL;
 	}
@@ -429,7 +431,8 @@ static void eap_ttls_phase2_credentials_destroy(
 		return;
 
 	if (credentials->password)
-		memset(credentials->password, 0, strlen(credentials->password));
+		explicit_bzero(credentials->password,
+				strlen(credentials->password));
 
 	l_free(credentials->username);
 	l_free(credentials->password);
@@ -514,10 +517,12 @@ static bool eap_ttls_phase2_chap_init(struct eap_state *eap)
 	build_avp_user_name(builder, credentials->username);
 	build_avp_chap_challenge(builder, challenge);
 	build_avp_chap_password(builder, &ident, password_hash);
+	explicit_bzero(password_hash, sizeof(password_hash));
 
 	data = avp_builder_free(builder, false, &data_len);
 
 	eap_tls_common_tunnel_send(eap, data, data_len);
+	explicit_bzero(data, data_len);
 	l_free(data);
 
 	return true;
@@ -556,10 +561,12 @@ static bool eap_ttls_phase2_ms_chap_init(struct eap_state *eap)
 	mschap_nt_password_hash(credentials->password, password_hash);
 
 	build_avp_ms_chap_response(builder, &ident, challenge, password_hash);
+	explicit_bzero(password_hash, sizeof(password_hash));
 
 	data = avp_builder_free(builder, false, &data_len);
 
 	eap_tls_common_tunnel_send(eap, data, data_len);
+	explicit_bzero(data, data_len);
 	l_free(data);
 
 	return true;
@@ -582,10 +589,10 @@ static void mschapv2_state_destroy(struct phase2_method *phase2)
 	if (!state)
 		return;
 
-	memset(state->server_challenge, 0, MSCHAPV2_CHALLENGE_LEN +
+	explicit_bzero(state->server_challenge, MSCHAPV2_CHALLENGE_LEN +
 							CHAP_IDENT_LEN);
-	memset(state->peer_challenge, 0, MSCHAPV2_CHALLENGE_LEN);
-	memset(state->password_hash, 0, 16);
+	explicit_bzero(state->peer_challenge, MSCHAPV2_CHALLENGE_LEN);
+	explicit_bzero(state->password_hash, 16);
 
 	l_free(state);
 	phase2->state = NULL;
@@ -664,6 +671,7 @@ static bool eap_ttls_phase2_mschapv2_handle_success(struct eap_state *eap,
 	uint8_t nt_response[MSCHAPV2_RESPONSE_LEN];
 	char nt_server_response[MSCHAPV2_SERVER_RESPONSE_LEN];
 	uint8_t password_hash_hash[16];
+	bool r;
 
 	if (len != CHAP_IDENT_LEN + MSCHAPV2_SERVER_RESPONSE_LEN) {
 		l_error("TTLS Tunneled MSCHAPv2: Server response has invalid "
@@ -688,12 +696,15 @@ static bool eap_ttls_phase2_mschapv2_handle_success(struct eap_state *eap,
 		goto error;
 	}
 
-	if (!mschapv2_generate_authenticator_response(
+	r = mschapv2_generate_authenticator_response(
 					password_hash_hash, nt_response,
 					mschapv2_state->peer_challenge,
 					mschapv2_state->server_challenge,
 					credentials->username,
-					nt_server_response)) {
+					nt_server_response);
+	explicit_bzero(password_hash_hash, sizeof(password_hash_hash));
+
+	if (!r) {
 		l_error("TTLS Tunneled-MSCHAPv2: Failed to generate server "
 								"response.");
 		goto error;
@@ -767,6 +778,7 @@ static bool eap_ttls_phase2_pap_init(struct eap_state *eap)
 	buf = avp_builder_free(builder, false, &buf_len);
 
 	eap_tls_common_tunnel_send(eap, buf, buf_len);
+	explicit_bzero(buf, buf_len);
 	l_free(buf);
 
 	return true;
@@ -909,6 +921,7 @@ static bool eap_ttls_tunnel_ready(struct eap_state *eap,
 								msk_emsk, 128);
 
 	eap_set_key_material(eap, msk_emsk + 0, 64, msk_emsk + 64, 64, NULL, 0);
+	explicit_bzero(msk_emsk, sizeof(msk_emsk));
 
 	if (phase2->ops->init)
 		return phase2->ops->init(eap);
@@ -1014,7 +1027,8 @@ static int eap_ttls_check_tunneled_auth_settings(struct l_settings *settings,
 					password_key, NULL, identity,
 					EAP_CACHE_TEMPORARY);
 		}
-	}
+	} else
+		explicit_bzero(password, strlen(password));
 
 	return 0;
 }
@@ -1040,6 +1054,10 @@ static int eap_ttls_settings_check(struct l_settings *settings,
 									prefix);
 	phase2_method_name = l_settings_get_value(settings, "Security",
 								setting_key);
+	if (!phase2_method_name) {
+		l_error("Setting %s is missing", setting_key);
+		return -ENOENT;
+	}
 
 	snprintf(setting_prefix, sizeof(setting_prefix), "%sTTLS-Phase2-",
 									prefix);
@@ -1078,6 +1096,8 @@ static bool eap_ttls_settings_load(struct eap_state *eap,
 	snprintf(setting, sizeof(setting), "%sTTLS-Phase2-Method", prefix);
 	phase2_method_name = l_settings_get_value(settings, "Security",
 								setting);
+	if (!phase2_method_name)
+		return false;
 
 	snprintf(setting, sizeof(setting), "%sTTLS-Phase2-", prefix);
 

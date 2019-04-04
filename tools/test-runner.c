@@ -970,6 +970,7 @@ static bool find_test_configuration(const char *path, int level,
 #define HW_CONFIG_SETUP_TMPFS_EXTRAS	"tmpfs_extra_stuff"
 #define HW_CONFIG_SETUP_START_IWD	"start_iwd"
 #define HW_CONFIG_SETUP_IWD_CONF_DIR	"iwd_config_dir"
+#define HW_CONFIG_SETUP_REG_DOMAIN	"reg_domain"
 
 static struct l_settings *read_hw_config(const char *test_dir_path)
 {
@@ -1257,7 +1258,7 @@ done:
 static pid_t start_iwd(const char *config_dir, struct l_queue *wiphy_list,
 		const char *ext_options)
 {
-	char *argv[12];
+	char *argv[13];
 	char *iwd_phys = NULL;
 	pid_t ret;
 	int idx = 0;
@@ -1265,6 +1266,7 @@ static pid_t start_iwd(const char *config_dir, struct l_queue *wiphy_list,
 	if (valgrind) {
 		argv[idx++] = "valgrind";
 		argv[idx++] = "--leak-check=full";
+		argv[idx++] = "--log-file=/tmp/valgrind.log";
 	}
 
 	if (strcmp(gdb_opt, "iwd") == 0) {
@@ -1635,6 +1637,7 @@ static void set_config_cycle_info(const char *config_dir_path,
 	struct test_stats *test_stats;
 
 	memset(sep_line, '_', sizeof(sep_line) - 1);
+	sep_line[sizeof(sep_line) - 1] = '\0';
 
 	config_name_ptr = strrchr(config_dir_path, '/');
 	config_name_ptr++;
@@ -1696,6 +1699,19 @@ static void set_wiphy_list(struct l_queue *wiphy_list)
 	setenv("TEST_WIPHY_LIST", var, true);
 }
 
+static void set_reg_domain(const char *domain)
+{
+	char *argv[5];
+
+	argv[0] = "iw";
+	argv[1] = "reg";
+	argv[2] = "set";
+	argv[3] = (char *) domain;
+	argv[4] = NULL;
+
+	execute_program(argv, false, false);
+}
+
 static void create_network_and_run_tests(const void *key, void *value,
 								void *data)
 {
@@ -1715,6 +1731,7 @@ static void create_network_and_run_tests(const void *key, void *value,
 	bool ofono_req = false;
 	const char *sim_keys;
 	const char *iwd_ext_options = NULL;
+	const char *reg_domain;
 
 	memset(hostapd_pids, -1, sizeof(hostapd_pids));
 
@@ -1784,6 +1801,11 @@ static void create_network_and_run_tests(const void *key, void *value,
 	if (!create_tmpfs_extra_stuff(tmpfs_extra_stuff))
 		goto remove_abs_paths;
 
+	reg_domain = l_settings_get_value(hw_settings, HW_CONFIG_GROUP_SETUP,
+						HW_CONFIG_SETUP_REG_DOMAIN);
+	if (reg_domain)
+		set_reg_domain(reg_domain);
+
 	if (!configure_hw_radios(hw_settings, wiphy_list))
 		goto remove_abs_paths;
 
@@ -1839,6 +1861,10 @@ static void create_network_and_run_tests(const void *key, void *value,
 	/* Script has responsibility to cleanup any iwd instances it started */
 	if (iwd_pid > 0)
 		terminate_iwd(iwd_pid);
+
+	if (valgrind)
+		if (system("cat /tmp/valgrind.log"))
+			l_info("cat /tmp/valgrind.log failed");
 
 	if (ofono_req) {
 		loopback_started = false;

@@ -55,7 +55,8 @@ bool network_bss_list_isempty(struct network *network);
 void network_bss_list_clear(struct network *network);
 struct scan_bss *network_bss_find_by_addr(struct network *network,
 							const uint8_t *addr);
-struct scan_bss *network_bss_select(struct network *network);
+struct scan_bss *network_bss_select(struct network *network,
+					bool fallback_to_blacklist);
 
 bool network_register(struct network *network, const char *path);
 
@@ -66,6 +67,8 @@ void network_rank_update(struct network *network, bool connected);
 
 void network_connect_new_hidden_network(struct network *network,
 						struct l_dbus_message *message);
+
+void network_blacklist_add(struct network *network, struct scan_bss *bss);
 
 struct network_info {
 	char ssid[33];

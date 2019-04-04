@@ -28,6 +28,7 @@
 #include <stdio.h>
 #include <ell/ell.h>
 
+#include "src/missing.h"
 #include "src/dbus.h"
 #include "src/netdev.h"
 #include "src/wiphy.h"
@@ -126,7 +127,7 @@ static void wsc_try_credentials(struct wsc *wsc)
 		bss = network_bss_find_by_addr(network, wsc->creds[i].addr);
 
 		if (!bss)
-			bss = network_bss_select(network);
+			bss = network_bss_select(network, true);
 
 		if (!bss)
 			continue;
@@ -169,6 +170,7 @@ static void wsc_store_credentials(struct wsc *wsc)
 
 			l_settings_set_value(settings, "Security",
 							"PreSharedKey", hex);
+			explicit_bzero(hex, strlen(hex));
 			l_free(hex);
 		}
 
@@ -204,7 +206,7 @@ static void wsc_disconnect_cb(struct netdev *netdev, bool success,
 }
 
 static void wsc_connect_cb(struct netdev *netdev, enum netdev_result result,
-					void *user_data)
+					void *event_data, void *user_data)
 {
 	struct wsc *wsc = user_data;
 
@@ -252,7 +254,8 @@ static void wsc_credential_obtained(struct wsc *wsc,
 	l_debug("auth_type: %02x, encryption_type: %02x",
 			cred->auth_type, cred->encryption_type);
 
-	l_debug("Key (%u): %.*s", cred->network_key_len,
+	if (getenv("IWD_WSC_DEBUG_KEYS"))
+		l_debug("Key (%u): %.*s", cred->network_key_len,
 				cred->network_key_len, cred->network_key);
 
 	if (wsc->n_creds == L_ARRAY_SIZE(wsc->creds)) {
@@ -309,6 +312,7 @@ static void wsc_credential_obtained(struct wsc *wsc,
 			}
 
 			memcpy(wsc->creds[wsc->n_creds].psk, decoded, 32);
+			explicit_bzero(decoded, 32);
 			l_free(decoded);
 		} else {
 			const char *passphrase =
@@ -336,6 +340,8 @@ static void wsc_credential_obtained(struct wsc *wsc,
 
 		l_warn("Found duplicate credentials for SSID: %s",
 				wsc->creds[i].ssid);
+		explicit_bzero(&wsc->creds[wsc->n_creds],
+				sizeof(wsc->creds[wsc->n_creds]));
 		return;
 	}
 
@@ -359,7 +365,7 @@ static void wsc_eapol_event(uint32_t event, const void *event_data,
 }
 
 static void wsc_netdev_event(struct netdev *netdev, enum netdev_event event,
-					void *user_data)
+					void *event_data, void *user_data)
 {
 	struct wsc *wsc = user_data;
 
@@ -372,8 +378,8 @@ static void wsc_netdev_event(struct netdev *netdev, enum netdev_event event,
 		break;
 	case NETDEV_EVENT_DISCONNECT_BY_AP:
 		l_debug("Disconnect by AP");
-		wsc_connect_cb(wsc->netdev,
-				NETDEV_RESULT_HANDSHAKE_FAILED, wsc);
+		wsc_connect_cb(wsc->netdev, NETDEV_RESULT_HANDSHAKE_FAILED,
+				event_data, wsc);
 		break;
 	case NETDEV_EVENT_RSSI_THRESHOLD_LOW:
 	case NETDEV_EVENT_RSSI_THRESHOLD_HIGH:
@@ -512,7 +518,8 @@ static void wsc_check_can_connect(struct wsc *wsc, struct scan_bss *target)
 						station_state_watch,
 						wsc, NULL);
 		return;
-	case STATION_STATE_AUTOCONNECT:
+	case STATION_STATE_AUTOCONNECT_QUICK:
+	case STATION_STATE_AUTOCONNECT_FULL:
 	case STATION_STATE_ROAMING:
 		l_warn("wsc_check_can_connect: invalid station state");
 		break;
@@ -560,8 +567,7 @@ static void pin_timeout(struct l_timeout *timeout, void *user_data)
 					wsc_error_time_expired(wsc->pending));
 }
 
-static bool push_button_scan_results(uint32_t ifindex, int err,
-					struct l_queue *bss_list,
+static bool push_button_scan_results(int err, struct l_queue *bss_list,
 					void *userdata)
 {
 	struct wsc *wsc = userdata;
@@ -718,8 +724,7 @@ static bool authorized_macs_contains(const uint8_t *authorized_macs,
 	return false;
 }
 
-static bool pin_scan_results(uint32_t ifindex, int err,
-				struct l_queue *bss_list, void *userdata)
+static bool pin_scan_results(int err, struct l_queue *bss_list, void *userdata)
 {
 	static const uint8_t wildcard_address[] =
 					{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };

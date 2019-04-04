@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2016  Markus Ongyerth. All rights reserved.
+ *  Copyright (C) 2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,19 +20,9 @@
  *
  */
 
-#ifdef HAVE_CONFIG_H
-#include <config.h>
-#endif
+void blacklist_add_bss(const uint8_t *addr);
+bool blacklist_contains_bss(const uint8_t *addr);
+void blacklist_remove_bss(const uint8_t *addr);
 
-#include <stdio.h>
-#include <stdint.h>
-#include <stdbool.h>
-
-
-bool mschapv2_get_asymmetric_start_key(const uint8_t master_key[static 16],
-				uint8_t *session_key, size_t session_len,
-				bool server, bool send);
-
-bool mschapv2_get_master_key(const uint8_t pw_hash_hash[static 16],
-					const uint8_t nt_response[static 24],
-					uint8_t master_key[static 16]);
+void blacklist_init(void);
+void blacklist_exit(void);

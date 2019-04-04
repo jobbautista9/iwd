@@ -36,15 +36,10 @@
 #include "key.h"
 #include "string.h"
 #include "random.h"
+#include "missing.h"
 
 #ifndef KEYCTL_DH_COMPUTE
 #define KEYCTL_DH_COMPUTE 23
-
-struct keyctl_dh_params {
-	int32_t private;
-	int32_t prime;
-	int32_t base;
-};
 #endif
 
 #ifndef KEYCTL_PKEY_QUERY
@@ -79,6 +74,20 @@ struct keyctl_pkey_params {
 	};
 	uint32_t __spare[7];
 };
+
+/* Work around the missing (pre-4.7) or broken (4.14.{70,71,72} and
+ * 4.18.{8,9,10}) kernel declaration of struct keyctl_dh_params
+ */
+struct dh_params {
+	int32_t private;
+	int32_t prime;
+	int32_t base;
+};
+#else
+/* When KEYCTL_PKEY_QUERY is defined by the kernel, the
+ * struct keyctl_dh_params declaration is valid.
+ */
+#define dh_params keyctl_dh_params
 #endif
 
 #ifndef KEYCTL_RESTRICT_KEYRING
@@ -130,11 +139,11 @@ static long kernel_update_key(int32_t serial, const void *payload, size_t len)
 	return result >= 0 ? result : -errno;
 }
 
-static long kernel_revoke_key(int32_t serial)
+static long kernel_invalidate_key(int32_t serial)
 {
 	long result;
 
-	result = syscall(__NR_keyctl, KEYCTL_REVOKE, serial);
+	result = syscall(__NR_keyctl, KEYCTL_INVALIDATE, serial);
 
 	return result >= 0 ? result : -errno;
 }
@@ -201,7 +210,9 @@ static long kernel_dh_compute(int32_t private, int32_t prime, int32_t base,
 {
 	long result;
 
-	struct keyctl_dh_params params = { private, prime, base };
+	struct dh_params params = { .private = private,
+				    .prime = prime,
+				    .base = base };
 
 	result = syscall(__NR_keyctl, KEYCTL_DH_COMPUTE, &params, payload, len,
 			NULL);
@@ -276,6 +287,7 @@ LIB_EXPORT struct l_key *l_key_new(enum l_key_type type, const void *payload,
 {
 	struct l_key *key;
 	char *description;
+	static unsigned long key_idx;
 
 	if (unlikely(!payload))
 		return NULL;
@@ -288,7 +300,7 @@ LIB_EXPORT struct l_key *l_key_new(enum l_key_type type, const void *payload,
 
 	key = l_new(struct l_key, 1);
 	key->type = type;
-	description = l_strdup_printf("ell-key-%p", key);
+	description = l_strdup_printf("ell-key-%lu", key_idx++);
 	key->serial = kernel_add_key(key_type_names[type], description, payload,
 					payload_length, internal_keyring);
 	l_free(description);
@@ -313,7 +325,12 @@ LIB_EXPORT void l_key_free(struct l_key *key)
 	if (unlikely(!key))
 		return;
 
-	kernel_revoke_key(key->serial);
+	/*
+	 * Use invalidate as, unlike revoke, this doesn't delay the
+	 * key garbage collection and causes the quota used by the
+	 * key to be released sooner and more predictably.
+	 */
+	kernel_invalidate_key(key->serial);
 
 	l_free(key);
 }
@@ -350,7 +367,7 @@ LIB_EXPORT bool l_key_extract(struct l_key *key, void *payload, size_t *len)
 	keylen = kernel_read_key(key->serial, payload, *len);
 
 	if (keylen < 0 || (size_t)keylen > *len) {
-		memset(payload, 0, *len);
+		explicit_bzero(payload, *len);
 		return false;
 	}
 
@@ -466,7 +483,7 @@ LIB_EXPORT struct l_key *l_key_generate_dh_private(const void *prime_buf,
 	buf[0] |= 1 << ((prime_bits - 2) % 8);
 
 	private = l_key_new(L_KEY_RAW, buf, private_bytes);
-	memset(buf, 0, private_bytes);
+	explicit_bzero(buf, private_bytes);
 	l_free(buf);
 	return private;
 }
@@ -642,12 +659,13 @@ LIB_EXPORT struct l_keyring *l_keyring_new(void)
 {
 	struct l_keyring *keyring;
 	char *description;
+	static unsigned long keyring_idx;
 
 	if (!internal_keyring && !setup_internal_keyring())
 		return NULL;
 
 	keyring = l_new(struct l_keyring, 1);
-	description = l_strdup_printf("ell-keyring-%p", keyring);
+	description = l_strdup_printf("ell-keyring-%lu", keyring_idx++);
 	keyring->serial = kernel_add_key("keyring", description, NULL, 0,
 						internal_keyring);
 	l_free(description);
@@ -700,7 +718,7 @@ LIB_EXPORT void l_keyring_free(struct l_keyring *keyring)
 	if (unlikely(!keyring))
 		return;
 
-	kernel_revoke_key(keyring->serial);
+	kernel_invalidate_key(keyring->serial);
 
 	l_free(keyring);
 }

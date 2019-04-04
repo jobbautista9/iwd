@@ -28,10 +28,11 @@
 
 #include <ell/ell.h>
 
-#include "eap.h"
-#include "eap-private.h"
-#include "crypto.h"
-#include "util.h"
+#include "src/missing.h"
+#include "src/eap.h"
+#include "src/eap-private.h"
+#include "src/crypto.h"
+#include "src/util.h"
 
 #define EAP_PWD_GROUP_DESC	19
 #define EAP_PWD_RAND_FN		0x01
@@ -117,7 +118,7 @@ static bool kdf(uint8_t *key, size_t key_len, const char *label,
 		if (!l_checksum_updatev(hmac, iov, iov_pos))
 			return false;
 
-		l_checksum_get_digest(hmac, out + len, 32);
+		l_checksum_get_digest(hmac, out + len, minsize(olen - len, 32));
 		l_checksum_free(hmac);
 
 		len += 32;
@@ -168,7 +169,12 @@ static void eap_pwd_free(struct eap_state *eap)
 
 	eap_pwd_reset_state(eap);
 	l_free(pwd->identity);
-	l_free(pwd->password);
+
+	if (pwd->password) {
+		explicit_bzero(pwd->password, strlen(pwd->password));
+		l_free(pwd->password);
+	}
+
 	l_free(pwd);
 
 	eap_set_data(eap, NULL);
@@ -229,11 +235,13 @@ static void eap_pwd_handle_id(struct eap_state *eap,
 	uint8_t rand_fn;
 	uint8_t prf;
 	uint32_t token;
-	uint8_t counter = 1;
+	uint8_t counter = 0;
 	uint8_t resp[15 + strlen(pwd->identity)];
 	uint8_t *pos;
 	uint8_t pwd_seed[32];
-	uint8_t pwd_value[32];	/* used as X value */
+	uint8_t pwd_value[L_ECC_SCALAR_MAX_BYTES];	/* used as X value */
+	size_t nbytes;
+	bool found = false;
 
 	/*
 	 * Group desc (2) + Random func (1) + prf (1) + token (4) + prep (1) +
@@ -252,11 +260,8 @@ static void eap_pwd_handle_id(struct eap_state *eap,
 	pwd->state = EAP_PWD_STATE_ID;
 
 	group = l_get_be16(pkt);
-	/* TODO: for now, lets only allow group 19 */
-	if (group != EAP_PWD_GROUP_DESC)
-		goto error;
 
-	pwd->curve = l_ecc_curve_get(group);
+	pwd->curve = l_ecc_curve_get_ike_group(group);
 	if (!pwd->curve) {
 		l_error("group %d not supported", group);
 		goto error;
@@ -291,9 +296,15 @@ static void eap_pwd_handle_id(struct eap_state *eap,
 		goto error;
 	}
 
+	nbytes = l_ecc_curve_get_scalar_bytes(pwd->curve);
+
 	while (counter < 20) {
+		struct l_ecc_point *pwe = NULL;
+
+		counter++;
+
 		/* pwd-seed = H(token|peer-ID|server-ID|password|counter) */
-		hkdf_extract_sha256(NULL, 0, 5, pwd_seed, &token, 4,
+		hkdf_extract(L_CHECKSUM_SHA256, NULL, 0, 5, pwd_seed, &token, 4,
 				pwd->identity, strlen(pwd->identity), pkt + 9,
 				len - 9, pwd->password, strlen(pwd->password),
 				&counter, 1);
@@ -304,22 +315,29 @@ static void eap_pwd_handle_id(struct eap_state *eap,
 		 */
 		kdf(pwd_seed, 32, "EAP-pwd Hunting And Pecking",
 				strlen("EAP-pwd Hunting And Pecking"),
-				pwd_value, 32);
+				pwd_value, nbytes);
 
 		if (!(pwd_seed[31] & 1))
-			pwd->pwe = l_ecc_point_from_data(pwd->curve,
+			pwe = l_ecc_point_from_data(pwd->curve,
 					L_ECC_POINT_TYPE_COMPRESSED_BIT1,
-					pwd_value, 32);
+					pwd_value, nbytes);
 		else
-			pwd->pwe = l_ecc_point_from_data(pwd->curve,
+			pwe = l_ecc_point_from_data(pwd->curve,
 					L_ECC_POINT_TYPE_COMPRESSED_BIT0,
-					pwd_value, 32);
+					pwd_value, nbytes);
 
-		if (pwd->pwe)
-			break;
+		if (!pwe)
+			continue;
 
-		counter++;
+		if (!found) {
+			found = true;
+			pwd->pwe = pwe;
+		} else
+			l_ecc_point_free(pwe);
 	}
+
+	explicit_bzero(pwd_seed, sizeof(pwd_seed));
+	explicit_bzero(pwd_value, sizeof(pwd_value));
 
 	pos = resp + 5; /* header */
 	*pos++ = EAP_PWD_EXCH_ID;
@@ -345,13 +363,16 @@ static void eap_pwd_handle_commit(struct eap_state *eap,
 					const uint8_t *pkt, size_t len)
 {
 	struct eap_pwd_handle *pwd = eap_get_data(eap);
-	uint8_t resp[102];
+	uint8_t resp[L_ECC_POINT_MAX_BYTES + L_ECC_SCALAR_MAX_BYTES + 6];
 	uint8_t *pos;
 	struct l_ecc_scalar *p_mask;
 	struct l_ecc_scalar *order;
+	size_t nbytes = l_ecc_curve_get_scalar_bytes(pwd->curve);
 
-	if (len != 96) {
-		l_error("bad packet length, expected 96, got %zu", len);
+	/* [Element (nbytes * 2)][Scalar (nbytes)] */
+	if (len != nbytes + nbytes * 2) {
+		l_error("bad packet length, expected %zu, got %zu",
+				nbytes + nbytes * 2, len);
 		goto error;
 	}
 
@@ -363,17 +384,15 @@ static void eap_pwd_handle_commit(struct eap_state *eap,
 	pwd->state = EAP_PWD_STATE_COMMIT;
 
 	/*
-	 * RFC 5114 Section 2.6 - 256-bit Random ECP Group
-	 * Prime p is 32 bytes in length, therefore x and y will also each be
-	 * 32 bytes in length (total of 64), leaving the remainder for the
-	 * scalar value (32).
+	 * Commit contains Element_S (nbytes * 2) then Scalar_s (nbytes)
 	 */
 	pwd->element_s = l_ecc_point_from_data(pwd->curve,
-						L_ECC_POINT_TYPE_FULL, pkt, 64);
+						L_ECC_POINT_TYPE_FULL,
+						pkt, nbytes * 2);
 	if (!pwd->element_s)
 		goto invalid_point;
 
-	pwd->scalar_s = l_ecc_scalar_new(pwd->curve, (uint8_t *)pkt + 64, 32);
+	pwd->scalar_s = l_ecc_scalar_new(pwd->curve, pkt + nbytes * 2, nbytes);
 
 	pwd->p_rand = l_ecc_scalar_new_random(pwd->curve);
 	p_mask = l_ecc_scalar_new_random(pwd->curve);
@@ -397,8 +416,8 @@ static void eap_pwd_handle_commit(struct eap_state *eap,
 	/* send element_p and scalar_p */
 	pos = resp + 5; /* header */
 	*pos++ = EAP_PWD_EXCH_COMMIT;
-	pos += l_ecc_point_get_data(pwd->element_p, pos, 64);
-	pos += l_ecc_scalar_get_data(pwd->scalar_p, pos, 32);
+	pos += l_ecc_point_get_data(pwd->element_p, pos, nbytes * 2);
+	pos += l_ecc_scalar_get_data(pwd->scalar_p, pos, nbytes);
 
 	eap_pwd_send_response(eap, resp, pos - resp);
 
@@ -488,13 +507,14 @@ static void eap_pwd_handle_confirm(struct eap_state *eap,
 	 * compute Confirm_P = H(kp | Element_P | Scalar_P |
 	 *                       Element_S | Scalar_S | Ciphersuite)
 	 */
-	hkdf_extract_sha256(NULL, 0, 6, confirm_p, kpx, clen, element_p, plen,
-				scalar_p, clen, element_s, plen, scalar_s,
-				clen, &pwd->ciphersuite, 4);
+	hkdf_extract(L_CHECKSUM_SHA256, NULL, 0, 6, confirm_p, kpx, clen,
+				element_p, plen, scalar_p, clen, element_s,
+				plen, scalar_s, clen, &pwd->ciphersuite, 4);
 
-	hkdf_extract_sha256(NULL, 0, 6, expected_confirm_s, kpx, clen,
-				element_s, plen, scalar_s, clen, element_p,
-				plen, scalar_p, clen, &pwd->ciphersuite, 4);
+	hkdf_extract(L_CHECKSUM_SHA256, NULL, 0, 6, expected_confirm_s, kpx,
+				clen, element_s, plen, scalar_s, clen,
+				element_p, plen, scalar_p, clen,
+				&pwd->ciphersuite, 4);
 
 	if (memcmp(confirm_s, expected_confirm_s, 32)) {
 		l_error("Confirm_S did not verify");
@@ -507,7 +527,7 @@ static void eap_pwd_handle_confirm(struct eap_state *eap,
 	pos += 32;
 
 	/* derive MK = H(kp | Confirm_P | Confirm_S ) */
-	hkdf_extract_sha256(NULL, 0, 3, mk, kpx, clen, confirm_p,
+	hkdf_extract(L_CHECKSUM_SHA256, NULL, 0, 3, mk, kpx, clen, confirm_p,
 			32, confirm_s, 32);
 
 	eap_pwd_send_response(eap, resp, pos - resp);
@@ -515,11 +535,15 @@ static void eap_pwd_handle_confirm(struct eap_state *eap,
 	eap_method_success(eap);
 
 	session_id[0] = 52;
-	hkdf_extract_sha256(NULL, 0, 3, session_id + 1, &pwd->ciphersuite, 4,
-			scalar_p, clen, scalar_s, clen);
+	hkdf_extract(L_CHECKSUM_SHA256, NULL, 0, 3, session_id + 1,
+			&pwd->ciphersuite, 4, scalar_p, clen, scalar_s, clen);
 
 	kdf(mk, 32, (const char *) session_id, 33, msk_emsk, 128);
 	eap_set_key_material(eap, msk_emsk, 64, msk_emsk + 64, 64, NULL, 0);
+
+	explicit_bzero(mk, sizeof(mk));
+	explicit_bzero(msk_emsk, sizeof(msk_emsk));
+	explicit_bzero(kpx, sizeof(kpx));
 
 	return;
 
@@ -528,6 +552,8 @@ invalid_point:
 
 	l_error("invalid point during confirm exchange");
 error:
+	explicit_bzero(kpx, sizeof(kpx));
+
 	eap_method_error(eap);
 }
 
@@ -724,6 +750,7 @@ static int eap_pwd_check_settings(struct l_settings *settings,
 		password = l_settings_get_string(settings, "Security",
 							password_key_old);
 		if (password) {
+			explicit_bzero(password, strlen(password));
 			l_warn("Setting '%s' is deprecated, use '%s' instead",
 					password_key_old, password_key);
 			return 0;
@@ -737,7 +764,8 @@ static int eap_pwd_check_settings(struct l_settings *settings,
 		eap_append_secret(out_missing, EAP_SECRET_REMOTE_PASSWORD,
 					password_key, NULL, identity,
 					EAP_CACHE_TEMPORARY);
-	}
+	} else
+		explicit_bzero(password, strlen(password));
 
 	return 0;
 }
@@ -785,8 +813,12 @@ static bool eap_pwd_load_settings(struct eap_state *eap,
 	return true;
 
 error:
+	if (pwd->password) {
+		explicit_bzero(pwd->password, strlen(pwd->password));
+		l_free(pwd->password);
+	}
+
 	l_free(pwd->identity);
-	l_free(pwd->password);
 	l_free(pwd);
 
 	return false;

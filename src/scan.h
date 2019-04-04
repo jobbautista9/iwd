@@ -33,8 +33,7 @@ enum scan_state {
 
 typedef void (*scan_func_t)(struct l_genl_msg *msg, void *user_data);
 typedef void (*scan_trigger_func_t)(int, void *);
-typedef bool (*scan_notify_func_t)(uint32_t ifindex, int err,
-					struct l_queue *bss_list,
+typedef bool (*scan_notify_func_t)(int err, struct l_queue *bss_list,
 					void *userdata);
 typedef void (*scan_destroy_func_t)(void *userdata);
 typedef void (*scan_freq_set_func_t)(uint32_t freq, void *userdata);
@@ -54,13 +53,19 @@ struct scan_bss {
 	uint8_t mde[3];
 	uint8_t ssid[32];
 	uint8_t ssid_len;
-	struct l_uintset *supported_rates;
+	uint8_t supp_rates_ie[10];
+	uint8_t *ext_supp_rates_ie;
 	uint8_t utilization;
 	uint8_t cc[3];
 	uint16_t rank;
+	uint8_t ht_ie[28];
+	uint8_t vht_ie[14];
 	bool mde_present : 1;
 	bool cc_present : 1;
 	bool cap_rm_neighbor_report : 1;
+	bool has_sup_rates : 1;
+	bool ht_capable : 1;
+	bool vht_capable : 1;
 };
 
 struct scan_parameters {
@@ -84,9 +89,9 @@ static inline bool scan_bss_addr_eq(const struct scan_bss *a1,
         return !memcmp(a1->addr, a2->addr, sizeof(a1->addr));
 }
 
-uint32_t scan_passive(uint32_t ifindex, scan_trigger_func_t trigger,
-			scan_notify_func_t notify, void *userdata,
-			scan_destroy_func_t destroy);
+uint32_t scan_passive(uint32_t ifindex, struct scan_freq_set *freqs,
+			scan_trigger_func_t trigger, scan_notify_func_t notify,
+			void *userdata, scan_destroy_func_t destroy);
 uint32_t scan_active(uint32_t ifindex, uint8_t *extra_ie, size_t extra_ie_size,
 			scan_trigger_func_t trigger,
 			scan_notify_func_t notify, void *userdata,
@@ -100,10 +105,6 @@ bool scan_cancel(uint32_t ifindex, uint32_t id);
 void scan_periodic_start(uint32_t ifindex, scan_trigger_func_t trigger,
 				scan_notify_func_t func, void *userdata);
 bool scan_periodic_stop(uint32_t ifindex);
-
-void scan_sched_start(struct l_genl_family *nl80211, uint32_t ifindex,
-			uint32_t scan_interval, scan_func_t callback,
-			void *user_data);
 
 void scan_bss_free(struct scan_bss *bss);
 int scan_bss_rank_compare(const void *a, const void *b, void *user);
@@ -120,8 +121,10 @@ void scan_freq_set_free(struct scan_freq_set *freqs);
 bool scan_freq_set_add(struct scan_freq_set *freqs, uint32_t freq);
 bool scan_freq_set_contains(struct scan_freq_set *freqs, uint32_t freq);
 uint32_t scan_freq_set_get_bands(struct scan_freq_set *freqs);
-void scan_freq_set_foreach(struct scan_freq_set *freqs,
+void scan_freq_set_foreach(const struct scan_freq_set *freqs,
 				scan_freq_set_func_t func, void *user_data);
+void scan_freq_set_merge(struct scan_freq_set *to,
+					const struct scan_freq_set *from);
 
 bool scan_ifindex_add(uint32_t ifindex);
 bool scan_ifindex_remove(uint32_t ifindex);

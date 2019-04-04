@@ -32,9 +32,9 @@
 
 #include <ell/ell.h>
 
+#include "src/missing.h"
 #include "src/ie.h"
 #include "src/crypto.h"
-
 #include "src/iwd.h"
 #include "src/common.h"
 #include "src/storage.h"
@@ -47,6 +47,7 @@
 #include "src/eap.h"
 #include "src/knownnetworks.h"
 #include "src/network.h"
+#include "src/blacklist.h"
 
 struct network {
 	char *object_path;
@@ -58,6 +59,7 @@ struct network {
 	struct l_queue *bss_list;
 	struct l_settings *settings;
 	struct l_queue *secrets;
+	struct l_queue *blacklist; /* temporary blacklist for BSS's */
 	bool update_psk:1;  /* Whether PSK should be written to storage */
 	bool ask_passphrase:1; /* Whether we should force-ask agent */
 	int rank;
@@ -76,16 +78,32 @@ static bool network_settings_load(struct network *network)
 	return network->settings != NULL;
 }
 
+static void network_reset_psk(struct network *network)
+{
+	if (network->psk)
+		explicit_bzero(network->psk, 32);
+
+	l_free(network->psk);
+	network->psk = NULL;
+}
+
+static void network_reset_passphrase(struct network *network)
+{
+	if (network->passphrase)
+		explicit_bzero(network->passphrase,
+				strlen(network->passphrase));
+
+	l_free(network->passphrase);
+	network->passphrase = NULL;
+}
+
 static void network_settings_close(struct network *network)
 {
 	if (!network->settings)
 		return;
 
-	l_free(network->psk);
-	network->psk = NULL;
-
-	l_free(network->passphrase);
-	network->passphrase = NULL;
+	network_reset_psk(network);
+	network_reset_passphrase(network);
 
 	l_settings_free(network->settings);
 	network->settings = NULL;
@@ -152,6 +170,8 @@ void network_connected(struct network *network)
 
 	l_queue_foreach_remove(network->secrets,
 				network_secret_check_cacheable, network);
+
+	l_queue_clear(network->blacklist, NULL);
 }
 
 void network_disconnected(struct network *network)
@@ -293,6 +313,7 @@ struct network *network_create(struct station *station, const char *ssid,
 	network->info = network_info_get(ssid, security);
 
 	network->bss_list = l_queue_new();
+	network->blacklist = l_queue_new();
 
 	return network;
 }
@@ -335,7 +356,7 @@ bool network_set_psk(struct network *network, const uint8_t *psk)
 	if (!network_settings_load(network))
 		return false;
 
-	l_free(network->psk);
+	network_reset_psk(network);
 	network->psk = l_memdup(psk, 32);
 	return true;
 }
@@ -413,9 +434,9 @@ static int network_load_psk(struct network *network, bool need_passphrase)
 	if ((!psk || need_passphrase) && !passphrase)
 		return -ENOKEY;
 
-	l_free(network->passphrase);
+	network_reset_passphrase(network);
+	network_reset_psk(network);
 	network->passphrase = passphrase;
-	l_free(network->psk);
 
 	if (psk) {
 		char *path;
@@ -424,14 +445,14 @@ static int network_load_psk(struct network *network, bool need_passphrase)
 		if (network->psk && len == 32)
 			return 0;
 
+		network_reset_psk(network);
+
 		path = storage_get_network_file_path(info->type, info->ssid);
 		l_error("%s: invalid PreSharedKey format", path);
 		l_free(path);
 
 		if (!passphrase)
-			goto reset_psk;
-
-		l_free(network->psk);
+			return -EINVAL;
 	}
 
 	network->psk = l_malloc(32);
@@ -449,11 +470,8 @@ static int network_load_psk(struct network *network, bool need_passphrase)
 			"Ensure Crypto Engine is properly configured",
 			strerror(-r));
 
-	l_free(network->passphrase);
-	network->passphrase = NULL;
-reset_psk:
-	l_free(network->psk);
-	network->psk = NULL;
+	network_reset_passphrase(network);
+	network_reset_psk(network);
 	return -EINVAL;
 }
 
@@ -613,6 +631,8 @@ void network_connect_failed(struct network *network)
 
 	l_queue_destroy(network->secrets, eap_secret_info_free);
 	network->secrets = NULL;
+
+	l_queue_clear(network->blacklist, NULL);
 }
 
 bool network_bss_add(struct network *network, struct scan_bss *bss)
@@ -648,37 +668,59 @@ struct scan_bss *network_bss_find_by_addr(struct network *network,
 	return NULL;
 }
 
-/* Selects what we think is the best BSS to connect to */
-struct scan_bss *network_bss_select(struct network *network)
+static bool match_bss(const void *a, const void *b)
+{
+	return a == b;
+}
+
+struct scan_bss *network_bss_select(struct network *network,
+						bool fallback_to_blacklist)
 {
 	struct l_queue *bss_list = network->bss_list;
 	struct wiphy *wiphy = station_get_wiphy(network->station);
 	const struct l_queue_entry *bss_entry;
+	struct scan_bss *candidate = NULL;
 
-	switch (network_get_security(network)) {
-	case SECURITY_NONE:
-		/* Pick the first bss (strongest signal) */
-		return l_queue_peek_head(bss_list);
+	for (bss_entry = l_queue_get_entries(bss_list); bss_entry;
+			bss_entry = bss_entry->next) {
+		struct scan_bss *bss = bss_entry->data;
 
-	case SECURITY_PSK:
-	case SECURITY_8021X:
-		/*
-		 * Pick the first bss that advertises ciphers compatible with
-		 * the wiphy.
-		 */
-		for (bss_entry = l_queue_get_entries(bss_list); bss_entry;
-				bss_entry = bss_entry->next) {
-			struct scan_bss *bss = bss_entry->data;
-
-			if (wiphy_can_connect(wiphy, bss))
-				return bss;
+		switch (network_get_security(network)) {
+		case SECURITY_PSK:
+		case SECURITY_8021X:
+			if (!wiphy_can_connect(wiphy, bss))
+				continue;
+			/* fall through */
+		case SECURITY_NONE:
+			break;
+		default:
+			return NULL;
 		}
 
-		return NULL;
+		/*
+		 * We only want to record the first (best) candidate. In case
+		 * all our BSS's are blacklisted but we still want to connect
+		 * we want to hold only this first candidate
+		 */
+		if (!candidate)
+			candidate = bss;
 
-	default:
-		return NULL;
+		/* check if temporarily blacklisted */
+		if (l_queue_find(network->blacklist, match_bss, bss))
+			continue;
+
+		if (!blacklist_contains_bss(bss->addr))
+			return bss;
 	}
+
+	/*
+	 * No BSS was found, but if we are falling back to blacklisted BSS's we
+	 * can just use the first connectable candidate found above.
+	 */
+	if (fallback_to_blacklist)
+		return candidate;
+
+	return NULL;
 }
 
 static void passphrase_callback(enum agent_result result,
@@ -707,7 +749,7 @@ static void passphrase_callback(enum agent_result result,
 		goto err;
 	}
 
-	bss = network_bss_select(network);
+	bss = network_bss_select(network, true);
 
 	/* Did all good BSSes go away while we waited */
 	if (!bss) {
@@ -715,7 +757,7 @@ static void passphrase_callback(enum agent_result result,
 		goto err;
 	}
 
-	l_free(network->psk);
+	network_reset_psk(network);
 	network->psk = l_malloc(32);
 	r = crypto_psk_from_passphrase(passphrase,
 					(uint8_t *) network->info->ssid,
@@ -740,7 +782,7 @@ static void passphrase_callback(enum agent_result result,
 		goto err;
 	}
 
-	l_free(network->passphrase);
+	network_reset_passphrase(network);
 	network->passphrase = l_strdup(passphrase);
 
 	/*
@@ -940,7 +982,7 @@ static void eap_secret_done(enum agent_result result,
 		goto err;
 	}
 
-	bss = network_bss_select(network);
+	bss = network_bss_select(network, true);
 
 	/* Did all good BSSes go away while we waited */
 	if (!bss) {
@@ -1062,7 +1104,7 @@ static struct l_dbus_message *network_connect(struct l_dbus *dbus,
 	 * agent this may not be the final choice because BSS visibility can
 	 * change while we wait for the agent.
 	 */
-	bss = network_bss_select(network);
+	bss = network_bss_select(network, true);
 
 	/* None of the BSSes is compatible with our stack */
 	if (!bss)
@@ -1100,7 +1142,7 @@ void network_connect_new_hidden_network(struct network *network,
 	 */
 	network->info->is_hidden = true;
 
-	bss = network_bss_select(network);
+	bss = network_bss_select(network, true);
 	if (!bss) {
 		/* This should never happened for the hidden networks. */
 		error = dbus_error_not_supported(message);
@@ -1129,6 +1171,11 @@ void network_connect_new_hidden_network(struct network *network,
 
 reply_error:
 	dbus_pending_reply(&message, error);
+}
+
+void network_blacklist_add(struct network *network, struct scan_bss *bss)
+{
+	l_queue_push_head(network->blacklist, bss);
 }
 
 static bool network_property_get_name(struct l_dbus *dbus,
@@ -1267,6 +1314,8 @@ void network_remove(struct network *network, int reason)
 
 	l_queue_destroy(network->bss_list, NULL);
 	network_info_put(network->info);
+
+	l_queue_destroy(network->blacklist, NULL);
 
 	l_free(network);
 }
