@@ -1,3 +1,14 @@
+iwd (0.16-1) experimental; urgency=medium
+
+  [ Salsa Pipeline ]
+  * Update salsa CI pipeline
+
+  [ Andreas Henriksson ]
+  * Revert "Build against external (lib)ell"
+  * New upstream release.
+
+ -- Andreas Henriksson <andreas@fatal.se>  Thu, 04 Apr 2019 10:18:12 +0200
+
 iwd (0.14-2) unstable; urgency=medium
 
   * Build against external (lib)ell (Closes: #911057)
