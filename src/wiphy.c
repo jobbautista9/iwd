@@ -573,18 +573,15 @@ static void wiphy_parse_attributes(struct wiphy *wiphy,
 			break;
 		}
 	}
-
 }
 
-static bool wiphy_parse_id_and_name(struct l_genl_attr *attr, uint32_t *out_id,
-					const char **out_name,
-					uint32_t *out_name_len)
+bool wiphy_parse_id_and_name(struct l_genl_attr *attr, uint32_t *out_id,
+				const char **out_name)
 {
 	uint16_t type, len;
 	const void *data;
 	uint32_t id;
 	const char *name;
-	uint32_t name_len;
 
 	/*
 	 * The wiphy attribute, name and generation are always the first
@@ -613,7 +610,9 @@ static bool wiphy_parse_id_and_name(struct l_genl_attr *attr, uint32_t *out_id,
 		return false;
 
 	name = data;
-	name_len = len;
+
+	if (len < 1 || !memchr(name + 1, 0, len - 1))
+		return false;
 
 	if (!l_genl_attr_next(attr, &type, &len, &data))
 		return false;
@@ -635,44 +634,7 @@ static bool wiphy_parse_id_and_name(struct l_genl_attr *attr, uint32_t *out_id,
 	if (out_name)
 		*out_name = name;
 
-	if (out_name_len)
-		*out_name_len = name_len;
-
 	return true;
-}
-
-static void wiphy_dump_callback(struct l_genl_msg *msg, void *user_data)
-{
-	struct wiphy *wiphy;
-	struct l_genl_attr attr;
-	uint32_t id;
-	const char *name;
-	uint32_t name_len;
-
-	l_debug("");
-
-	if (!l_genl_attr_init(&attr, msg))
-		return;
-
-	/*
-	 * In most cases multiple of these message will be sent
-	 * since the information included can not fit into a single
-	 * message.
-	 */
-	if (!wiphy_parse_id_and_name(&attr, &id, &name, &name_len))
-		return;
-
-	wiphy = l_queue_find(wiphy_list, wiphy_match, L_UINT_TO_PTR(id));
-	if (!wiphy) {
-		if (!wiphy_is_managed(name))
-			return;
-
-		wiphy = wiphy_new(id);
-		l_queue_push_head(wiphy_list, wiphy);
-	}
-
-	memcpy(wiphy->name, name, name_len);
-	wiphy_parse_attributes(wiphy, &attr);
 }
 
 static void wiphy_register(struct wiphy *wiphy)
@@ -727,105 +689,64 @@ static void wiphy_register(struct wiphy *wiphy)
 				wiphy_get_path(wiphy));
 }
 
-static void wiphy_dump_done(void *user)
+struct wiphy *wiphy_create(uint32_t wiphy_id, const char *name)
 {
-	const struct l_queue_entry *wiphy_entry;
+	struct wiphy *wiphy;
 
-	for (wiphy_entry = l_queue_get_entries(wiphy_list); wiphy_entry;
-					wiphy_entry = wiphy_entry->next) {
-		struct wiphy *wiphy = wiphy_entry->data;
+	if (!wiphy_is_managed(name))
+		return NULL;
 
-		wiphy_register(wiphy);
+	wiphy = wiphy_new(wiphy_id);
+	l_strlcpy(wiphy->name, name, sizeof(wiphy->name));
+	l_queue_push_head(wiphy_list, wiphy);
 
+	wiphy_register(wiphy);
+	return wiphy;
+}
+
+void wiphy_update_from_genl(struct wiphy *wiphy, struct l_genl_msg *msg)
+{
+	struct l_genl_attr attr;
+	const char *name;
+
+	l_debug("");
+
+	if (!l_genl_attr_init(&attr, msg))
+		return;
+
+	if (!wiphy_parse_id_and_name(&attr, NULL, &name))
+		return;
+
+	/*
+	 * WIPHY_NAME is a NLA_NUL_STRING, so the kernel
+	 * enforces the data to be null terminated.
+	 */
+	if (strncmp(wiphy->name, name, sizeof(wiphy->name))) {
+		struct l_dbus *dbus = dbus_get_bus();
+
+		l_strlcpy(wiphy->name, name, sizeof(wiphy->name));
+		l_dbus_property_changed(dbus, wiphy_get_path(wiphy),
+					IWD_WIPHY_INTERFACE, "Name");
+	}
+
+	if (!wiphy->supported_iftypes) {
+		/* Most likely a new wiphy, set all the parameters */
+		wiphy_parse_attributes(wiphy, &attr);
 		wiphy_print_basic_info(wiphy);
 	}
 }
 
-static void wiphy_new_wiphy_event(struct l_genl_msg *msg)
+bool wiphy_destroy(struct wiphy *wiphy)
 {
-	struct wiphy *wiphy;
-	struct l_genl_attr attr;
-	uint32_t id;
-	const char *name;
-	uint32_t name_len;
-
 	l_debug("");
 
-	if (!l_genl_attr_init(&attr, msg))
-		return;
-
-	if (!wiphy_parse_id_and_name(&attr, &id, &name, &name_len))
-		return;
-
-	wiphy = l_queue_find(wiphy_list, wiphy_match, L_UINT_TO_PTR(id));
-	if (wiphy) {
-		/*
-		 * WIPHY_NAME is a NLA_NUL_STRING, so the kernel
-		 * enforces the data to be null terminated
-		 */
-		if (strcmp(wiphy->name, name)) {
-			struct l_dbus *dbus = dbus_get_bus();
-
-			memcpy(wiphy->name, name, name_len);
-			l_dbus_property_changed(dbus, wiphy_get_path(wiphy),
-						IWD_WIPHY_INTERFACE, "Name");
-		}
-
-		return;
-	}
-
-	if (!wiphy_is_managed(name))
-		return;
-
-	wiphy = wiphy_new(id);
-	memcpy(wiphy->name, name, name_len);
-	l_queue_push_head(wiphy_list, wiphy);
-
-	wiphy_parse_attributes(wiphy, &attr);
-	wiphy_print_basic_info(wiphy);
-
-	wiphy_register(wiphy);
-}
-
-static void wiphy_del_wiphy_event(struct l_genl_msg *msg)
-{
-	struct wiphy *wiphy;
-	struct l_genl_attr attr;
-	uint32_t id;
-
-	l_debug("");
-
-	if (!l_genl_attr_init(&attr, msg))
-		return;
-
-	if (!wiphy_parse_id_and_name(&attr, &id, NULL, NULL))
-		return;
-
-	wiphy = l_queue_remove_if(wiphy_list, wiphy_match, L_UINT_TO_PTR(id));
-	if (!wiphy)
-		return;
+	if (!l_queue_remove(wiphy_list, wiphy))
+		return false;
 
 	l_dbus_unregister_object(dbus_get_bus(), wiphy_get_path(wiphy));
 
 	wiphy_free(wiphy);
-}
-
-static void wiphy_config_notify(struct l_genl_msg *msg, void *user_data)
-{
-	uint8_t cmd;
-
-	cmd = l_genl_msg_get_command(msg);
-
-	l_debug("Notification of command %u", cmd);
-
-	switch (cmd) {
-	case NL80211_CMD_NEW_WIPHY:
-		wiphy_new_wiphy_event(msg);
-		break;
-	case NL80211_CMD_DEL_WIPHY:
-		wiphy_del_wiphy_event(msg);
-		break;
-	}
+	return true;
 }
 
 static void wiphy_regulatory_notify(struct l_genl_msg *msg, void *user_data)
@@ -1080,10 +1001,6 @@ bool wiphy_init(struct l_genl_family *in, const char *whitelist,
 
 	nl80211 = in;
 
-	if (!l_genl_family_register(nl80211, "config", wiphy_config_notify,
-								NULL, NULL))
-		l_error("Registering for config notification failed");
-
 	if (!l_genl_family_register(nl80211, "regulatory",
 					wiphy_regulatory_notify, NULL, NULL))
 		l_error("Registering for regulatory notification failed");
@@ -1099,11 +1016,6 @@ bool wiphy_init(struct l_genl_family *in, const char *whitelist,
 	if (!l_genl_family_send(nl80211, msg, regulatory_info_callback,
 								NULL, NULL))
 		l_error("Getting regulatory info failed");
-
-	msg = l_genl_msg_new(NL80211_CMD_GET_WIPHY);
-	if (!l_genl_family_dump(nl80211, msg, wiphy_dump_callback,
-						NULL, wiphy_dump_done))
-		l_error("Getting all wiphy devices failed");
 
 	rfkill_watch_add(wiphy_rfkill_cb, NULL);
 

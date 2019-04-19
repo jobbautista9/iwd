@@ -110,14 +110,22 @@ bool eap_reset(struct eap_state *eap)
 	return true;
 }
 
-void eap_free(struct eap_state *eap)
+static void eap_free_common(struct eap_state *eap)
 {
 	if (eap->method_state && eap->method->free)
 		eap->method->free(eap);
 
-	if (eap->identity)
-		l_free(eap->identity);
+	eap->method = NULL;
 
+	if (eap->identity) {
+		l_free(eap->identity);
+		eap->identity = NULL;
+	}
+}
+
+void eap_free(struct eap_state *eap)
+{
+	eap_free_common(eap);
 	l_timeout_remove(eap->complete_timeout);
 
 	l_free(eap);
@@ -132,6 +140,11 @@ void eap_set_mtu(struct eap_state *eap, size_t mtu)
 size_t eap_get_mtu(struct eap_state *eap)
 {
 	return eap->mtu;
+}
+
+const char *eap_get_identity(struct eap_state *eap)
+{
+	return eap->identity;
 }
 
 /**
@@ -546,13 +559,23 @@ bool eap_load_settings(struct eap_state *eap, struct l_settings *settings,
 		eap->identity = l_strdup(eap->method->get_identity(eap));
 	}
 
+	/*
+	 * RFC 4282 Section 2.2 - NAI Length Considerations
+	 *
+	 * Devices handling NAIs MUST support an NAI length of at least 72
+	 * octets. Support for an NAI length of 253 octets is RECOMMENDED.
+	 * ...
+	 * RADIUS is unable to support NAI lengths beyond 253 octets
+	 */
+	if (eap->identity && strlen(eap->identity) > 253) {
+		l_error("Identity is too long");
+		goto err;
+	}
+
 	return true;
 
 err:
-	if (eap->method_state && eap->method->free)
-		eap->method->free(eap);
-
-	eap->method = NULL;
+	eap_free_common(eap);
 
 	return false;
 }
@@ -580,13 +603,15 @@ const char *eap_get_method_name(struct eap_state *eap)
 void eap_set_key_material(struct eap_state *eap,
 				const uint8_t *msk_data, size_t msk_len,
 				const uint8_t *emsk_data, size_t emsk_len,
-				const uint8_t *iv, size_t iv_len)
+				const uint8_t *iv, size_t iv_len,
+				const uint8_t *session_id, size_t session_len)
 {
 	if (!eap->set_key_material)
 		return;
 
 	eap->set_key_material(msk_data, msk_len, emsk_data, emsk_len,
-				iv, iv_len, eap->user_data);
+				iv, iv_len, session_id, session_len,
+				eap->user_data);
 }
 
 void eap_method_event(struct eap_state *eap, unsigned int id, const void *data)

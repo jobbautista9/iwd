@@ -307,7 +307,7 @@ static void eap_pwd_handle_id(struct eap_state *eap,
 		hkdf_extract(L_CHECKSUM_SHA256, NULL, 0, 5, pwd_seed, &token, 4,
 				pwd->identity, strlen(pwd->identity), pkt + 9,
 				len - 9, pwd->password, strlen(pwd->password),
-				&counter, 1);
+				&counter, (size_t) 1);
 
 		/*
 		 * pwd-value = KDF(pwd-seed, "EAP-pwd Hunting And Pecking",
@@ -389,10 +389,16 @@ static void eap_pwd_handle_commit(struct eap_state *eap,
 	pwd->element_s = l_ecc_point_from_data(pwd->curve,
 						L_ECC_POINT_TYPE_FULL,
 						pkt, nbytes * 2);
-	if (!pwd->element_s)
-		goto invalid_point;
+	if (!pwd->element_s) {
+		l_error("Server sent invalid Element_S during commit");
+		goto error;
+	}
 
 	pwd->scalar_s = l_ecc_scalar_new(pwd->curve, pkt + nbytes * 2, nbytes);
+	if (!pwd->scalar_s) {
+		l_error("Server sent invalid Scalar_S during commit");
+		goto error;
+	}
 
 	pwd->p_rand = l_ecc_scalar_new_random(pwd->curve);
 	p_mask = l_ecc_scalar_new_random(pwd->curve);
@@ -423,8 +429,6 @@ static void eap_pwd_handle_commit(struct eap_state *eap,
 
 	return;
 
-invalid_point:
-	l_error("invalid point during commit exchange");
 error:
 	eap_method_error(eap);
 }
@@ -509,12 +513,13 @@ static void eap_pwd_handle_confirm(struct eap_state *eap,
 	 */
 	hkdf_extract(L_CHECKSUM_SHA256, NULL, 0, 6, confirm_p, kpx, clen,
 				element_p, plen, scalar_p, clen, element_s,
-				plen, scalar_s, clen, &pwd->ciphersuite, 4);
+				plen, scalar_s, clen, &pwd->ciphersuite,
+				(size_t) 4);
 
 	hkdf_extract(L_CHECKSUM_SHA256, NULL, 0, 6, expected_confirm_s, kpx,
 				clen, element_s, plen, scalar_s, clen,
 				element_p, plen, scalar_p, clen,
-				&pwd->ciphersuite, 4);
+				&pwd->ciphersuite, (size_t) 4);
 
 	if (memcmp(confirm_s, expected_confirm_s, 32)) {
 		l_error("Confirm_S did not verify");
@@ -528,7 +533,7 @@ static void eap_pwd_handle_confirm(struct eap_state *eap,
 
 	/* derive MK = H(kp | Confirm_P | Confirm_S ) */
 	hkdf_extract(L_CHECKSUM_SHA256, NULL, 0, 3, mk, kpx, clen, confirm_p,
-			32, confirm_s, 32);
+			(size_t) 32, confirm_s, (size_t) 32);
 
 	eap_pwd_send_response(eap, resp, pos - resp);
 
@@ -536,10 +541,12 @@ static void eap_pwd_handle_confirm(struct eap_state *eap,
 
 	session_id[0] = 52;
 	hkdf_extract(L_CHECKSUM_SHA256, NULL, 0, 3, session_id + 1,
-			&pwd->ciphersuite, 4, scalar_p, clen, scalar_s, clen);
+			&pwd->ciphersuite, (size_t) 4, scalar_p, clen,
+			scalar_s, clen);
 
 	kdf(mk, 32, (const char *) session_id, 33, msk_emsk, 128);
-	eap_set_key_material(eap, msk_emsk, 64, msk_emsk + 64, 64, NULL, 0);
+	eap_set_key_material(eap, msk_emsk, 64, msk_emsk + 64, 64, NULL, 0,
+				session_id, sizeof(session_id));
 
 	explicit_bzero(mk, sizeof(mk));
 	explicit_bzero(msk_emsk, sizeof(msk_emsk));

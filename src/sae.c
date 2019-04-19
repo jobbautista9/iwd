@@ -20,6 +20,10 @@
  *
  */
 
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
+
 #include <ell/ell.h>
 
 #include "src/util.h"
@@ -87,7 +91,7 @@ static bool sae_pwd_seed(const uint8_t *addr1, const uint8_t *addr2,
 	}
 
 	return hkdf_extract(L_CHECKSUM_SHA256, key, 12, 2, out, base, base_len,
-					&counter, 1);
+					&counter, (size_t) 1);
 }
 
 static struct l_ecc_scalar *sae_pwd_value(const struct l_ecc_curve *curve,
@@ -247,8 +251,7 @@ static bool sae_compute_pwe(struct sae_sm *sm, char *password,
 				const uint8_t *addr1, const uint8_t *addr2)
 {
 	bool found = false;
-	uint8_t counter = 1;
-	uint8_t k = 20;
+	uint8_t counter;
 	uint8_t pwd_seed[32];
 	struct l_ecc_scalar *pwd_value;
 	uint8_t random[32];
@@ -263,7 +266,7 @@ static bool sae_compute_pwe(struct sae_sm *sm, char *password,
 	qr = sae_new_residue(sm->curve, true);
 	qnr = sae_new_residue(sm->curve, false);
 
-	do {
+	for (counter = 1; counter <= 20; counter++) {
 		/* pwd-seed = H(max(addr1, addr2) || min(addr1, addr2),
 		 *                base || counter)
 		 * pwd-value = KDF-256(pwd-seed, "SAE Hunting and Pecking", p)
@@ -271,6 +274,8 @@ static bool sae_compute_pwe(struct sae_sm *sm, char *password,
 		sae_pwd_seed(addr1, addr2, base, base_len, counter, pwd_seed);
 
 		pwd_value = sae_pwd_value(sm->curve, pwd_seed);
+		if (!pwd_value)
+			continue;
 
 		if (sae_is_quadradic_residue(sm->curve, pwd_value, qr, qnr)) {
 			if (found == false) {
@@ -287,10 +292,7 @@ static bool sae_compute_pwe(struct sae_sm *sm, char *password,
 		}
 
 		l_ecc_scalar_free(pwd_value);
-
-		counter++;
-
-	} while ((counter <= k) || (found == false));
+	}
 
 	l_ecc_scalar_free(qr);
 	l_ecc_scalar_free(qnr);
@@ -451,11 +453,18 @@ static void sae_process_commit(struct sae_sm *sm, const uint8_t *from,
 	}
 
 	sm->p_scalar = l_ecc_scalar_new(sm->curve, ptr, nbytes);
+	if (!sm->p_scalar) {
+		l_error("Server sent invalid P_Scalar during commit");
+		reason = MMPDU_REASON_CODE_UNSPECIFIED;
+		goto reject;
+	}
+
 	ptr += nbytes;
 
 	sm->p_element = l_ecc_point_from_data(sm->curve, L_ECC_POINT_TYPE_FULL,
 						ptr, nbytes * 2);
 	if (!sm->p_element) {
+		l_error("Server sent invalid P_Element during commit");
 		reason = MMPDU_REASON_CODE_UNSPECIFIED;
 		goto reject;
 	}

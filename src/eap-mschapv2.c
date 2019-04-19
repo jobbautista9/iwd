@@ -20,6 +20,10 @@
  *
  */
 
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
+
 #include <ctype.h>
 #include <stdio.h>
 #include <errno.h>
@@ -345,7 +349,7 @@ static void eap_mschapv2_handle_success(struct eap_state *eap,
 	eap_send_response(eap, EAP_TYPE_MSCHAPV2, buffer, sizeof(buffer));
 
 	/* The eapol set_key_material only needs msk, and that's all we got */
-	eap_set_key_material(eap, session_key, 32, NULL, 0, NULL, 0);
+	eap_set_key_material(eap, session_key, 32, NULL, 0, NULL, 0, NULL, 0);
 
 done:
 	if (!ret)

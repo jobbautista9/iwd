@@ -175,11 +175,11 @@ char *proxy_property_str_completion(const struct proxy_interface_type *type,
 
 		str = proxy_interface_property_tostr(proxy, property_name);
 		if (!str)
-			return NULL;
+			goto done;
 
 		return l_strdup(str);
 	}
-
+done:
 	l_queue_destroy(match, NULL);
 	match = NULL;
 	entry = NULL;
@@ -187,9 +187,9 @@ char *proxy_property_str_completion(const struct proxy_interface_type *type,
 	return NULL;
 }
 
-static char *proxy_property_completion_value_options(
-				const struct property_value_options *options,
-				const char *text, int state)
+static char *proxy_property_completion_value_options(const char **options,
+							const char *text,
+							int state)
 {
 	static int index;
 	static int len;
@@ -200,7 +200,7 @@ static char *proxy_property_completion_value_options(
 		len = strlen(text);
 	}
 
-	while ((opt = options[index++].value_str)) {
+	while ((opt = options[index++])) {
 		if (strncmp(opt, text, len))
 			continue;
 
@@ -741,8 +741,6 @@ static void dbus_disconnect_callback(void *user_data)
 {
 	if (!command_is_interactive_mode())
 		return;
-
-	display("D-Bus disconnected, quitting...\n");
 
 	l_main_quit();
 }
