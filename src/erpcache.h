@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2018  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,13 +20,19 @@
  *
  */
 
-const char *properties_on_off_opts[3];
-const char *properties_yes_no_opts[3];
+void erp_add_key(const char *id, const void *session_id, size_t session_len,
+			const void *emsk, size_t emsk_len,
+			const char *ssid, const char *erp_domain);
 
-bool properties_builder_append_on_off_variant(
-					struct l_dbus_message_builder *builder,
-					const char *value_str);
+void erp_remove_key(const char *id);
 
-bool properties_builder_append_yes_no_variant(
-					struct l_dbus_message_builder *builder,
-					const char *value_str);
+bool erp_find_key_by_identity(const char *id, void *session,
+			size_t *session_len, void *emsk, size_t *emsk_len,
+			const char **erp_domain);
+
+bool erp_has_key_for_ssid(const char *ssid);
+
+bool erp_has_key_for_identity(const char *id);
+
+void erp_init(void);
+void erp_exit(void);

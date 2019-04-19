@@ -211,11 +211,10 @@ am__EXEEXT_8 = unit/test-cmac-aes$(EXEEXT) unit/test-hmac-md5$(EXEEXT) \
 	unit/test-prf-sha1$(EXEEXT) unit/test-kdf-sha256$(EXEEXT) \
 	unit/test-crypto$(EXEEXT) unit/test-eapol$(EXEEXT) \
 	unit/test-mpdu$(EXEEXT) unit/test-ie$(EXEEXT) \
-	unit/test-ssid-to-utf8$(EXEEXT) \
-	unit/test-ssid-security$(EXEEXT) unit/test-arc4$(EXEEXT) \
-	unit/test-wsc$(EXEEXT) unit/test-eap-mschapv2$(EXEEXT) \
-	unit/test-eap-sim$(EXEEXT) unit/test-sae$(EXEEXT) \
-	$(am__EXEEXT_7)
+	unit/test-util$(EXEEXT) unit/test-ssid-security$(EXEEXT) \
+	unit/test-arc4$(EXEEXT) unit/test-wsc$(EXEEXT) \
+	unit/test-eap-mschapv2$(EXEEXT) unit/test-eap-sim$(EXEEXT) \
+	unit/test-sae$(EXEEXT) $(am__EXEEXT_7)
 @MAINTAINER_MODE_TRUE@am__EXEEXT_9 = $(am__EXEEXT_8)
 PROGRAMS = $(bin_PROGRAMS) $(libexec_PROGRAMS) $(noinst_PROGRAMS)
 am__client_iwctl_SOURCES_DIST = client/main.c client/adapter.c \
@@ -269,16 +268,17 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/knownnetworks.c src/rfkill.h src/rfkill.c src/ftutil.h \
 	src/ftutil.c src/ap.h src/ap.c src/adhoc.h src/adhoc.c \
 	src/sae.h src/sae.c src/nl80211util.h src/nl80211util.c \
-	src/owe.h src/owe.c src/blacklist.h src/blacklist.c src/eap.c \
-	src/eap.h src/eap-private.h src/eap-wsc.c src/eap-wsc.h \
-	src/eap-md5.c src/eap-tls.c src/eap-ttls.c src/eap-mschapv2.c \
-	src/eap-mschapv2.h src/eap-sim.c src/eap-aka.c src/eap-peap.c \
-	src/eap-gtc.c src/eap-pwd.c src/util.h src/util.c src/crypto.h \
-	src/crypto.c src/wscutil.h src/wscutil.c src/simutil.h \
-	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
-	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c \
-	src/mschaputil.h src/mschaputil.c plugins/sim_hardcoded.c \
-	plugins/ofono.c
+	src/owe.h src/owe.c src/blacklist.h src/blacklist.c \
+	src/manager.c src/eap.c src/eap.h src/eap-private.h \
+	src/eap-wsc.c src/eap-wsc.h src/eap-md5.c src/eap-tls.c \
+	src/eap-ttls.c src/eap-mschapv2.c src/eap-mschapv2.h \
+	src/eap-sim.c src/eap-aka.c src/eap-peap.c src/eap-gtc.c \
+	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
+	src/wscutil.h src/wscutil.c src/simutil.h src/simutil.c \
+	src/simauth.h src/simauth.c src/watchlist.h src/watchlist.c \
+	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
+	src/mschaputil.c src/erpcache.h src/erpcache.c \
+	plugins/sim_hardcoded.c plugins/ofono.c
 am__objects_3 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
 	src/eap-md5.$(OBJEXT) src/eap-tls.$(OBJEXT) \
 	src/eap-ttls.$(OBJEXT) src/eap-mschapv2.$(OBJEXT) \
@@ -287,7 +287,8 @@ am__objects_3 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
 	src/eap-pwd.$(OBJEXT) src/util.$(OBJEXT) src/crypto.$(OBJEXT) \
 	src/wscutil.$(OBJEXT) src/simutil.$(OBJEXT) \
 	src/simauth.$(OBJEXT) src/watchlist.$(OBJEXT) \
-	src/eap-tls-common.$(OBJEXT) src/mschaputil.$(OBJEXT)
+	src/eap-tls-common.$(OBJEXT) src/mschaputil.$(OBJEXT) \
+	src/erpcache.$(OBJEXT)
 @DAEMON_TRUE@@SIM_HARDCODED_TRUE@am__objects_4 = plugins/sim_hardcoded.$(OBJEXT)
 @DAEMON_TRUE@@OFONO_TRUE@am__objects_5 = plugins/ofono.$(OBJEXT)
 am__objects_6 = $(am__objects_4) $(am__objects_5)
@@ -305,8 +306,8 @@ am__objects_6 = $(am__objects_4) $(am__objects_5)
 @DAEMON_TRUE@	src/ftutil.$(OBJEXT) src/ap.$(OBJEXT) \
 @DAEMON_TRUE@	src/adhoc.$(OBJEXT) src/sae.$(OBJEXT) \
 @DAEMON_TRUE@	src/nl80211util.$(OBJEXT) src/owe.$(OBJEXT) \
-@DAEMON_TRUE@	src/blacklist.$(OBJEXT) $(am__objects_3) \
-@DAEMON_TRUE@	$(am__objects_6)
+@DAEMON_TRUE@	src/blacklist.$(OBJEXT) src/manager.$(OBJEXT) \
+@DAEMON_TRUE@	$(am__objects_3) $(am__objects_6)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am__tools_hwsim_SOURCES_DIST = tools/hwsim.c src/mpdu.h src/util.h \
 	src/util.c src/storage.h src/storage.c src/common.h \
@@ -349,7 +350,7 @@ am_unit_test_crypto_OBJECTS = unit/test-crypto.$(OBJEXT) \
 unit_test_crypto_OBJECTS = $(am_unit_test_crypto_OBJECTS)
 unit_test_crypto_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_unit_test_eap_mschapv2_OBJECTS = src/eap-mschapv2.$(OBJEXT) \
-	src/eap.$(OBJEXT) src/mschaputil.$(OBJEXT) \
+	src/eap.$(OBJEXT) src/mschaputil.$(OBJEXT) src/util.$(OBJEXT) \
 	unit/test-eap-mschapv2.$(OBJEXT)
 unit_test_eap_mschapv2_OBJECTS = $(am_unit_test_eap_mschapv2_OBJECTS)
 unit_test_eap_mschapv2_DEPENDENCIES = $(am__DEPENDENCIES_1)
@@ -407,10 +408,10 @@ am_unit_test_ssid_security_OBJECTS =  \
 unit_test_ssid_security_OBJECTS =  \
 	$(am_unit_test_ssid_security_OBJECTS)
 unit_test_ssid_security_DEPENDENCIES = $(am__DEPENDENCIES_1)
-am_unit_test_ssid_to_utf8_OBJECTS = src/util.$(OBJEXT) \
-	unit/test-ssid-to-utf8.$(OBJEXT)
-unit_test_ssid_to_utf8_OBJECTS = $(am_unit_test_ssid_to_utf8_OBJECTS)
-unit_test_ssid_to_utf8_DEPENDENCIES = $(am__DEPENDENCIES_1)
+am_unit_test_util_OBJECTS = src/util.$(OBJEXT) \
+	unit/test-util.$(OBJEXT)
+unit_test_util_OBJECTS = $(am_unit_test_util_OBJECTS)
+unit_test_util_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_unit_test_wsc_OBJECTS = unit/test-wsc.$(OBJEXT) \
 	src/wscutil.$(OBJEXT) src/crypto.$(OBJEXT) src/ie.$(OBJEXT) \
 	src/watchlist.$(OBJEXT) src/eapol.$(OBJEXT) \
@@ -428,7 +429,7 @@ am__wired_ead_SOURCES_DIST = wired/main.c wired/ethdev.h \
 	src/wscutil.h src/wscutil.c src/simutil.h src/simutil.c \
 	src/simauth.h src/simauth.c src/watchlist.h src/watchlist.c \
 	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
-	src/mschaputil.c
+	src/mschaputil.c src/erpcache.h src/erpcache.c
 @WIRED_TRUE@am_wired_ead_OBJECTS = wired/main.$(OBJEXT) \
 @WIRED_TRUE@	wired/ethdev.$(OBJEXT) wired/network.$(OBJEXT) \
 @WIRED_TRUE@	wired/dbus.$(OBJEXT) $(am__objects_3)
@@ -478,9 +479,8 @@ SOURCES = $(ell_libell_internal_la_SOURCES) $(client_iwctl_SOURCES) \
 	$(unit_test_hmac_sha256_SOURCES) $(unit_test_ie_SOURCES) \
 	$(unit_test_kdf_sha256_SOURCES) $(unit_test_mpdu_SOURCES) \
 	$(unit_test_prf_sha1_SOURCES) $(unit_test_sae_SOURCES) \
-	$(unit_test_ssid_security_SOURCES) \
-	$(unit_test_ssid_to_utf8_SOURCES) $(unit_test_wsc_SOURCES) \
-	$(wired_ead_SOURCES)
+	$(unit_test_ssid_security_SOURCES) $(unit_test_util_SOURCES) \
+	$(unit_test_wsc_SOURCES) $(wired_ead_SOURCES)
 DIST_SOURCES = $(am__ell_libell_internal_la_SOURCES_DIST) \
 	$(am__client_iwctl_SOURCES_DIST) \
 	$(am__monitor_iwmon_SOURCES_DIST) $(am__src_iwd_SOURCES_DIST) \
@@ -494,9 +494,8 @@ DIST_SOURCES = $(am__ell_libell_internal_la_SOURCES_DIST) \
 	$(unit_test_hmac_sha256_SOURCES) $(unit_test_ie_SOURCES) \
 	$(unit_test_kdf_sha256_SOURCES) $(unit_test_mpdu_SOURCES) \
 	$(unit_test_prf_sha1_SOURCES) $(unit_test_sae_SOURCES) \
-	$(unit_test_ssid_security_SOURCES) \
-	$(unit_test_ssid_to_utf8_SOURCES) $(unit_test_wsc_SOURCES) \
-	$(am__wired_ead_SOURCES_DIST)
+	$(unit_test_ssid_security_SOURCES) $(unit_test_util_SOURCES) \
+	$(unit_test_wsc_SOURCES) $(am__wired_ead_SOURCES_DIST)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -1025,7 +1024,8 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 				src/simauth.h src/simauth.c \
 				src/watchlist.h src/watchlist.c \
 				src/eap-tls-common.h src/eap-tls-common.c \
-				src/mschaputil.h src/mschaputil.c
+				src/mschaputil.h src/mschaputil.c \
+				src/erpcache.h src/erpcache.c
 
 @DAEMON_TRUE@src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h src/missing.h \
 @DAEMON_TRUE@					src/plugin.h src/plugin.c \
@@ -1056,6 +1056,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/nl80211util.h src/nl80211util.c \
 @DAEMON_TRUE@					src/owe.h src/owe.c \
 @DAEMON_TRUE@					src/blacklist.h src/blacklist.c \
+@DAEMON_TRUE@					src/manager.c \
 @DAEMON_TRUE@					$(eap_sources) \
 @DAEMON_TRUE@					$(builtin_sources)
 
@@ -1110,7 +1111,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 unit_tests = unit/test-cmac-aes unit/test-hmac-md5 unit/test-hmac-sha1 \
 	unit/test-hmac-sha256 unit/test-prf-sha1 unit/test-kdf-sha256 \
 	unit/test-crypto unit/test-eapol unit/test-mpdu unit/test-ie \
-	unit/test-ssid-to-utf8 unit/test-ssid-security unit/test-arc4 \
+	unit/test-util unit/test-ssid-security unit/test-arc4 \
 	unit/test-wsc unit/test-eap-mschapv2 unit/test-eap-sim \
 	unit/test-sae $(am__append_20)
 ell_pem_files = cert-ca-key.pem cert-client-key.pem cert-client-key-pkcs8.pem \
@@ -1184,10 +1185,10 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 
 unit_test_eapol_LDADD = $(ell_ldadd)
 unit_test_eapol_DEPENDENCIES = ell/unit/test_data
-unit_test_ssid_to_utf8_SOURCES = src/util.h src/util.c \
-				unit/test-ssid-to-utf8.c
+unit_test_util_SOURCES = src/util.h src/util.c \
+				unit/test-util.c
 
-unit_test_ssid_to_utf8_LDADD = $(ell_ldadd)
+unit_test_util_LDADD = $(ell_ldadd)
 unit_test_ssid_security_SOURCES = unit/test-ssid-security.c src/ie.h src/ie.c \
 				src/common.h src/common.c
 
@@ -1207,6 +1208,7 @@ unit_test_wsc_LDADD = $(ell_ldadd)
 unit_test_eap_mschapv2_SOURCES = src/eap-mschapv2.h src/eap-mschapv2.c \
 				src/eap.c src/eap.h src/eap-private.h \
 				src/mschaputil.h src/mschaputil.c \
+				src/util.h src/util.c \
 				unit/test-eap-mschapv2.c
 
 unit_test_eap_mschapv2_LDADD = $(ell_ldadd)
@@ -1604,6 +1606,8 @@ src/nl80211util.$(OBJEXT): src/$(am__dirstamp) \
 src/owe.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/blacklist.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
+src/manager.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
 src/eap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/eap-wsc.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
@@ -1632,6 +1636,8 @@ src/simauth.$(OBJEXT): src/$(am__dirstamp) \
 src/eap-tls-common.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/mschaputil.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/erpcache.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 plugins/$(am__dirstamp):
 	@$(MKDIR_P) plugins
@@ -1767,12 +1773,12 @@ unit/test-ssid-security.$(OBJEXT): unit/$(am__dirstamp) \
 unit/test-ssid-security$(EXEEXT): $(unit_test_ssid_security_OBJECTS) $(unit_test_ssid_security_DEPENDENCIES) $(EXTRA_unit_test_ssid_security_DEPENDENCIES) unit/$(am__dirstamp)
 	@rm -f unit/test-ssid-security$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(unit_test_ssid_security_OBJECTS) $(unit_test_ssid_security_LDADD) $(LIBS)
-unit/test-ssid-to-utf8.$(OBJEXT): unit/$(am__dirstamp) \
+unit/test-util.$(OBJEXT): unit/$(am__dirstamp) \
 	unit/$(DEPDIR)/$(am__dirstamp)
 
-unit/test-ssid-to-utf8$(EXEEXT): $(unit_test_ssid_to_utf8_OBJECTS) $(unit_test_ssid_to_utf8_DEPENDENCIES) $(EXTRA_unit_test_ssid_to_utf8_DEPENDENCIES) unit/$(am__dirstamp)
-	@rm -f unit/test-ssid-to-utf8$(EXEEXT)
-	$(AM_V_CCLD)$(LINK) $(unit_test_ssid_to_utf8_OBJECTS) $(unit_test_ssid_to_utf8_LDADD) $(LIBS)
+unit/test-util$(EXEEXT): $(unit_test_util_OBJECTS) $(unit_test_util_DEPENDENCIES) $(EXTRA_unit_test_util_DEPENDENCIES) unit/$(am__dirstamp)
+	@rm -f unit/test-util$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(unit_test_util_OBJECTS) $(unit_test_util_LDADD) $(LIBS)
 unit/test-wsc.$(OBJEXT): unit/$(am__dirstamp) \
 	unit/$(DEPDIR)/$(am__dirstamp)
 
@@ -1909,11 +1915,13 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eapol.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eapolutil.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/erpcache.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ftutil.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/handshake.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ie.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/knownnetworks.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/main.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/manager.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/mpdu.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/mschaputil.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/netdev.Po@am__quote@
@@ -1951,7 +1959,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-prf-sha1.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-sae.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-ssid-security.Po@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-ssid-to-utf8.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-util.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-wsc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@wired/$(DEPDIR)/dbus.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@wired/$(DEPDIR)/ethdev.Po@am__quote@
@@ -2395,9 +2403,9 @@ unit/test-ie.log: unit/test-ie$(EXEEXT)
 	--log-file $$b.log --trs-file $$b.trs \
 	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
 	"$$tst" $(AM_TESTS_FD_REDIRECT)
-unit/test-ssid-to-utf8.log: unit/test-ssid-to-utf8$(EXEEXT)
-	@p='unit/test-ssid-to-utf8$(EXEEXT)'; \
-	b='unit/test-ssid-to-utf8'; \
+unit/test-util.log: unit/test-util$(EXEEXT)
+	@p='unit/test-util$(EXEEXT)'; \
+	b='unit/test-util'; \
 	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
 	--log-file $$b.log --trs-file $$b.trs \
 	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \

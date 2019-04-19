@@ -217,12 +217,21 @@ enum ie_type {
 	/* Reserved 207 - 220 */
 	IE_TYPE_VENDOR_SPECIFIC                      = 221,
 	/* Reserved 222 - 254 */
+	IE_TYPE_FILS_INDICATION                      = 240,
 	IE_TYPE_EXTENSION                            = 255,
 
-	/* Reserved extensions 0 - 8 */
+	IE_TYPE_FILS_REQUEST_PARAMETERS              = 256 + 2,
+	IE_TYPE_FILS_KEY_CONFIRMATION                = 256 + 3,
+	IE_TYPE_FILS_SESSION                         = 256 + 4,
+	IE_TYPE_FILS_HLP_CONTAINER                   = 256 + 5,
+	IE_TYPE_FILS_IP_ADDRESS                      = 256 + 6,
+	IE_TYPE_KEY_DELIVERY                         = 256 + 7,
+	IE_TYPE_FILS_WRAPPED_DATA                    = 256 + 8,
 	IE_TYPE_FTM_SYNCHRONIZATION_INFORMATION      = 256 + 9,
 	IE_TYPE_EXTENDED_REQUEST                     = 256 + 10,
 	IE_TYPE_ESTIMATED_SERVICE_PARAMETERS         = 256 + 11,
+	IE_TYPE_FILS_PUBLIC_KEY                      = 256 + 12,
+	IE_TYPE_FILS_NONCE                           = 256 + 13,
 	IE_TYPE_FUTURE_CHANNEL_GUIDANCE              = 256 + 14,
 	IE_TYPE_OWE_DH_PARAM                         = 256 + 32,
 };
@@ -252,6 +261,10 @@ enum ie_rsn_akm_suite {
 	IE_RSN_AKM_SUITE_8021X_SUITE_B_SHA384	= 0x0800,
 	IE_RSN_AKM_SUITE_FT_OVER_8021X_SHA384	= 0x1000,
 	IE_RSN_AKM_SUITE_OWE			= 0x2000,
+	IE_RSN_AKM_SUITE_FILS_SHA256		= 0x4000,
+	IE_RSN_AKM_SUITE_FILS_SHA384		= 0x8000,
+	IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256	= 0x10000,
+	IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384	= 0x20000,
 };
 
 #define IE_AKM_IS_SAE(akm) \
@@ -287,7 +300,7 @@ struct ie_tlv_builder {
 struct ie_rsn_info {
 	enum ie_rsn_cipher_suite group_cipher;
 	uint16_t pairwise_ciphers;
-	uint16_t akm_suites;
+	uint32_t akm_suites;
 	bool preauthentication:1;
 	bool no_pairwise:1;
 	uint8_t ptksa_replay_counter:2;

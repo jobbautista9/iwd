@@ -45,6 +45,10 @@ enum crypto_akm {
 	CRYPTO_AKM_8021X_SUITE_B_SHA256 = 0x000fac0b,
 	CRYPTO_AKM_8021X_SUITE_B_SHA384 = 0x000fac0c,
 	CRYPTO_AKM_FT_OVER_8021X_SHA384 = 0x000fac0d,
+	CRYPTO_AKM_FILS_SHA256 = 0x000fac0e,
+	CRYPTO_AKM_FILS_SHA384 = 0x000fac0f,
+	CRYPTO_AKM_FT_OVER_FILS_SHA256 = 0x000fac10,
+	CRYPTO_AKM_FT_OVER_FILS_SHA384 = 0x000fac11,
 	CRYPTO_AKM_OWE = 0x000fac12,
 };
 
@@ -84,6 +88,9 @@ int crypto_psk_from_passphrase(const char *passphrase,
 				unsigned char *out_psk);
 
 bool kdf_sha256(const void *key, size_t key_len,
+		const void *prefix, size_t prefix_len,
+		const void *data, size_t data_len, void *output, size_t size);
+bool kdf_sha384(const void *key, size_t key_len,
 		const void *prefix, size_t prefix_len,
 		const void *data, size_t data_len, void *output, size_t size);
 bool prf_sha1(const void *key, size_t key_len,
