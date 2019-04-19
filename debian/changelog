@@ -1,3 +1,10 @@
+iwd (0.17-1) experimental; urgency=medium
+
+  * New upstream release.
+  * Drop debian/patches/*, fixed upstream.
+
+ -- Andreas Henriksson <andreas@fatal.se>  Fri, 19 Apr 2019 22:55:40 +0200
+
 iwd (0.16-2) experimental; urgency=medium
 
   * Update sae patch to use a smaller hammer
