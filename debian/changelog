@@ -1,3 +1,9 @@
+iwd (0.18-1) experimental; urgency=medium
+
+  * New upstream release.
+
+ -- Andreas Henriksson <andreas@fatal.se>  Wed, 15 May 2019 06:31:11 +0200
+
 iwd (0.17-1) experimental; urgency=medium
 
   * New upstream release.
