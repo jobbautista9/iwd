@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2018  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2018-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -49,6 +49,7 @@
 #include "src/station.h"
 #include "src/blacklist.h"
 #include "src/mpdu.h"
+#include "src/erp.h"
 
 static struct l_queue *station_list;
 static uint32_t netdev_watch;
@@ -68,6 +69,7 @@ struct station {
 	struct l_dbus_message *scan_pending;
 	struct signal_agent *signal_agent;
 	uint32_t dbus_scan_id;
+	uint32_t quick_scan_id;
 	uint32_t hidden_network_scan_id;
 
 	/* Roaming related members */
@@ -287,7 +289,7 @@ static struct network *station_add_seen_bss(struct station *station,
 	const char *path;
 	char ssid[33];
 
-	l_debug("Found BSS '%s' with SSID: %s, freq: %u, rank: %u, "
+	l_debug("Processing BSS '%s' with SSID: %s, freq: %u, rank: %u, "
 			"strength: %i",
 			util_address_to_string(bss->addr),
 			util_ssid_to_utf8(bss->ssid_len, bss->ssid),
@@ -354,58 +356,101 @@ static bool bss_match(const void *a, const void *b)
 	return !memcmp(bss_a->addr, bss_b->addr, sizeof(bss_a->addr));
 }
 
-/*
- * Used when scan results were obtained; either from passive scan running
- * inside station module or active scans running in other state machines, e.g.
- * wsc
- */
-void station_set_scan_results(struct station *station, struct l_queue *bss_list,
-					bool add_to_autoconnect)
+struct bss_expiration_data {
+	struct scan_bss *connected_bss;
+	uint64_t now;
+};
+
+#define SCAN_RESULT_BSS_RETENTION_TIME (30 * 1000000)
+
+static bool bss_free_if_expired(void *data, void *user_data)
 {
-	struct l_queue *old_bss_list = station->bss_list;
-	struct network *network;
+	struct scan_bss *bss = data;
+	struct bss_expiration_data *expiration_data = user_data;
+
+	if (bss == expiration_data->connected_bss)
+		/* Do not expire the currently connected BSS. */
+		return false;
+
+	if (l_time_before(expiration_data->now,
+			bss->time_stamp + SCAN_RESULT_BSS_RETENTION_TIME))
+		return false;
+
+	bss_free(bss);
+
+	return true;
+}
+
+static void station_bss_list_remove_expired_bsses(struct station *station)
+{
+	struct bss_expiration_data data = {
+		.now = l_time_now(),
+		.connected_bss = station->connected_bss,
+	};
+
+	l_queue_foreach_remove(station->bss_list, bss_free_if_expired, &data);
+}
+
+/*
+ * Used when scan results were obtained; either from scan running
+ * inside station module or scans running in other state machines, e.g. wsc
+ */
+void station_set_scan_results(struct station *station,
+						struct l_queue *new_bss_list,
+						bool add_to_autoconnect)
+{
 	const struct l_queue_entry *bss_entry;
-
-	station->bss_list = bss_list;
-
-	l_queue_clear(station->hidden_bss_list_sorted, NULL);
+	struct network *network;
 
 	while ((network = l_queue_pop_head(station->networks_sorted)))
 		network_bss_list_clear(network);
 
+	l_queue_clear(station->hidden_bss_list_sorted, NULL);
+
 	l_queue_destroy(station->autoconnect_list, l_free);
 	station->autoconnect_list = l_queue_new();
 
-	for (bss_entry = l_queue_get_entries(bss_list); bss_entry;
-				bss_entry = bss_entry->next) {
+	station_bss_list_remove_expired_bsses(station);
+
+	for (bss_entry = l_queue_get_entries(station->bss_list); bss_entry;
+						bss_entry = bss_entry->next) {
+		struct scan_bss *old_bss = bss_entry->data;
+		struct scan_bss *new_bss;
+
+		new_bss = l_queue_find(new_bss_list, bss_match, old_bss);
+		if (new_bss) {
+			if (old_bss == station->connected_bss)
+				station->connected_bss = new_bss;
+
+			bss_free(old_bss);
+
+			continue;
+		}
+
+		if (old_bss == station->connected_bss) {
+			l_warn("Connected BSS not in scan results");
+			station->connected_bss->rank = 0;
+		}
+
+		l_queue_push_tail(new_bss_list, old_bss);
+	}
+
+	l_queue_destroy(station->bss_list, NULL);
+
+	for (bss_entry = l_queue_get_entries(new_bss_list); bss_entry;
+						bss_entry = bss_entry->next) {
 		struct scan_bss *bss = bss_entry->data;
 		struct network *network = station_add_seen_bss(station, bss);
 
-		if (network && add_to_autoconnect)
-			station_add_autoconnect_bss(station, network, bss);
+		if (!network || !add_to_autoconnect)
+			continue;
+
+		station_add_autoconnect_bss(station, network, bss);
 	}
 
-	if (station->connected_bss) {
-		struct scan_bss *bss;
-
-		bss = l_queue_find(station->bss_list, bss_match,
-						station->connected_bss);
-
-		if (!bss) {
-			l_warn("Connected BSS not in scan results!");
-			station->connected_bss->rank = 0;
-			l_queue_push_tail(station->bss_list,
-						station->connected_bss);
-			network_bss_add(station->connected_network,
-						station->connected_bss);
-			l_queue_remove(old_bss_list, station->connected_bss);
-		} else
-			station->connected_bss = bss;
-	}
+	station->bss_list = new_bss_list;
 
 	l_hashmap_foreach_remove(station->networks, process_network, station);
-
-	l_queue_destroy(old_bss_list, bss_free);
 }
 
 static void station_reconnect(struct station *station);
@@ -444,6 +489,46 @@ static void station_handshake_event(struct handshake_state *hs,
 	}
 }
 
+static bool station_has_erp_identity(struct network *network)
+{
+	struct erp_cache_entry *cache;
+	struct l_settings *settings;
+	char *check_id;
+	const char *identity;
+	bool ret;
+
+	settings = network_get_settings(network);
+	if (!settings)
+		return false;
+
+	check_id = l_settings_get_string(settings, "Security", "EAP-Identity");
+	if (!check_id)
+		return false;
+
+	cache = erp_cache_get(network_get_ssid(network));
+	if (!cache) {
+		l_free(check_id);
+		return false;
+	}
+
+	identity = erp_cache_entry_get_identity(cache);
+
+	ret = strcmp(check_id, identity) == 0;
+
+	l_free(check_id);
+	erp_cache_put(cache);
+
+	/*
+	 * The settings file must have change out from under us. In this
+	 * case we want to remove the ERP entry because it is no longer
+	 * valid.
+	 */
+	if (!ret)
+		erp_cache_remove(identity);
+
+	return ret;
+}
+
 static int station_build_handshake_rsn(struct handshake_state *hs,
 					struct wiphy *wiphy,
 					struct network *network,
@@ -451,6 +536,7 @@ static int station_build_handshake_rsn(struct handshake_state *hs,
 {
 	enum security security = network_get_security(network);
 	bool add_mde = false;
+	bool fils_hint = false;
 
 	const struct l_settings *settings = iwd_get_config();
 	struct ie_rsn_info bss_info;
@@ -463,7 +549,18 @@ static int station_build_handshake_rsn(struct handshake_state *hs,
 	memset(&bss_info, 0, sizeof(bss_info));
 	scan_bss_get_rsn_info(bss, &bss_info);
 
-	info.akm_suites = wiphy_select_akm(wiphy, bss);
+	if (bss_info.akm_suites & (IE_RSN_AKM_SUITE_FILS_SHA256 |
+				IE_RSN_AKM_SUITE_FILS_SHA384))
+		hs->support_fils = true;
+
+	/*
+	 * If this network 8021x we might have a set of cached EAP keys. If so
+	 * wiphy may select FILS if supported by the AP.
+	 */
+	if (security == SECURITY_8021X && hs->support_fils)
+		fils_hint = station_has_erp_identity(network);
+
+	info.akm_suites = wiphy_select_akm(wiphy, bss, fils_hint);
 
 	/*
 	 * Special case for OWE. With OWE we still need to build up the
@@ -602,6 +699,15 @@ static struct handshake_state *station_handshake_setup(struct station *station,
 		handshake_state_set_8021x_config(hs,
 					network_get_settings(network));
 
+	/*
+	 * If FILS was chosen, the ERP cache has been verified to exist. We
+	 * wait to get it until here because at this point so there are no
+	 * failure paths before fils_sm_new
+	 */
+	if (hs->akm_suite == IE_RSN_AKM_SUITE_FILS_SHA256 ||
+			hs->akm_suite == IE_RSN_AKM_SUITE_FILS_SHA384)
+		hs->erp_cache = erp_cache_get(network_get_ssid(network));
+
 	return hs;
 
 no_psk:
@@ -681,6 +787,87 @@ static uint32_t station_scan_trigger(struct station *station,
 	return scan_passive(index, freqs, triggered, notify, station, destroy);
 }
 
+static bool station_quick_scan_results(int err, struct l_queue *bss_list,
+								void *userdata)
+{
+	struct station *station = userdata;
+	bool autoconnect;
+
+	station_property_set_scanning(station, false);
+
+	if (err) {
+		station_enter_state(station, STATION_STATE_AUTOCONNECT_FULL);
+
+		return false;
+	}
+
+	autoconnect = station_is_autoconnecting(station);
+	station_set_scan_results(station, bss_list, autoconnect);
+
+	if (autoconnect)
+		station_autoconnect_next(station);
+
+	if (station->state == STATION_STATE_AUTOCONNECT_QUICK)
+		/*
+		 * If we're still in AUTOCONNECT_QUICK state, then autoconnect
+		 * failed to find any candidates. Transition to AUTOCONNECT_FULL
+		 */
+		station_enter_state(station, STATION_STATE_AUTOCONNECT_FULL);
+
+	return true;
+}
+
+static void station_quick_scan_triggered(int err, void *user_data)
+{
+	struct station *station = user_data;
+
+	if (err < 0) {
+		l_debug("Quick scan trigger failed: %i", err);
+
+		station_enter_state(station, STATION_STATE_AUTOCONNECT_FULL);
+
+		return;
+	}
+
+	l_debug("Quick scan triggered for %s",
+					netdev_get_name(station->netdev));
+
+	station_property_set_scanning(station, true);
+}
+
+static void station_quick_scan_destroy(void *userdata)
+{
+	struct station *station = userdata;
+
+	station->quick_scan_id = 0;
+}
+
+static void station_quick_scan_trigger(struct station *station)
+{
+	struct scan_freq_set *known_freq_set;
+
+	known_freq_set = known_networks_get_recent_frequencies(5);
+	if (!known_freq_set)
+		goto autoconnect_full;
+
+	if (!wiphy_constrain_freq_set(station->wiphy, known_freq_set))
+		goto skip_scan;
+
+	station->quick_scan_id = station_scan_trigger(station,
+						known_freq_set,
+						station_quick_scan_triggered,
+						station_quick_scan_results,
+						station_quick_scan_destroy);
+skip_scan:
+	scan_freq_set_free(known_freq_set);
+
+	if (station->quick_scan_id)
+		return;
+
+autoconnect_full:
+	station_enter_state(station, STATION_STATE_AUTOCONNECT_FULL);
+}
+
 static const char *station_state_to_string(enum station_state state)
 {
 	switch (state) {
@@ -723,6 +910,8 @@ static void station_enter_state(struct station *station,
 
 	switch (state) {
 	case STATION_STATE_AUTOCONNECT_QUICK:
+		station_quick_scan_trigger(station);
+		break;
 	case STATION_STATE_AUTOCONNECT_FULL:
 		scan_periodic_start(index, periodic_scan_trigger,
 					new_scan_results, station);
@@ -1042,10 +1231,20 @@ static void station_transition_start(struct station *station,
 			return;
 		}
 
-		if (netdev_fast_transition(station->netdev, bss,
+		/* FT-over-DS can be better suited for these situations */
+		if ((hs->mde[4] & 1) && (station->ap_directed_roaming ||
+				station->signal_low)) {
+			if (netdev_fast_transition_over_ds(station->netdev, bss,
 					station_fast_transition_cb) < 0) {
-			station_roam_failed(station);
-			return;
+				station_roam_failed(station);
+				return;
+			}
+		} else {
+			if (netdev_fast_transition(station->netdev, bss,
+					station_fast_transition_cb) < 0) {
+				station_roam_failed(station);
+				return;
+			}
 		}
 
 		station->connected_bss = bss;
@@ -2512,11 +2711,15 @@ static void station_free(struct station *station)
 		scan_cancel(netdev_get_ifindex(station->netdev),
 				station->dbus_scan_id);
 
+	if (station->quick_scan_id)
+		scan_cancel(netdev_get_ifindex(station->netdev),
+				station->quick_scan_id);
+
 	if (station->hidden_network_scan_id)
 		scan_cancel(netdev_get_ifindex(station->netdev),
 				station->hidden_network_scan_id);
 
-	l_timeout_remove(station->roam_trigger_timeout);
+	station_roam_state_clear(station);
 
 	l_queue_destroy(station->networks_sorted, NULL);
 	l_hashmap_destroy(station->networks, network_free);

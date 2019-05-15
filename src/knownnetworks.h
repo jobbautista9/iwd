@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2016  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2016-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -22,9 +22,14 @@
 
 enum security;
 struct network_info;
+struct scan_freq_set;
 
 typedef bool (*known_networks_foreach_func_t)(const struct network_info *info,
 						void *user_data);
+
+struct known_frequency {
+	uint32_t frequency;
+};
 
 bool known_networks_foreach(known_networks_foreach_func_t function,
 				void *user_data);
@@ -33,3 +38,6 @@ struct network_info *known_networks_find(const char *ssid,
 						enum security security);
 
 const char *known_network_get_path(const struct network_info *network);
+
+struct scan_freq_set *known_networks_get_recent_frequencies(
+						uint8_t num_networks_tosearch);

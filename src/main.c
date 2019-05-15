@@ -46,6 +46,7 @@
 #include "src/adhoc.h"
 #include "src/blacklist.h"
 #include "src/storage.h"
+#include "src/erp.h"
 
 #include "src/backtrace.h"
 
@@ -151,7 +152,7 @@ static void nl80211_appeared(void *user_data)
 
 	l_debug("Found nl80211 interface");
 
-	manager_init(nl80211);
+	manager_init(nl80211, interfaces, nointerfaces);
 
 	if (!wiphy_init(nl80211, phys, nophys))
 		l_error("Unable to init wiphy functionality");
@@ -509,9 +510,11 @@ int main(int argc, char *argv[])
 	sim_auth_init();
 	plugin_init(plugins, noplugins);
 	blacklist_init();
+	erp_init();
 
 	exit_status = l_main_run_with_signal(signal_handler, NULL);
 
+	erp_exit();
 	blacklist_exit();
 	plugin_exit();
 	sim_auth_exit();

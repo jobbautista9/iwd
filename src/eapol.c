@@ -39,6 +39,7 @@
 #include "src/eap.h"
 #include "src/handshake.h"
 #include "src/watchlist.h"
+#include "src/erp.h"
 
 struct l_queue *state_machines;
 struct l_queue *preauths;
@@ -59,6 +60,25 @@ uint32_t next_frame_watch_id;
 	} while (false)							\
 
 #define MIC_MAXLEN	32
+
+static bool eapol_aes_siv_encrypt(const uint8_t *kek, size_t kek_len,
+				struct eapol_key *frame,
+				const uint8_t *data, size_t len)
+{
+	uint8_t encr[16 + len];
+	struct iovec ad[1];
+
+	ad[0].iov_base = frame;
+	ad[0].iov_len = EAPOL_KEY_DATA(frame, 0) - (uint8_t *)frame;
+
+	if (!aes_siv_encrypt(kek, kek_len, EAPOL_KEY_DATA(frame, 0),
+				len, ad, 1, encr))
+		return false;
+
+	memcpy(EAPOL_KEY_DATA(frame, 0), encr, sizeof(encr));
+
+	return true;
+}
 
 /*
  * MIC calculation depends on the selected hash function.  The has function
@@ -226,16 +246,27 @@ uint8_t *eapol_decrypt_key_data(enum ie_rsn_akm_suite akm, const uint8_t *kek,
 		expected_len = key_data_len;
 		break;
 	case EAPOL_KEY_DESCRIPTOR_VERSION_AKM_DEFINED:
-		/*
-		 * TODO: for now, only SAE/OWE (group 19) is supported under the
-		 * AKM_DEFINED key descriptor version. Once 8021x suites are
-		 * added for this type this will need to be expanded to handle
-		 * the AKM types in its own switch.
-		 */
-		if (!IE_AKM_IS_SAE(akm) && akm != IE_RSN_AKM_SUITE_OWE)
-			return NULL;
+		switch (akm) {
+		case IE_RSN_AKM_SUITE_FILS_SHA256:
+		case IE_RSN_AKM_SUITE_FILS_SHA384:
+			if (key_data_len < 16)
+				return NULL;
 
-		/* Fall through */
+			expected_len = key_data_len - 16;
+			break;
+		case IE_RSN_AKM_SUITE_SAE_SHA256:
+		case IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256:
+		case IE_RSN_AKM_SUITE_OWE:
+			if (key_data_len < 24 || key_data_len % 8)
+				return NULL;
+
+			expected_len = key_data_len - 8;
+			break;
+		default:
+			return NULL;
+		}
+
+		break;
 	case EAPOL_KEY_DESCRIPTOR_VERSION_HMAC_SHA1_AES:
 	case EAPOL_KEY_DESCRIPTOR_VERSION_AES_128_CMAC_AES:
 		if (key_data_len < 24 || key_data_len % 8)
@@ -285,13 +316,38 @@ uint8_t *eapol_decrypt_key_data(enum ie_rsn_akm_suite akm, const uint8_t *kek,
 				goto error;
 			}
 
+			if (!aes_unwrap(kek, kek_len, key_data,
+						key_data_len, buf))
+				goto error;
+
 			break;
+		case IE_RSN_AKM_SUITE_FILS_SHA256:
+		case IE_RSN_AKM_SUITE_FILS_SHA384:
+		{
+			struct iovec ad[1];
+
+			ad[0].iov_base = (void *)frame;
+			ad[0].iov_len = key_data - (const uint8_t *)frame;
+
+			if (akm == IE_RSN_AKM_SUITE_FILS_SHA256)
+				kek_len = 32;
+			else
+				kek_len = 64;
+
+			if (!aes_siv_decrypt(kek, kek_len, key_data,
+						key_data_len, ad, 1, buf))
+				goto error;
+
+			break;
+		}
 		default:
 			kek_len = 16;
-		}
 
-		if (!aes_unwrap(kek, kek_len, key_data, key_data_len, buf))
-			goto error;
+			if (!aes_unwrap(kek, kek_len, key_data,
+						key_data_len, buf))
+				goto error;
+			break;
+		}
 
 		break;
 	}
@@ -441,7 +497,8 @@ bool eapol_verify_ptk_2_of_4(const struct eapol_key *ek)
 	return true;
 }
 
-bool eapol_verify_ptk_3_of_4(const struct eapol_key *ek, bool is_wpa)
+bool eapol_verify_ptk_3_of_4(const struct eapol_key *ek, bool is_wpa,
+				size_t mic_len)
 {
 	uint16_t key_len;
 
@@ -460,7 +517,7 @@ bool eapol_verify_ptk_3_of_4(const struct eapol_key *ek, bool is_wpa)
 	if (!ek->key_ack)
 		return false;
 
-	if (!ek->key_mic)
+	if (mic_len && !ek->key_mic)
 		return false;
 
 	if (ek->secure != !is_wpa)
@@ -533,7 +590,8 @@ bool eapol_verify_ptk_4_of_4(const struct eapol_key *ek, bool is_wpa)
 	if (ek->install)	\
 		return false	\
 
-bool eapol_verify_gtk_1_of_2(const struct eapol_key *ek, bool is_wpa)
+bool eapol_verify_gtk_1_of_2(const struct eapol_key *ek, bool is_wpa,
+				size_t mic_len)
 {
 	uint16_t key_len;
 
@@ -542,7 +600,7 @@ bool eapol_verify_gtk_1_of_2(const struct eapol_key *ek, bool is_wpa)
 	if (!ek->key_ack)
 		return false;
 
-	if (!ek->key_mic)
+	if (mic_len && !ek->key_mic)
 		return false;
 
 	if (!ek->secure)
@@ -626,32 +684,35 @@ static struct eapol_key *eapol_create_common(
 				bool is_wpa,
 				size_t mic_len)
 {
+	size_t extra_key_len = (mic_len == 0) ? 16 : 0;
 	size_t to_alloc = EAPOL_FRAME_LEN(mic_len);
 
-	struct eapol_key *out_frame = l_malloc(to_alloc + extra_len);
+	struct eapol_key *out_frame = l_malloc(to_alloc + extra_len +
+						extra_key_len);
 
 	memset(out_frame, 0, to_alloc + extra_len);
 
 	out_frame->header.protocol_version = protocol;
 	out_frame->header.packet_type = 0x3;
-	out_frame->header.packet_len = L_CPU_TO_BE16(to_alloc + extra_len - 4);
+	out_frame->header.packet_len = L_CPU_TO_BE16(to_alloc + extra_len +
+							extra_key_len - 4);
 	out_frame->descriptor_type = is_wpa ? EAPOL_DESCRIPTOR_TYPE_WPA :
 		EAPOL_DESCRIPTOR_TYPE_80211;
 	out_frame->key_descriptor_version = version;
 	out_frame->key_type = key_type;
 	out_frame->install = false;
 	out_frame->key_ack = false;
-	out_frame->key_mic = true;
+	out_frame->key_mic = (mic_len) ? true : false;
 	out_frame->secure = secure;
 	out_frame->error = false;
 	out_frame->request = false;
-	out_frame->encrypted_key_data = false;
+	out_frame->encrypted_key_data = (mic_len) ? false : true;
 	out_frame->smk_message = false;
 	out_frame->key_length = 0;
 	out_frame->key_replay_counter = L_CPU_TO_BE64(key_replay_counter);
 	memcpy(out_frame->key_nonce, snonce, sizeof(out_frame->key_nonce));
 
-	l_put_be16(extra_len, out_frame->key_data + mic_len);
+	l_put_be16(extra_len + extra_key_len, out_frame->key_data + mic_len);
 
 	if (extra_len)
 		memcpy(EAPOL_KEY_DATA(out_frame, mic_len), extra_data,
@@ -702,8 +763,8 @@ struct eapol_key *eapol_create_gtk_2_of_2(
 
 	memset(snonce, 0, sizeof(snonce));
 	step2 = eapol_create_common(protocol, version, true,
-					key_replay_counter, snonce, 0, NULL,
-					0, is_wpa, mic_len);
+					key_replay_counter, snonce,
+					0, NULL, 0, is_wpa, mic_len);
 
 	if (!step2)
 		return step2;
@@ -1158,17 +1219,30 @@ static void eapol_handle_ptk_1_of_4(struct eapol_sm *sm,
 
 	kck = handshake_state_get_kck(sm->handshake);
 
-	if (!eapol_calculate_mic(sm->handshake->akm_suite, kck,
-			step2, mic, sm->mic_len)) {
-		l_info("MIC calculation failed. "
-			"Ensure Kernel Crypto is available.");
-		l_free(step2);
-		handshake_failed(sm, MMPDU_REASON_CODE_UNSPECIFIED);
+	if (sm->mic_len) {
+		if (!eapol_calculate_mic(sm->handshake->akm_suite, kck,
+				step2, mic, sm->mic_len)) {
+			l_info("MIC calculation failed. "
+				"Ensure Kernel Crypto is available.");
+			l_free(step2);
+			handshake_failed(sm, MMPDU_REASON_CODE_UNSPECIFIED);
 
-		return;
+			return;
+		}
+
+		memcpy(EAPOL_KEY_MIC(step2), mic, sm->mic_len);
+	} else {
+		if (!eapol_aes_siv_encrypt(
+				handshake_state_get_kek(sm->handshake),
+				handshake_state_get_kek_len(sm->handshake),
+				step2, ies, ies_len)) {
+			l_debug("AES-SIV encryption failed");
+			l_free(step2);
+			handshake_failed(sm, MMPDU_REASON_CODE_UNSPECIFIED);
+			return;
+		}
 	}
 
-	memcpy(EAPOL_KEY_MIC(step2), mic, sm->mic_len);
 	eapol_sm_write(sm, (struct eapol_frame *) step2, false);
 	l_free(step2);
 
@@ -1337,7 +1411,8 @@ static void eapol_handle_ptk_2_of_4(struct eapol_sm *sm,
 					sm->handshake->pmk_len,
 					sm->handshake->spa, aa,
 					sm->handshake->anonce, ek->key_nonce,
-					sm->handshake->ptk, ptk_size, false))
+					sm->handshake->ptk, ptk_size,
+					L_CHECKSUM_SHA1))
 		return;
 
 	kck = handshake_state_get_kck(sm->handshake);
@@ -1408,7 +1483,7 @@ static void eapol_handle_ptk_3_of_4(struct eapol_sm *sm,
 
 	l_debug("ifindex=%u", sm->handshake->ifindex);
 
-	if (!eapol_verify_ptk_3_of_4(ek, sm->handshake->wpa_ie)) {
+	if (!eapol_verify_ptk_3_of_4(ek, sm->handshake->wpa_ie, sm->mic_len)) {
 		handshake_failed(sm, MMPDU_REASON_CODE_UNSPECIFIED);
 		return;
 	}
@@ -1597,14 +1672,28 @@ retransmit:
 	kck = handshake_state_get_kck(sm->handshake);
 	kek = handshake_state_get_kek(sm->handshake);
 
-	if (!eapol_calculate_mic(sm->handshake->akm_suite, kck,
-			step4, mic, sm->mic_len)) {
-		l_free(step4);
-		handshake_failed(sm, MMPDU_REASON_CODE_UNSPECIFIED);
-		return;
+	if (sm->mic_len) {
+		if (!eapol_calculate_mic(sm->handshake->akm_suite, kck,
+				step4, mic, sm->mic_len)) {
+			l_debug("MIC Calculation failed");
+			l_free(step4);
+			handshake_failed(sm, MMPDU_REASON_CODE_UNSPECIFIED);
+			return;
+		}
+
+		memcpy(EAPOL_KEY_MIC(step4), mic, sm->mic_len);
+	} else {
+		if (!eapol_aes_siv_encrypt(
+				handshake_state_get_kek(sm->handshake),
+				handshake_state_get_kek_len(sm->handshake),
+				step4, NULL, 0)) {
+			l_debug("AES-SIV encryption failed");
+			l_free(step4);
+			handshake_failed(sm, MMPDU_REASON_CODE_UNSPECIFIED);
+			return;
+		}
 	}
 
-	memcpy(EAPOL_KEY_MIC(step4), mic, sm->mic_len);
 	eapol_sm_write(sm, (struct eapol_frame *) step4, false);
 	l_free(step4);
 
@@ -1682,7 +1771,7 @@ static void eapol_handle_gtk_1_of_2(struct eapol_sm *sm,
 	size_t igtk_len;
 	uint8_t igtk_key_index;
 
-	if (!eapol_verify_gtk_1_of_2(ek, sm->handshake->wpa_ie)) {
+	if (!eapol_verify_gtk_1_of_2(ek, sm->handshake->wpa_ie, sm->mic_len)) {
 		handshake_failed(sm, MMPDU_REASON_CODE_UNSPECIFIED);
 		return;
 	}
@@ -1747,14 +1836,28 @@ static void eapol_handle_gtk_1_of_2(struct eapol_sm *sm,
 
 	kck = handshake_state_get_kck(sm->handshake);
 
-	if (!eapol_calculate_mic(sm->handshake->akm_suite, kck,
-			step2, mic, sm->mic_len)) {
-		l_free(step2);
-		handshake_failed(sm, MMPDU_REASON_CODE_UNSPECIFIED);
-		return;
+	if (sm->mic_len) {
+		if (!eapol_calculate_mic(sm->handshake->akm_suite, kck,
+				step2, mic, sm->mic_len)) {
+			l_debug("MIC calculation failed");
+			l_free(step2);
+			handshake_failed(sm, MMPDU_REASON_CODE_UNSPECIFIED);
+			return;
+		}
+
+		memcpy(EAPOL_KEY_MIC(step2), mic, sm->mic_len);
+	} else {
+		if (!eapol_aes_siv_encrypt(
+				handshake_state_get_kek(sm->handshake),
+				handshake_state_get_kek_len(sm->handshake),
+				step2, NULL, 0)) {
+			l_debug("AES-SIV encryption failed");
+			l_free(step2);
+			handshake_failed(sm, MMPDU_REASON_CODE_UNSPECIFIED);
+			return;
+		}
 	}
 
-	memcpy(EAPOL_KEY_MIC(step2), mic, sm->mic_len);
 	eapol_sm_write(sm, (struct eapol_frame *) step2, false);
 	l_free(step2);
 
@@ -1857,8 +1960,11 @@ static void eapol_key_handle(struct eapol_sm *sm,
 
 	if ((ek->encrypted_key_data && !sm->handshake->wpa_ie) ||
 			(ek->key_type == 0 && sm->handshake->wpa_ie)) {
-		/* Haven't received step 1 yet, so no ptk */
-		if (!sm->handshake->have_snonce)
+		/*
+		 * If using a MIC (non-FILS) but haven't received step 1 yet
+		 * we disregard since there will be no ptk
+		 */
+		if (sm->mic_len && !sm->handshake->have_snonce)
 			return;
 
 		kek = handshake_state_get_kek(sm->handshake);
@@ -1889,7 +1995,7 @@ static void eapol_key_handle(struct eapol_sm *sm,
 	}
 
 	/* If no MIC, then assume packet 1, otherwise packet 3 */
-	if (!ek->key_mic)
+	if (!ek->key_mic && !ek->encrypted_key_data)
 		eapol_handle_ptk_1_of_4(sm, ek);
 	else {
 		if (!key_data_len)
@@ -2005,6 +2111,11 @@ static void eapol_eap_results_cb(const uint8_t *msk_data, size_t msk_len,
 	}
 
 	handshake_state_set_pmk(sm->handshake, msk_data, msk_len);
+
+	if (sm->handshake->support_fils && emsk_data && session_id)
+		erp_cache_add(eap_get_identity(sm->eap), session_id,
+				session_len, emsk_data, emsk_len,
+				(const char *)sm->handshake->ssid);
 
 	return;
 
@@ -2235,6 +2346,14 @@ bool eapol_start(struct eapol_sm *sm)
 	}
 
 	sm->started = true;
+
+	/*
+	 * FILS only uses the 4-way for rekeys, so only started needs to be set,
+	 * then we wait for a rekey.
+	 */
+	if (sm->handshake->akm_suite & (IE_RSN_AKM_SUITE_FILS_SHA256 |
+			IE_RSN_AKM_SUITE_FILS_SHA384))
+		return true;
 
 	if (sm->require_handshake)
 		sm->timeout = l_timeout_create(eapol_4way_handshake_time,

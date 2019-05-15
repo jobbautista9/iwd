@@ -1,5 +1,5 @@
 AC_PREREQ(2.60)
-AC_INIT(iwd, 0.17)
+AC_INIT(iwd, 0.18)
 
 AC_CONFIG_HEADERS(config.h)
 AC_CONFIG_AUX_DIR(build-aux)
@@ -233,7 +233,7 @@ if (test "${enable_external_ell}" = "yes"); then
 			test "${enable_monitor}" != "no" ||
 			test "${enable_wired}" = "yes" ||
 			test "${enable_hwsim}" = "yes"); then
-		ell_min_version="0.18"
+		ell_min_version="0.20"
 	else
 		ell_min_version="0.5"
 	fi

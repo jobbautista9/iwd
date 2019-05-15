@@ -265,20 +265,21 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/common.c src/agent.h src/agent.c src/storage.h \
 	src/storage.c src/network.h src/network.c src/wsc.c \
 	src/backtrace.h src/backtrace.c src/knownnetworks.h \
-	src/knownnetworks.c src/rfkill.h src/rfkill.c src/ftutil.h \
-	src/ftutil.c src/ap.h src/ap.c src/adhoc.h src/adhoc.c \
-	src/sae.h src/sae.c src/nl80211util.h src/nl80211util.c \
-	src/owe.h src/owe.c src/blacklist.h src/blacklist.c \
-	src/manager.c src/eap.c src/eap.h src/eap-private.h \
-	src/eap-wsc.c src/eap-wsc.h src/eap-md5.c src/eap-tls.c \
-	src/eap-ttls.c src/eap-mschapv2.c src/eap-mschapv2.h \
-	src/eap-sim.c src/eap-aka.c src/eap-peap.c src/eap-gtc.c \
-	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
-	src/wscutil.h src/wscutil.c src/simutil.h src/simutil.c \
-	src/simauth.h src/simauth.c src/watchlist.h src/watchlist.c \
-	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
-	src/mschaputil.c src/erpcache.h src/erpcache.c \
-	plugins/sim_hardcoded.c plugins/ofono.c
+	src/knownnetworks.c src/rfkill.h src/rfkill.c src/ft.h \
+	src/ft.c src/ap.h src/ap.c src/adhoc.h src/adhoc.c src/sae.h \
+	src/sae.c src/nl80211util.h src/nl80211util.c src/owe.h \
+	src/owe.c src/blacklist.h src/blacklist.c src/manager.c \
+	src/erp.h src/erp.c src/fils.h src/fils.c src/rtnlutil.h \
+	src/rtnlutil.c src/auth-proto.h src/eap.c src/eap.h \
+	src/eap-private.h src/eap-wsc.c src/eap-wsc.h src/eap-md5.c \
+	src/eap-tls.c src/eap-ttls.c src/eap-mschapv2.c \
+	src/eap-mschapv2.h src/eap-sim.c src/eap-aka.c src/eap-peap.c \
+	src/eap-gtc.c src/eap-pwd.c src/util.h src/util.c src/crypto.h \
+	src/crypto.c src/wscutil.h src/wscutil.c src/simutil.h \
+	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
+	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c \
+	src/mschaputil.h src/mschaputil.c plugins/sim_hardcoded.c \
+	plugins/ofono.c
 am__objects_3 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
 	src/eap-md5.$(OBJEXT) src/eap-tls.$(OBJEXT) \
 	src/eap-ttls.$(OBJEXT) src/eap-mschapv2.$(OBJEXT) \
@@ -287,8 +288,7 @@ am__objects_3 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
 	src/eap-pwd.$(OBJEXT) src/util.$(OBJEXT) src/crypto.$(OBJEXT) \
 	src/wscutil.$(OBJEXT) src/simutil.$(OBJEXT) \
 	src/simauth.$(OBJEXT) src/watchlist.$(OBJEXT) \
-	src/eap-tls-common.$(OBJEXT) src/mschaputil.$(OBJEXT) \
-	src/erpcache.$(OBJEXT)
+	src/eap-tls-common.$(OBJEXT) src/mschaputil.$(OBJEXT)
 @DAEMON_TRUE@@SIM_HARDCODED_TRUE@am__objects_4 = plugins/sim_hardcoded.$(OBJEXT)
 @DAEMON_TRUE@@OFONO_TRUE@am__objects_5 = plugins/ofono.$(OBJEXT)
 am__objects_6 = $(am__objects_4) $(am__objects_5)
@@ -303,11 +303,13 @@ am__objects_6 = $(am__objects_4) $(am__objects_5)
 @DAEMON_TRUE@	src/storage.$(OBJEXT) src/network.$(OBJEXT) \
 @DAEMON_TRUE@	src/wsc.$(OBJEXT) src/backtrace.$(OBJEXT) \
 @DAEMON_TRUE@	src/knownnetworks.$(OBJEXT) src/rfkill.$(OBJEXT) \
-@DAEMON_TRUE@	src/ftutil.$(OBJEXT) src/ap.$(OBJEXT) \
+@DAEMON_TRUE@	src/ft.$(OBJEXT) src/ap.$(OBJEXT) \
 @DAEMON_TRUE@	src/adhoc.$(OBJEXT) src/sae.$(OBJEXT) \
 @DAEMON_TRUE@	src/nl80211util.$(OBJEXT) src/owe.$(OBJEXT) \
 @DAEMON_TRUE@	src/blacklist.$(OBJEXT) src/manager.$(OBJEXT) \
-@DAEMON_TRUE@	$(am__objects_3) $(am__objects_6)
+@DAEMON_TRUE@	src/erp.$(OBJEXT) src/fils.$(OBJEXT) \
+@DAEMON_TRUE@	src/rtnlutil.$(OBJEXT) $(am__objects_3) \
+@DAEMON_TRUE@	$(am__objects_6)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am__tools_hwsim_SOURCES_DIST = tools/hwsim.c src/mpdu.h src/util.h \
 	src/util.c src/storage.h src/storage.c src/common.h \
@@ -350,7 +352,7 @@ am_unit_test_crypto_OBJECTS = unit/test-crypto.$(OBJEXT) \
 unit_test_crypto_OBJECTS = $(am_unit_test_crypto_OBJECTS)
 unit_test_crypto_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_unit_test_eap_mschapv2_OBJECTS = src/eap-mschapv2.$(OBJEXT) \
-	src/eap.$(OBJEXT) src/mschaputil.$(OBJEXT) src/util.$(OBJEXT) \
+	src/eap.$(OBJEXT) src/mschaputil.$(OBJEXT) \
 	unit/test-eap-mschapv2.$(OBJEXT)
 unit_test_eap_mschapv2_OBJECTS = $(am_unit_test_eap_mschapv2_OBJECTS)
 unit_test_eap_mschapv2_DEPENDENCIES = $(am__DEPENDENCIES_1)
@@ -359,7 +361,7 @@ am_unit_test_eap_sim_OBJECTS = unit/test-eap-sim.$(OBJEXT) \
 	src/watchlist.$(OBJEXT) src/eapol.$(OBJEXT) \
 	src/eapolutil.$(OBJEXT) src/handshake.$(OBJEXT) \
 	src/eap.$(OBJEXT) src/util.$(OBJEXT) src/simauth.$(OBJEXT) \
-	src/eap-sim.$(OBJEXT)
+	src/erp.$(OBJEXT) src/eap-sim.$(OBJEXT)
 unit_test_eap_sim_OBJECTS = $(am_unit_test_eap_sim_OBJECTS)
 unit_test_eap_sim_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_unit_test_eapol_OBJECTS = unit/test-eapol.$(OBJEXT) \
@@ -368,7 +370,8 @@ am_unit_test_eapol_OBJECTS = unit/test-eapol.$(OBJEXT) \
 	src/handshake.$(OBJEXT) src/eap.$(OBJEXT) \
 	src/eap-tls.$(OBJEXT) src/eap-ttls.$(OBJEXT) \
 	src/eap-md5.$(OBJEXT) src/util.$(OBJEXT) \
-	src/eap-tls-common.$(OBJEXT) src/mschaputil.$(OBJEXT)
+	src/eap-tls-common.$(OBJEXT) src/erp.$(OBJEXT) \
+	src/mschaputil.$(OBJEXT)
 unit_test_eapol_OBJECTS = $(am_unit_test_eapol_OBJECTS)
 am_unit_test_hmac_md5_OBJECTS = unit/test-hmac-md5.$(OBJEXT) \
 	src/crypto.$(OBJEXT)
@@ -399,7 +402,7 @@ unit_test_prf_sha1_OBJECTS = $(am_unit_test_prf_sha1_OBJECTS)
 unit_test_prf_sha1_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_unit_test_sae_OBJECTS = unit/test-sae.$(OBJEXT) src/sae.$(OBJEXT) \
 	src/crypto.$(OBJEXT) src/ie.$(OBJEXT) src/handshake.$(OBJEXT) \
-	src/util.$(OBJEXT)
+	src/util.$(OBJEXT) src/mpdu.$(OBJEXT)
 unit_test_sae_OBJECTS = $(am_unit_test_sae_OBJECTS)
 unit_test_sae_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_unit_test_ssid_security_OBJECTS =  \
@@ -416,7 +419,8 @@ am_unit_test_wsc_OBJECTS = unit/test-wsc.$(OBJEXT) \
 	src/wscutil.$(OBJEXT) src/crypto.$(OBJEXT) src/ie.$(OBJEXT) \
 	src/watchlist.$(OBJEXT) src/eapol.$(OBJEXT) \
 	src/eapolutil.$(OBJEXT) src/handshake.$(OBJEXT) \
-	src/eap.$(OBJEXT) src/util.$(OBJEXT) src/eap-wsc.$(OBJEXT)
+	src/eap.$(OBJEXT) src/util.$(OBJEXT) src/erp.$(OBJEXT) \
+	src/eap-wsc.$(OBJEXT)
 unit_test_wsc_OBJECTS = $(am_unit_test_wsc_OBJECTS)
 unit_test_wsc_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am__wired_ead_SOURCES_DIST = wired/main.c wired/ethdev.h \
@@ -429,7 +433,7 @@ am__wired_ead_SOURCES_DIST = wired/main.c wired/ethdev.h \
 	src/wscutil.h src/wscutil.c src/simutil.h src/simutil.c \
 	src/simauth.h src/simauth.c src/watchlist.h src/watchlist.c \
 	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
-	src/mschaputil.c src/erpcache.h src/erpcache.c
+	src/mschaputil.c
 @WIRED_TRUE@am_wired_ead_OBJECTS = wired/main.$(OBJEXT) \
 @WIRED_TRUE@	wired/ethdev.$(OBJEXT) wired/network.$(OBJEXT) \
 @WIRED_TRUE@	wired/dbus.$(OBJEXT) $(am__objects_3)
@@ -1024,8 +1028,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 				src/simauth.h src/simauth.c \
 				src/watchlist.h src/watchlist.c \
 				src/eap-tls-common.h src/eap-tls-common.c \
-				src/mschaputil.h src/mschaputil.c \
-				src/erpcache.h src/erpcache.c
+				src/mschaputil.h src/mschaputil.c
 
 @DAEMON_TRUE@src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h src/missing.h \
 @DAEMON_TRUE@					src/plugin.h src/plugin.c \
@@ -1049,7 +1052,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/knownnetworks.h \
 @DAEMON_TRUE@					src/knownnetworks.c \
 @DAEMON_TRUE@					src/rfkill.h src/rfkill.c \
-@DAEMON_TRUE@					src/ftutil.h src/ftutil.c \
+@DAEMON_TRUE@					src/ft.h src/ft.c \
 @DAEMON_TRUE@					src/ap.h src/ap.c \
 @DAEMON_TRUE@					src/adhoc.h src/adhoc.c \
 @DAEMON_TRUE@					src/sae.h src/sae.c \
@@ -1057,6 +1060,10 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/owe.h src/owe.c \
 @DAEMON_TRUE@					src/blacklist.h src/blacklist.c \
 @DAEMON_TRUE@					src/manager.c \
+@DAEMON_TRUE@					src/erp.h src/erp.c \
+@DAEMON_TRUE@					src/fils.h src/fils.c \
+@DAEMON_TRUE@					src/rtnlutil.h src/rtnlutil.c \
+@DAEMON_TRUE@					src/auth-proto.h \
 @DAEMON_TRUE@					$(eap_sources) \
 @DAEMON_TRUE@					$(builtin_sources)
 
@@ -1114,10 +1121,6 @@ unit_tests = unit/test-cmac-aes unit/test-hmac-md5 unit/test-hmac-sha1 \
 	unit/test-util unit/test-ssid-security unit/test-arc4 \
 	unit/test-wsc unit/test-eap-mschapv2 unit/test-eap-sim \
 	unit/test-sae $(am__append_20)
-ell_pem_files = cert-ca-key.pem cert-client-key.pem cert-client-key-pkcs8.pem \
-		cert-server-key.pem cert-server-key-pkcs8.pem \
-		cert-ca.pem cert-client.pem cert-server.pem
-
 unit_test_eap_sim_SOURCES = unit/test-eap-sim.c \
 		src/crypto.h src/crypto.c src/simutil.h src/simutil.c \
 		src/ie.h src/ie.c \
@@ -1128,6 +1131,7 @@ unit_test_eap_sim_SOURCES = unit/test-eap-sim.c \
 		src/eap.h src/eap.c src/eap-private.h \
 		src/util.h src/util.c \
 		src/simauth.h src/simauth.c \
+		src/erp.h src/erp.c \
 		src/eap-sim.c
 
 unit_test_eap_sim_LDADD = $(ell_ldadd)
@@ -1181,10 +1185,15 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 				src/eap-tls.c src/eap-ttls.c \
 				src/eap-md5.c src/util.c \
 				src/eap-tls-common.h src/eap-tls-common.c \
+				src/erp.h src/erp.c \
 				src/mschaputil.h src/mschaputil.c
 
 unit_test_eapol_LDADD = $(ell_ldadd)
-unit_test_eapol_DEPENDENCIES = ell/unit/test_data
+unit_test_eapol_DEPENDENCIES = unit/cert-server.pem \
+				unit/cert-server-key-pkcs8.pem \
+				unit/cert-client.pem \
+				unit/cert-client-key-pkcs8.pem
+
 unit_test_util_SOURCES = src/util.h src/util.c \
 				unit/test-util.c
 
@@ -1202,13 +1211,13 @@ unit_test_wsc_SOURCES = unit/test-wsc.c src/wscutil.h src/wscutil.c \
 				src/handshake.h src/handshake.c \
 				src/eap.h src/eap.c src/eap-private.h \
 				src/util.h src/util.c \
+				src/erp.h src/erp.c \
 				src/eap-wsc.h src/eap-wsc.c
 
 unit_test_wsc_LDADD = $(ell_ldadd)
 unit_test_eap_mschapv2_SOURCES = src/eap-mschapv2.h src/eap-mschapv2.c \
 				src/eap.c src/eap.h src/eap-private.h \
 				src/mschaputil.h src/mschaputil.c \
-				src/util.h src/util.c \
 				unit/test-eap-mschapv2.c
 
 unit_test_eap_mschapv2_LDADD = $(ell_ldadd)
@@ -1228,17 +1237,20 @@ unit_test_sae_SOURCES = unit/test-sae.c \
 				src/crypto.h src/crypto.c \
 				src/ie.h src/ie.c \
 				src/handshake.h src/handshake.c \
-				src/util.h src/util.c
+				src/util.h src/util.c \
+				src/mpdu.h src/mpdu.c
 
 unit_test_sae_LDADD = $(ell_ldadd)
 manual_pages = doc/iwmon.1
 @BUILD_DOCS_TRUE@dist_man_MANS = $(manual_pages)
 EXTRA_DIST = src/genbuiltin src/iwd.service.in src/net.connman.iwd.service \
 			wired/ead.service.in wired/net.connman.ead.service \
-			src/pkcs8.conf doc/main.conf $(manual_pages:.1=.txt)
+			src/pkcs8.conf unit/gencerts.cnf \
+			doc/main.conf $(manual_pages:.1=.txt)
 
 AM_CFLAGS = $(ell_cflags) -fvisibility=hidden \
-			-DELL_UNIT_TEST_DATA=\"$(abs_builddir)/ell/unit/\"
+				-DUNITDIR=\""$(top_srcdir)/unit/"\" \
+				-DCERTDIR=\""$(top_builddir)/unit/"\"
 
 CLEANFILES = src/iwd.service wired/ead.service
 DISTCHECK_CONFIGURE_FLAGS = --disable-dbus-policy --disable-systemd-service \
@@ -1250,6 +1262,8 @@ DISTCHECK_CONFIGURE_FLAGS = --disable-dbus-policy --disable-systemd-service \
 
 DISTCLEANFILES = $(BUILT_SOURCES) $(unit_tests) $(manual_pages)
 MAINTAINERCLEANFILES = Makefile.in configure config.h.in aclocal.m4
+true_redirect_openssl = 2>&1
+false_redirect_openssl = 2>/dev/null
 BUILT_SOURCES = $(ell_built_sources) src/builtin.h
 SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && \
 		$(SED) -e 's,@libexecdir\@,$(libexecdir),g' \
@@ -1596,8 +1610,7 @@ src/knownnetworks.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/rfkill.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
-src/ftutil.$(OBJEXT): src/$(am__dirstamp) \
-	src/$(DEPDIR)/$(am__dirstamp)
+src/ft.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/ap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/adhoc.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/sae.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
@@ -1607,6 +1620,10 @@ src/owe.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/blacklist.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/manager.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/erp.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/fils.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/rtnlutil.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/eap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/eap-wsc.$(OBJEXT): src/$(am__dirstamp) \
@@ -1636,8 +1653,6 @@ src/simauth.$(OBJEXT): src/$(am__dirstamp) \
 src/eap-tls-common.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/mschaputil.$(OBJEXT): src/$(am__dirstamp) \
-	src/$(DEPDIR)/$(am__dirstamp)
-src/erpcache.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 plugins/$(am__dirstamp):
 	@$(MKDIR_P) plugins
@@ -1915,8 +1930,9 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eapol.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eapolutil.Po@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/erpcache.Po@am__quote@
-@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ftutil.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/erp.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/fils.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ft.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/handshake.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ie.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/knownnetworks.Po@am__quote@
@@ -1930,6 +1946,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/owe.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/plugin.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/rfkill.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/rtnlutil.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/sae.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/scan.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/simauth.Po@am__quote@
@@ -2811,6 +2828,55 @@ uninstall-man: uninstall-man1
 	uninstall-systemd_unitDATA
 
 
+unit/cert-ca-key.pem:
+	$(AM_V_GEN)openssl genrsa -out $@ 2048 $($(AM_V_P)_redirect_openssl)
+
+unit/cert-ca.pem: unit/cert-ca-key.pem unit/gencerts.cnf
+	$(AM_V_GEN)openssl req -x509 -new -nodes -extensions ca_ext \
+			-config $(srcdir)/unit/gencerts.cnf \
+			-subj '/O=International Union of Example Organizations/CN=Certificate issuer guy/emailAddress=ca@mail.example' \
+			-key $< -sha256 -days 10000 -out $@
+
+unit/cert-server-key.pem:
+	$(AM_V_GEN)openssl genrsa -out $@ $($(AM_V_P)_redirect_openssl)
+
+unit/cert-server-key-pkcs8.pem: unit/cert-server-key.pem
+	$(AM_V_GEN)openssl pkcs8 -topk8 -nocrypt -in $< -out $@
+
+unit/cert-server.csr: unit/cert-server-key.pem unit/gencerts.cnf
+	$(AM_V_GEN)openssl req -new -extensions cert_ext \
+			-config $(srcdir)/unit/gencerts.cnf \
+			-subj '/O=Foo Example Organization/CN=Foo Example Organization/emailAddress=foo@mail.example' \
+			-key $< -out $@
+
+unit/cert-server.pem: unit/cert-server.csr unit/cert-ca.pem unit/gencerts.cnf
+	$(AM_V_GEN)openssl x509 -req -extensions cert_ext \
+			-extfile $(srcdir)/unit/gencerts.cnf \
+			-in $< -CA $(builddir)/unit/cert-ca.pem \
+			-CAkey $(builddir)/unit/cert-ca-key.pem \
+			-CAserial $(builddir)/unit/cert-ca.srl \
+			-CAcreateserial -sha256 -days 10000 -out $@ $($(AM_V_P)_redirect_openssl)
+
+unit/cert-client-key.pem:
+	$(AM_V_GEN)openssl genrsa -out $@ $($(AM_V_P)_redirect_openssl)
+
+unit/cert-client-key-pkcs8.pem: unit/cert-client-key.pem
+	$(AM_V_GEN)openssl pkcs8 -topk8 -nocrypt -in $< -out $@
+
+unit/cert-client.csr: unit/cert-client-key.pem unit/gencerts.cnf
+	$(AM_V_GEN)openssl req -new -extensions cert_ext \
+			-config $(srcdir)/unit/gencerts.cnf \
+			-subj '/O=Bar Example Organization/CN=Bar Example Organization/emailAddress=bar@mail.example' \
+			-key $< -out $@
+
+unit/cert-client.pem: unit/cert-client.csr unit/cert-ca.pem unit/gencerts.cnf
+	$(AM_V_GEN)openssl x509 -req -extensions cert_ext \
+			-extfile $(srcdir)/unit/gencerts.cnf \
+			-in $< -CA $(builddir)/unit/cert-ca.pem \
+			-CAkey $(builddir)/unit/cert-ca-key.pem \
+			-CAserial $(builddir)/unit/cert-ca.srl \
+			-CAcreateserial -sha256 -days 10000 -out $@ $($(AM_V_P)_redirect_openssl)
+
 ell/internal: Makefile
 	$(AM_V_at)$(MKDIR_P) ell
 	$(AM_V_GEN)for f in $(ell_headers) $(ell_sources) ; do \
@@ -2825,14 +2891,6 @@ ell/ell.h: Makefile
 		echo "#include <$$f>" >> $@ ; \
 	done
 
-ell/unit/test_data: Makefile
-	$(AM_V_at)$(MKDIR_P) $(abs_builddir)/ell/unit
-	$(AM_V_GEN)for f in $(ell_pem_files) ; do \
-		if [ ! -f $$f ] ; then \
-			$(LN_S) -t $(abs_builddir)/ell/unit -f $(abs_srcdir)/../ell/unit/$$f ; \
-		fi \
-	done > $@
-
 %.service: %.service.in Makefile
 	$(SED_PROCESS)
 
@@ -2840,7 +2898,7 @@ ell/unit/test_data: Makefile
 	$(AM_V_GEN)$(A2X) --doctype manpage --format manpage $(srcdir)/$<
 
 clean-local:
-	-rm -rf $(abs_builddir)/ell/unit/*.pem $(abs_builddir)/ell/unit/test_data
+	-rm -f unit/cert-*.pem unit/cert-*.csr unit/cert-*.srl
 
 maintainer-clean-local:
 	-rm -rf build-aux ell

@@ -29,16 +29,24 @@
 #include <linux/types.h>
 #include <net/if_arp.h>
 #include <errno.h>
-#include <time.h>
 
 #include "private.h"
 #include "random.h"
+#include "time.h"
 #include "net.h"
 #include "timeout.h"
 #include "dhcp.h"
 #include "dhcp-private.h"
 
-#define DHCP_MAGIC 0x63825363
+#define CLIENT_DEBUG(fmt, args...)					\
+	l_util_debug(client->debug_handler, client->debug_data,		\
+			"%s:%i " fmt, __func__, __LINE__, ## args)
+#define CLIENT_ENTER_STATE(s)						\
+	l_util_debug(client->debug_handler, client->debug_data,		\
+			"%s:%i Entering state: " #s,			\
+			__func__, __LINE__);				\
+	client->state = (s)
+
 #define BITS_PER_LONG (sizeof(unsigned long) * 8)
 
 #define DHCP_OPTION_PAD 0 /* RFC 2132, Section 3.1 */
@@ -68,17 +76,6 @@ enum dhcp_message_type {
 #define DHCP_OPTION_PARAMETER_REQUEST_LIST 55 /* Section 9.8 */
 #define DHCP_OPTION_MAXIMUM_MESSAGE_SIZE 57 /* Section 9.10 */
 #define DHCP_OPTION_CLIENT_IDENTIFIER 61 /* Section 9.14 */
-
-/* RFC 2131, Table 1 */
-enum dhcp_op_code {
-	DHCP_OP_CODE_BOOTREQUEST = 1,
-	DHCP_OP_CODE_BOOTREPLY = 2,
-};
-
-enum {
-	DHCP_PORT_SERVER = 67,
-	DHCP_PORT_CLIENT = 68,
-};
 
 enum dhcp_state {
 	DHCP_STATE_INIT,
@@ -165,16 +162,15 @@ bool _dhcp_message_iter_init(struct dhcp_message_iter *iter,
 	if (!message)
 		return false;
 
-	if (len < sizeof(struct dhcp_message) + 4)
+	if (len < sizeof(struct dhcp_message))
 		return false;
 
-	if (l_get_be32(message->options) != DHCP_MAGIC)
+	if (L_BE32_TO_CPU(message->magic) != DHCP_MAGIC)
 		return false;
 
 	memset(iter, 0, sizeof(*iter));
 	iter->message = message;
 	iter->message_len = len;
-	iter->pos = 4;
 	iter->max = len - sizeof(struct dhcp_message);
 	iter->options = message->options;
 	iter->can_overload = true;
@@ -364,14 +360,8 @@ static int dhcp_message_init(struct dhcp_message *message,
 
 	message->op = op;
 	message->xid = L_CPU_TO_BE32(xid);
-
-	if (*optlen < 4)
-		return -ENOBUFS;
-
-	*optlen -= 4;
+	message->magic = L_CPU_TO_BE32(DHCP_MAGIC);
 	*opt = (uint8_t *)(message + 1);
-	l_put_be32(DHCP_MAGIC, *opt);
-	*opt += 4;
 
 	err = _dhcp_option_append(opt, optlen,
 					DHCP_OPTION_MESSAGE_TYPE, 1, &type);
@@ -428,12 +418,17 @@ struct l_dhcp_client {
 	char *hostname;
 	uint32_t xid;
 	struct dhcp_transport *transport;
-	time_t start_t;
+	uint64_t start_t;
 	struct l_timeout *timeout_resend;
+	struct l_timeout *timeout_lease;
 	struct l_dhcp_lease *lease;
+	uint8_t attempt;
 	l_dhcp_client_event_cb_t event_handler;
 	void *event_data;
 	l_dhcp_destroy_cb_t event_destroy;
+	l_dhcp_debug_cb_t debug_handler;
+	l_dhcp_destroy_cb_t debug_destroy;
+	void *debug_data;
 	bool have_addr : 1;
 	bool override_xid : 1;
 };
@@ -445,10 +440,10 @@ static inline void dhcp_enable_option(struct l_dhcp_client *client,
 						1UL << (option % BITS_PER_LONG);
 }
 
-static uint16_t dhcp_attempt_secs(time_t start)
+static uint16_t dhcp_attempt_secs(uint64_t start)
 {
-	time_t now = time(NULL);
-	time_t elapsed = now - start;
+	uint64_t now = l_time_now();
+	uint64_t elapsed = l_time_to_secs(now - start);
 
 	if (elapsed == 0)
 		return 1;
@@ -457,6 +452,60 @@ static uint16_t dhcp_attempt_secs(time_t start)
 		return UINT16_MAX;
 
 	return elapsed;
+}
+
+/*
+ * Takes a time in seconds and produces a fuzzed value that can be directly
+ * used by l_timeout_modify_ms
+ */
+static uint64_t dhcp_fuzz_secs(uint32_t secs)
+{
+	uint64_t ms = secs * 1000;
+	uint32_t r = l_getrandom_uint32();
+
+	/*
+	 * RFC2132, Section 4.1:
+	 * DHCP clients are responsible for all message retransmission.  The
+	 * client MUST adopt a retransmission strategy that incorporates a
+	 * randomized exponential backoff algorithm to determine the delay
+	 * between retransmissions.
+	 *
+	 * and later in the same paragraph:
+	 * For example, in a 10Mb/sec Ethernet internetwork, the delay before
+	 * the first retransmission SHOULD be 4 seconds randomized by the
+	 * value of a uniform random number chosen from the range -1 to +1.
+	 * Clients with clocks that provide resolution granularity of less than
+	 * one second may choose a non-integer randomization value.
+	 */
+	if (r & 0x80000000)
+		ms += r & 0x3ff;
+	else
+		ms -= r & 0x3ff;
+
+	return ms;
+}
+
+static uint32_t dhcp_rebind_renew_retry_time(uint64_t start_t, uint32_t expiry)
+{
+	uint64_t now = l_time_now();
+	uint32_t relative_now;
+	uint32_t retry_time;
+
+	/*
+	 * RFC 2131, Section 4.4.5:
+	 * "   In both RENEWING and REBINDING states, if the client receives no
+	 * response to its DHCPREQUEST message, the client SHOULD wait one-half
+	 * of the remaining time until T2 (in RENEWING state) and one-half of
+	 * the remaining lease time (in REBINDING state), down to a minimum of
+	 * 60 seconds, before retransmitting the DHCPREQUEST message.
+	 */
+	relative_now = l_time_to_secs(now - start_t);
+	retry_time = (expiry - relative_now) / 2;
+
+	if (retry_time < 60)
+		retry_time = 60;
+
+	return retry_time;
 }
 
 static int client_message_init(struct l_dhcp_client *client,
@@ -523,7 +572,8 @@ static int dhcp_client_send_discover(struct l_dhcp_client *client)
 	size_t len = sizeof(struct dhcp_message) + optlen;
 	L_AUTO_FREE_VAR(struct dhcp_message *, discover);
 	int err;
-	struct sockaddr_in si;
+
+	CLIENT_DEBUG("");
 
 	discover = (struct dhcp_message *) l_new(uint8_t, len);
 
@@ -548,12 +598,10 @@ static int dhcp_client_send_discover(struct l_dhcp_client *client)
 
 	len = dhcp_message_optimize(discover, opt);
 
-	memset(&si, 0, sizeof(si));
-	si.sin_family = AF_INET;
-	si.sin_port = L_CPU_TO_BE16(DHCP_PORT_SERVER);
-	si.sin_addr.s_addr = 0xffffffff;
-
-	return client->transport->send(client->transport, &si, discover, len);
+	return client->transport->broadcast(client->transport,
+					INADDR_ANY, DHCP_PORT_CLIENT,
+					INADDR_BROADCAST, DHCP_PORT_SERVER,
+					discover, len);
 }
 
 static int dhcp_client_send_request(struct l_dhcp_client *client)
@@ -563,7 +611,8 @@ static int dhcp_client_send_request(struct l_dhcp_client *client)
 	size_t len = sizeof(struct dhcp_message) + optlen;
 	L_AUTO_FREE_VAR(struct dhcp_message *, request);
 	int err;
-	struct sockaddr_in si;
+
+	CLIENT_DEBUG("");
 
 	request = (struct dhcp_message *) l_new(uint8_t, len);
 
@@ -602,13 +651,16 @@ static int dhcp_client_send_request(struct l_dhcp_client *client)
 		if (err < 0)
 			return err;
 		break;
+	case DHCP_STATE_RENEWING:
+	case DHCP_STATE_REBINDING:
+		request->ciaddr = client->lease->address;
+		break;
+
 	case DHCP_STATE_INIT:
 	case DHCP_STATE_SELECTING:
 	case DHCP_STATE_INIT_REBOOT:
 	case DHCP_STATE_REBOOTING:
 	case DHCP_STATE_BOUND:
-	case DHCP_STATE_RENEWING:
-	case DHCP_STATE_REBINDING:
 		return -EINVAL;
 	}
 
@@ -627,40 +679,130 @@ static int dhcp_client_send_request(struct l_dhcp_client *client)
 
 	len = dhcp_message_optimize(request, opt);
 
-	memset(&si, 0, sizeof(si));
-	si.sin_family = AF_INET;
-	si.sin_port = L_CPU_TO_BE16(DHCP_PORT_SERVER);
-	si.sin_addr.s_addr = 0xffffffff;
+	/*
+	 * RFC2131, Section 4.1:
+	 * "DHCP clients MUST use the IP address provided in the
+	 * 'server identifier' option for any unicast requests to the DHCP
+	 * server.
+	 */
+	if (client->state == DHCP_STATE_RENEWING) {
+		struct sockaddr_in si;
+		memset(&si, 0, sizeof(si));
+		si.sin_family = AF_INET;
+		si.sin_port = L_CPU_TO_BE16(DHCP_PORT_SERVER);
+		si.sin_addr.s_addr = client->lease->server_address;
+		return client->transport->send(client->transport,
+							&si, request, len);
+	}
 
-	return client->transport->send(client->transport, &si, request, len);
+	return client->transport->broadcast(client->transport,
+					INADDR_ANY, DHCP_PORT_CLIENT,
+					INADDR_BROADCAST, DHCP_PORT_SERVER,
+					request, len);
 }
 
 static void dhcp_client_timeout_resend(struct l_timeout *timeout,
 								void *user_data)
 {
 	struct l_dhcp_client *client = user_data;
+	unsigned int next_timeout = 0;
+
+	CLIENT_DEBUG("");
 
 	switch (client->state) {
-	case DHCP_STATE_INIT:
-		break;
 	case DHCP_STATE_SELECTING:
-		l_timeout_modify(timeout, 5);
-		dhcp_client_send_discover(client);
+		if (dhcp_client_send_discover(client) < 0)
+			goto error;
 		break;
+	case DHCP_STATE_RENEWING:
 	case DHCP_STATE_REQUESTING:
+	case DHCP_STATE_REBINDING:
 		if (dhcp_client_send_request(client) < 0)
 			goto error;
-
-		l_timeout_modify(timeout, 5);
 		break;
+	case DHCP_STATE_INIT:
 	case DHCP_STATE_INIT_REBOOT:
 	case DHCP_STATE_REBOOTING:
 	case DHCP_STATE_BOUND:
-	case DHCP_STATE_RENEWING:
-	case DHCP_STATE_REBINDING:
 		break;
 	}
 
+	switch (client->state) {
+	case DHCP_STATE_RENEWING:
+		next_timeout = dhcp_rebind_renew_retry_time(client->start_t,
+							client->lease->t2);
+		break;
+	case DHCP_STATE_REBINDING:
+		next_timeout = dhcp_rebind_renew_retry_time(client->start_t,
+						client->lease->lifetime);
+		break;
+	case DHCP_STATE_REQUESTING:
+	case DHCP_STATE_SELECTING:
+		/*
+		 * RFC 2131 Section 4.1:
+		 * "The retransmission delay SHOULD be doubled with subsequent
+		 * retransmissions up to a maximum of 64 seconds.
+		 */
+		client->attempt += 1;
+		next_timeout = minsize(2 << client->attempt, 64);
+		break;
+	case DHCP_STATE_INIT:
+	case DHCP_STATE_INIT_REBOOT:
+	case DHCP_STATE_REBOOTING:
+	case DHCP_STATE_BOUND:
+		break;
+	};
+
+	if (next_timeout)
+		l_timeout_modify_ms(timeout, dhcp_fuzz_secs(next_timeout));
+
+	return;
+
+error:
+	l_dhcp_client_stop(client);
+}
+
+static void dhcp_client_t2_expired(struct l_timeout *timeout, void *user_data)
+{
+	struct l_dhcp_client *client = user_data;
+
+	CLIENT_DEBUG("");
+
+	/*
+	 * If we got here, then resend_timeout is active, with a timeout
+	 * set originally for ~60 seconds.  So we simply set the new state
+	 * and wait for the timer to fire
+	 */
+	CLIENT_ENTER_STATE(DHCP_STATE_REBINDING);
+
+	/* TODO: Start timer for the expiration time */
+}
+
+static void dhcp_client_t1_expired(struct l_timeout *timeout, void *user_data)
+{
+	struct l_dhcp_client *client = user_data;
+	uint32_t next_timeout;
+
+	CLIENT_DEBUG("");
+
+	CLIENT_ENTER_STATE(DHCP_STATE_RENEWING);
+	client->attempt = 1;
+
+	if (dhcp_client_send_request(client) < 0)
+		goto error;
+
+	next_timeout = client->lease->t2 - client->lease->t1;
+	l_timeout_modify_ms(client->timeout_lease,
+						dhcp_fuzz_secs(next_timeout));
+	l_timeout_set_callback(client->timeout_lease, dhcp_client_t2_expired,
+				client, NULL);
+
+	next_timeout = dhcp_rebind_renew_retry_time(client->start_t,
+							client->lease->t2);
+	client->timeout_resend =
+		l_timeout_create_ms(dhcp_fuzz_secs(next_timeout),
+					dhcp_client_timeout_resend,
+					client, NULL);
 	return;
 
 error:
@@ -674,6 +816,8 @@ static int dhcp_client_receive_ack(struct l_dhcp_client *client,
 	struct dhcp_message_iter iter;
 	struct l_dhcp_lease *lease;
 	int r;
+
+	CLIENT_DEBUG("");
 
 	if (ack->yiaddr == 0)
 		return -ENOMSG;
@@ -714,6 +858,8 @@ static int dhcp_client_receive_offer(struct l_dhcp_client *client,
 {
 	struct dhcp_message_iter iter;
 
+	CLIENT_DEBUG("");
+
 	if (offer->yiaddr == 0)
 		return -ENOMSG;
 
@@ -739,7 +885,9 @@ static void dhcp_client_rx_message(const void *data, size_t len, void *userdata)
 	const void *v;
 	int r;
 
-	if (len < sizeof(struct dhcp_message) + 4)
+	CLIENT_DEBUG("");
+
+	if (len < sizeof(struct dhcp_message))
 		return;
 
 	if (message->op != DHCP_OP_CODE_BOOTREPLY)
@@ -773,14 +921,23 @@ static void dhcp_client_rx_message(const void *data, size_t len, void *userdata)
 		if (dhcp_client_receive_offer(client, message, len) < 0)
 			return;
 
-		client->state = DHCP_STATE_REQUESTING;
+		CLIENT_ENTER_STATE(DHCP_STATE_REQUESTING);
+		client->attempt = 1;
 
 		if (dhcp_client_send_request(client) < 0)
 			goto error;
 
-		l_timeout_modify(client->timeout_resend, 5);
+		l_timeout_modify_ms(client->timeout_resend, dhcp_fuzz_secs(4));
 		break;
 	case DHCP_STATE_REQUESTING:
+	case DHCP_STATE_RENEWING:
+	case DHCP_STATE_REBINDING:
+		if (msg_type == DHCP_MESSAGE_TYPE_NAK) {
+			dhcp_client_event_notify(client,
+					L_DHCP_CLIENT_EVENT_NO_LEASE);
+			goto error;
+		}
+
 		if (msg_type != DHCP_MESSAGE_TYPE_ACK)
 			return;
 
@@ -788,17 +945,35 @@ static void dhcp_client_rx_message(const void *data, size_t len, void *userdata)
 		if (r < 0)
 			return;
 
-		client->state = DHCP_STATE_BOUND;
+		CLIENT_ENTER_STATE(DHCP_STATE_BOUND);
 		l_timeout_remove(client->timeout_resend);
 		client->timeout_resend = NULL;
 
+		if (client->transport->bind)
+			client->transport->bind(client->transport,
+						client->lease->address);
+
 		dhcp_client_event_notify(client, r);
+
+		/*
+		 * Start T1, once it expires we will start the T2 timer.  If
+		 * we renew the lease, we will end up back here.
+		 *
+		 * RFC2131, Section 4.4.5 states:
+		 * "Times T1 and T2 SHOULD be chosen with some random "fuzz"
+		 * around a fixed value, to avoid synchronization of client
+		 * reacquisition."
+		 */
+		l_timeout_remove(client->timeout_lease);
+		client->timeout_lease =
+			l_timeout_create_ms(dhcp_fuzz_secs(client->lease->t1),
+						dhcp_client_t1_expired,
+						&client, NULL);
+
 		break;
 	case DHCP_STATE_INIT_REBOOT:
 	case DHCP_STATE_REBOOTING:
 	case DHCP_STATE_BOUND:
-	case DHCP_STATE_RENEWING:
-	case DHCP_STATE_REBINDING:
 		break;
 	}
 
@@ -990,33 +1165,38 @@ LIB_EXPORT bool l_dhcp_client_start(struct l_dhcp_client *client)
 
 	if (!client->transport) {
 		client->transport =
-			_dhcp_default_transport_new();
+			_dhcp_default_transport_new(client->ifindex,
+							client->ifname,
+							DHCP_PORT_CLIENT);
 
 		if (!client->transport)
 			return false;
 	}
 
+	if (!client->override_xid)
+		l_getrandom(&client->xid, sizeof(client->xid));
+
 	if (client->transport->open)
-		if (client->transport->open(client->transport, client->ifindex,
-					client->ifname, DHCP_PORT_CLIENT) < 0)
+		if (client->transport->open(client->transport,
+							client->xid) < 0)
 			return false;
 
 	_dhcp_transport_set_rx_callback(client->transport,
 						dhcp_client_rx_message,
 						client);
 
-	if (!client->override_xid)
-		l_getrandom(&client->xid, sizeof(client->xid));
-
-	client->start_t = time(NULL);
+	client->start_t = l_time_now();
 
 	err = dhcp_client_send_discover(client);
 	if (err < 0)
 		return false;
 
-	client->timeout_resend = l_timeout_create(5, dhcp_client_timeout_resend,
-							client, NULL);
-	client->state = DHCP_STATE_SELECTING;
+	client->timeout_resend = l_timeout_create_ms(dhcp_fuzz_secs(4),
+						dhcp_client_timeout_resend,
+						client, NULL);
+	CLIENT_ENTER_STATE(DHCP_STATE_SELECTING);
+	client->attempt = 1;
+
 	return true;
 }
 
@@ -1028,10 +1208,14 @@ LIB_EXPORT bool l_dhcp_client_stop(struct l_dhcp_client *client)
 	l_timeout_remove(client->timeout_resend);
 	client->timeout_resend = NULL;
 
+	l_timeout_remove(client->timeout_lease);
+	client->timeout_lease = NULL;
+
 	if (client->transport && client->transport->close)
 		client->transport->close(client->transport);
 
-	client->state = DHCP_STATE_INIT;
+	client->start_t = 0;
+	CLIENT_ENTER_STATE(DHCP_STATE_INIT);
 
 	_dhcp_lease_free(client->lease);
 	return true;
@@ -1051,6 +1235,24 @@ LIB_EXPORT bool l_dhcp_client_set_event_handler(struct l_dhcp_client *client,
 	client->event_handler = handler;
 	client->event_data = userdata;
 	client->event_destroy = destroy;
+
+	return true;
+}
+
+LIB_EXPORT bool l_dhcp_client_set_debug(struct l_dhcp_client *client,
+						l_dhcp_debug_cb_t function,
+						void *user_data,
+						l_dhcp_destroy_cb_t destroy)
+{
+	if (unlikely(!client))
+		return false;
+
+	if (client->debug_destroy)
+		client->debug_destroy(client->debug_data);
+
+	client->debug_handler = function;
+	client->debug_destroy = destroy;
+	client->debug_data = user_data;
 
 	return true;
 }

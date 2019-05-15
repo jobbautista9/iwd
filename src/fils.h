@@ -1,8 +1,8 @@
 /*
  *
- *  Embedded Linux library
+ *  Wireless daemon for Linux
  *
- *  Copyright (C) 2015  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,24 +20,18 @@
  *
  */
 
-#ifndef __ELL_RANDOM_H
-#define __ELL_RANDOM_H
+struct fils_sm;
+struct handshake_state;
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+typedef void (*fils_tx_authenticate_func_t)(const uint8_t *data,
+						size_t len,
+						void *user_data);
+typedef void (*fils_tx_associate_func_t)(struct iovec *iov, size_t iov_len,
+					const uint8_t *kek, size_t kek_len,
+					const uint8_t *nonces, size_t nonces_len,
+					void *user_data);
 
-#include <stddef.h>
-#include <stdbool.h>
-#include <stdint.h>
-
-bool l_getrandom(void *buf, size_t len);
-bool l_getrandom_is_supported();
-
-uint32_t l_getrandom_uint32(void);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* __ELL_RANDOM_H */
+struct auth_proto *fils_sm_new(struct handshake_state *hs,
+				fils_tx_authenticate_func_t auth,
+				fils_tx_associate_func_t assoc,
+				void *user_data);

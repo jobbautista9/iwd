@@ -50,6 +50,13 @@ struct genl_unicast_notify {
 	void *user_data;
 };
 
+struct genl_discovery {
+	l_genl_discover_func_t cb;
+	l_genl_destroy_func_t destroy;
+	void *user_data;
+	uint32_t cmd_id;
+};
+
 struct l_genl {
 	int ref_count;
 	int fd;
@@ -63,6 +70,7 @@ struct l_genl {
 	struct l_queue *notify_list;
 	unsigned int next_request_id;
 	unsigned int next_notify_id;
+	struct genl_discovery *discovery;
 	struct l_queue *family_list;
 	struct l_genl_family *nlctrl;
 	l_genl_debug_func_t debug_callback;
@@ -113,9 +121,7 @@ struct genl_mcast {
 	unsigned int users;
 };
 
-struct l_genl_family {
-	int ref_count;
-	struct l_genl *genl;
+struct l_genl_family_info {
 	char name[GENL_NAMSIZ];
 	uint16_t id;
 	uint32_t version;
@@ -123,6 +129,12 @@ struct l_genl_family {
 	uint32_t maxattr;
 	struct l_queue *op_list;
 	struct l_queue *mcast_list;
+};
+
+struct l_genl_family {
+	struct l_genl_family_info info;
+	int ref_count;
+	struct l_genl *genl;
 	l_genl_watch_func_t watch_appeared;
 	l_genl_watch_func_t watch_vanished;
 	l_genl_destroy_func_t watch_destroy;
@@ -130,6 +142,310 @@ struct l_genl_family {
 	unsigned int nlctrl_cmd;
 	struct genl_unicast_notify *unicast_notify;
 };
+
+static void family_info_init(struct l_genl_family_info *info,
+							const char *name)
+{
+	l_strlcpy(info->name, name, GENL_NAMSIZ);
+	info->op_list = l_queue_new();
+	info->mcast_list = l_queue_new();
+}
+
+static void family_info_free(struct l_genl_family_info *info)
+{
+	l_queue_destroy(info->op_list, l_free);
+	info->op_list = NULL;
+	l_queue_destroy(info->mcast_list, l_free);
+	info->mcast_list = NULL;
+}
+
+static void mcast_free(void *data, void *user_data)
+{
+	struct l_genl *genl = user_data;
+	struct genl_mcast *mcast = data;
+
+	if (genl && mcast->users > 0) {
+		int group = mcast->id;
+
+		setsockopt(genl->fd, SOL_NETLINK, NETLINK_DROP_MEMBERSHIP,
+							&group, sizeof(group));
+	}
+}
+
+static void family_info_add_op(struct l_genl_family_info *info,
+				uint32_t id, uint32_t flags)
+{
+	struct genl_op *op;
+
+	op = l_new(struct genl_op, 1);
+
+	op->id = id;
+	op->flags = flags;
+
+	l_queue_push_tail(info->op_list, op);
+}
+
+static bool match_mcast_name(const void *a, const void *b)
+{
+	const struct genl_mcast *mcast = a;
+	const char *name = b;
+
+	return !strncmp(mcast->name, name, GENL_NAMSIZ);
+}
+
+static void family_info_add_mcast(struct l_genl_family_info *info,
+					const char *name, uint32_t id)
+{
+	struct genl_mcast *mcast;
+
+	mcast = l_queue_find(info->mcast_list, match_mcast_name, name);
+	if (mcast)
+		return;
+
+	mcast = l_new(struct genl_mcast, 1);
+	l_strlcpy(mcast->name, name, GENL_NAMSIZ);
+	mcast->id = id;
+	mcast->users = 0;
+
+	l_queue_push_tail(info->mcast_list, mcast);
+}
+
+static void family_ops(struct l_genl_family_info *info,
+						struct l_genl_attr *attr)
+{
+	uint16_t type, len;
+	const void *data;
+
+	while (l_genl_attr_next(attr, &type, &len, &data)) {
+		struct l_genl_attr attr_op;
+		uint32_t id = 0, flags = 0;
+
+		l_genl_attr_recurse(attr, &attr_op);
+
+		while (l_genl_attr_next(&attr_op, &type, &len, &data)) {
+			switch (type) {
+			case CTRL_ATTR_OP_ID:
+				id = *((uint32_t *) data);
+				break;
+			case CTRL_ATTR_OP_FLAGS:
+				flags = *((uint32_t *) data);
+				break;
+			}
+		}
+
+		if (id > 0)
+			family_info_add_op(info, id, flags);
+	}
+}
+
+static void family_mcast_groups(struct l_genl_family_info *info,
+						struct l_genl_attr *attr)
+{
+	uint16_t type, len;
+	const void *data;
+
+	while (l_genl_attr_next(attr, &type, &len, &data)) {
+		struct l_genl_attr attr_grp;
+		const char *name = NULL;
+		uint32_t id = 0;
+
+		l_genl_attr_recurse(attr, &attr_grp);
+
+		while (l_genl_attr_next(&attr_grp, &type, &len, &data)) {
+			switch (type) {
+			case CTRL_ATTR_MCAST_GRP_NAME:
+				name = data;
+				break;
+			case CTRL_ATTR_MCAST_GRP_ID:
+				id = *((uint32_t *) data);
+				break;
+			}
+		}
+
+		if (name && id > 0)
+			family_info_add_mcast(info, name, id);
+	}
+}
+
+static int parse_cmd_newfamily(struct l_genl_family_info *info,
+					struct l_genl_msg *msg)
+{
+	struct l_genl_attr attr, nested;
+	uint16_t type, len;
+	const void *data;
+	int error;
+
+	error = l_genl_msg_get_error(msg);
+	if (error < 0)
+		return error;
+
+	if (!l_genl_attr_init(&attr, msg))
+		return -EINVAL;
+
+	while (l_genl_attr_next(&attr, &type, &len, &data)) {
+		switch (type) {
+		case CTRL_ATTR_FAMILY_ID:
+			info->id = *((uint16_t *) data);
+			break;
+		case CTRL_ATTR_FAMILY_NAME:
+			l_strlcpy(info->name, data, GENL_NAMSIZ);
+			break;
+		case CTRL_ATTR_VERSION:
+			info->version = l_get_u32(data);
+			break;
+		case CTRL_ATTR_HDRSIZE:
+			info->hdrsize = l_get_u32(data);
+			break;
+		case CTRL_ATTR_MAXATTR:
+			info->maxattr = l_get_u32(data);
+			break;
+		case CTRL_ATTR_OPS:
+			if (l_genl_attr_recurse(&attr, &nested))
+				family_ops(info, &nested);
+			break;
+		case CTRL_ATTR_MCAST_GROUPS:
+			if (l_genl_attr_recurse(&attr, &nested))
+				family_mcast_groups(info, &nested);
+			break;
+		}
+	}
+
+	return 0;
+}
+
+LIB_EXPORT bool l_genl_family_info_has_group(
+				const struct l_genl_family_info *info,
+				const char *group)
+{
+	struct genl_mcast *mcast;
+
+	if (unlikely(!info))
+		return false;
+
+	mcast = l_queue_find(info->mcast_list, match_mcast_name,
+							(char *) group);
+	if (!mcast)
+		return false;
+
+	return true;
+}
+
+static bool match_op_id(const void *a, const void *b)
+{
+	const struct genl_op *op = a;
+	uint32_t id = L_PTR_TO_UINT(b);
+
+	return op->id == id;
+}
+
+LIB_EXPORT bool l_genl_family_info_can_send(
+					const struct l_genl_family_info *info,
+					uint8_t cmd)
+{
+	struct genl_op *op;
+
+	if (unlikely(!info))
+		return false;
+
+	op = l_queue_find(info->op_list, match_op_id, L_UINT_TO_PTR(cmd));
+	if (!op)
+		return false;
+
+	if (op->flags & GENL_CMD_CAP_DO)
+		return true;
+
+	return false;
+}
+
+LIB_EXPORT bool l_genl_family_info_can_dump(
+					const struct l_genl_family_info *info,
+					uint8_t cmd)
+{
+	struct genl_op *op;
+
+	if (!info)
+		return false;
+
+	op = l_queue_find(info->op_list, match_op_id, L_UINT_TO_PTR(cmd));
+	if (!op)
+		return false;
+
+	if (op->flags & GENL_CMD_CAP_DUMP)
+		return true;
+
+	return false;
+}
+
+LIB_EXPORT char **l_genl_family_info_get_groups(
+					const struct l_genl_family_info *info)
+{
+	char **groups;
+	size_t n_groups;
+	const struct l_queue_entry *entry;
+	int i;
+
+	if (unlikely(!info))
+		return NULL;
+
+	n_groups = l_queue_length(info->mcast_list);
+	groups = l_new(char *, n_groups + 1);
+
+	for (entry = l_queue_get_entries(info->mcast_list), i = 0;
+						entry; entry = entry->next) {
+		struct genl_mcast *mcast = entry->data;
+
+		groups[i++] = l_strdup(mcast->name);
+	}
+
+	return groups;
+}
+
+LIB_EXPORT uint32_t l_genl_family_info_get_id(
+					const struct l_genl_family_info *info)
+{
+	if (unlikely(!info))
+		return 0;
+
+	return info->id;
+}
+
+LIB_EXPORT const char *l_genl_family_info_get_name(
+					const struct l_genl_family_info *info)
+{
+	if (unlikely(!info))
+		return NULL;
+
+	return info->name;
+}
+
+LIB_EXPORT uint32_t l_genl_family_info_get_version(
+					const struct l_genl_family_info *info)
+{
+	if (unlikely(!info))
+		return 0;
+
+	return info->version;
+}
+
+static struct l_genl_family *family_alloc(struct l_genl *genl,
+							const char *name)
+{
+	struct l_genl_family *family;
+
+	family = l_new(struct l_genl_family, 1);
+	family->genl = genl;
+	family_info_init(&family->info, name);
+	return l_genl_family_ref(family);
+}
+
+static void family_free(void *data)
+{
+	struct l_genl_family *family = data;
+
+	family->genl = NULL;
+
+	l_genl_family_unref(family);
+}
 
 static void destroy_request(void *data)
 {
@@ -151,100 +467,6 @@ static void destroy_notify(void *data)
 		notify->destroy(notify->user_data);
 
 	l_free(notify);
-}
-
-static struct l_genl_family *family_alloc(struct l_genl *genl,
-							const char *name)
-{
-	struct l_genl_family *family;
-
-	family = l_new(struct l_genl_family, 1);
-
-	family->genl = genl;
-	strncpy(family->name, name, GENL_NAMSIZ - 1);
-	family->name[GENL_NAMSIZ - 1] = '\0';
-
-	family->op_list = l_queue_new();
-	family->mcast_list = l_queue_new();
-
-	return l_genl_family_ref(family);
-}
-
-static void op_free(void *data)
-{
-	struct genl_op *op = data;
-
-	l_free(op);
-}
-
-static void mcast_free(void *data, void *user_data)
-{
-	struct l_genl *genl= user_data;
-	struct genl_mcast *mcast = data;
-
-	if (genl && mcast->users > 0) {
-		int group = mcast->id;
-
-		setsockopt(genl->fd, SOL_NETLINK, NETLINK_DROP_MEMBERSHIP,
-							&group, sizeof(group));
-	}
-
-	l_free(mcast);
-}
-
-static void family_free(void *data)
-{
-	struct l_genl_family *family = data;
-
-	family->genl = NULL;
-
-	l_genl_family_unref(family);
-}
-
-static void family_add_op(struct l_genl_family *family, uint32_t id,
-							uint32_t flags)
-{
-	struct genl_op *op;
-
-	op = l_new(struct genl_op, 1);
-
-	op->id = id;
-	op->flags = flags;
-
-	l_queue_push_tail(family->op_list, op);
-}
-
-static bool match_mcast_name(const void *a, const void *b)
-{
-	const struct genl_mcast *mcast = a;
-	const char *name = b;
-
-	return !strncmp(mcast->name, name, GENL_NAMSIZ);
-}
-
-static void family_add_mcast(struct l_genl_family *family, const char *name,
-								uint32_t id)
-{
-	struct l_genl *genl = family->genl;
-	struct genl_mcast *mcast;
-
-	if (!genl)
-		return;
-
-	mcast = l_queue_find(family->mcast_list, match_mcast_name,
-							(char *) name);
-	if (mcast)
-		return;
-
-	mcast = l_new(struct genl_mcast, 1);
-
-	strncpy(mcast->name, name, GENL_NAMSIZ - 1);
-	mcast->name[GENL_NAMSIZ - 1] = '\0';
-
-	mcast->id = id;
-	mcast->users = 0;
-
-	l_queue_push_tail(family->mcast_list, mcast);
 }
 
 static struct l_genl_msg *msg_alloc(uint8_t cmd, uint8_t version, uint32_t size)
@@ -434,7 +656,7 @@ static void process_unicast(struct l_genl *genl, const struct nlmsghdr *nlmsg)
 				entry; entry = entry->next) {
 			struct l_genl_family *family = entry->data;
 
-			if (family->id != nlmsg->nlmsg_type)
+			if (family->info.id != nlmsg->nlmsg_type)
 				continue;
 
 			notify = family->unicast_notify;
@@ -566,9 +788,9 @@ LIB_EXPORT struct l_genl *l_genl_new(int fd)
 
 	genl->nlctrl = family_alloc(genl, "nlctrl");
 
-	genl->nlctrl->id = GENL_ID_CTRL;
+	genl->nlctrl->info.id = GENL_ID_CTRL;
 
-	family_add_mcast(genl->nlctrl, "notify", GENL_ID_CTRL);
+	family_info_add_mcast(&genl->nlctrl->info, "notify", GENL_ID_CTRL);
 
 	l_queue_push_tail(genl->family_list, genl->nlctrl);
 
@@ -644,6 +866,14 @@ LIB_EXPORT void l_genl_unref(struct l_genl *genl)
 	if (__sync_sub_and_fetch(&genl->ref_count, 1))
 		return;
 
+	if (genl->discovery) {
+		if (genl->discovery->destroy)
+			genl->discovery->destroy(genl->discovery->user_data);
+
+		l_free(genl->discovery);
+		genl->discovery = NULL;
+	}
+
 	l_queue_destroy(genl->notify_list, destroy_notify);
 	l_queue_destroy(genl->pending_list, destroy_request);
 	l_queue_destroy(genl->request_queue, destroy_request);
@@ -692,6 +922,70 @@ LIB_EXPORT bool l_genl_set_close_on_unref(struct l_genl *genl, bool do_close)
 
 	genl->close_on_unref = do_close;
 
+	return true;
+}
+
+static void dump_family_callback(struct l_genl_msg *msg, void *user_data)
+{
+	struct l_genl *genl = user_data;
+	struct genl_discovery *discovery = genl->discovery;
+	struct l_genl_family_info info;
+
+	discovery->cmd_id = 0;
+	family_info_init(&info, NULL);
+
+	if (parse_cmd_newfamily(&info, msg) < 0)
+		goto done;
+
+	if (discovery->cb)
+		discovery->cb(&info, discovery->user_data);
+
+done:
+	family_info_free(&info);
+}
+
+static void dump_family_done(void *user_data)
+{
+	struct l_genl *genl = user_data;
+	struct genl_discovery *discovery = genl->discovery;
+
+	if (discovery->destroy)
+		discovery->destroy(discovery->user_data);
+
+	l_free(discovery);
+	genl->discovery = NULL;
+}
+
+LIB_EXPORT bool l_genl_discover_families(struct l_genl *genl,
+						l_genl_discover_func_t cb,
+						void *user_data,
+						l_genl_destroy_func_t destroy)
+{
+	struct l_genl_msg *msg;
+	struct genl_discovery *discovery;
+
+	if (unlikely(!genl))
+		return false;
+
+	if (genl->discovery)
+		return false;
+
+	discovery = l_new(struct genl_discovery, 1);
+	discovery->cb = cb;
+	discovery->user_data = user_data;
+	discovery->destroy = destroy;
+
+	msg = l_genl_msg_new_sized(CTRL_CMD_GETFAMILY, NLA_HDRLEN);
+	discovery->cmd_id = l_genl_family_dump(genl->nlctrl, msg,
+						dump_family_callback,
+						genl, dump_family_done);
+
+	if (!discovery->cmd_id) {
+		l_free(discovery);
+		return false;
+	}
+
+	genl->discovery = discovery;
 	return true;
 }
 
@@ -964,112 +1258,19 @@ LIB_EXPORT bool l_genl_attr_recurse(struct l_genl_attr *attr,
 	return true;
 }
 
-static void family_ops(struct l_genl_family *family, struct l_genl_attr *attr)
-{
-	uint16_t type, len;
-	const void *data;
-
-	while (l_genl_attr_next(attr, &type, &len, &data)) {
-		struct l_genl_attr attr_op;
-		uint32_t id = 0, flags = 0;
-
-		l_genl_attr_recurse(attr, &attr_op);
-
-		while (l_genl_attr_next(&attr_op, &type, &len, &data)) {
-			switch (type) {
-			case CTRL_ATTR_OP_ID:
-				id = *((uint32_t *) data);
-				break;
-			case CTRL_ATTR_OP_FLAGS:
-				flags = *((uint32_t *) data);
-				break;
-			}
-		}
-
-		if (id > 0)
-			family_add_op(family, id, flags);
-	}
-}
-
-static void family_mcast_groups(struct l_genl_family *family,
-						struct l_genl_attr *attr)
-{
-	uint16_t type, len;
-	const void *data;
-
-	while (l_genl_attr_next(attr, &type, &len, &data)) {
-		struct l_genl_attr attr_grp;
-		const char *name = NULL;
-		uint32_t id = 0;
-
-		l_genl_attr_recurse(attr, &attr_grp);
-
-		while (l_genl_attr_next(&attr_grp, &type, &len, &data)) {
-			switch (type) {
-			case CTRL_ATTR_MCAST_GRP_NAME:
-				name = data;
-				break;
-			case CTRL_ATTR_MCAST_GRP_ID:
-				id = *((uint32_t *) data);
-				break;
-			}
-		}
-
-		if (name && id > 0)
-			family_add_mcast(family, name, id);
-	}
-}
-
 static void get_family_callback(struct l_genl_msg *msg, void *user_data)
 {
 	struct l_genl_family *family = user_data;
-	struct l_genl_attr attr, nested;
-	uint16_t type, len;
-	const void *data;
-	int error;
 
 	family->nlctrl_cmd = 0;
 
-	if (family->id > 0)
+	if (family->info.id > 0)
 		return;
 
-	error = l_genl_msg_get_error(msg);
-	if (error < 0) {
+	if (parse_cmd_newfamily(&family->info, msg) < 0) {
 		if (family->watch_vanished)
 			family->watch_vanished(family->watch_data);
 		return;
-	}
-
-	if (!l_genl_attr_init(&attr, msg))
-		return;
-
-	while (l_genl_attr_next(&attr, &type, &len, &data)) {
-		switch (type) {
-		case CTRL_ATTR_FAMILY_ID:
-			family->id = *((uint16_t *) data);
-			break;
-		case CTRL_ATTR_FAMILY_NAME:
-			strncpy(family->name, data, GENL_NAMSIZ - 1);
-			family->name[GENL_NAMSIZ - 1] = '\0';
-			break;
-		case CTRL_ATTR_VERSION:
-			family->version = *((uint32_t *) data);
-			break;
-		case CTRL_ATTR_HDRSIZE:
-			family->hdrsize = *((uint32_t *) data);
-			break;
-		case CTRL_ATTR_MAXATTR:
-			family->maxattr = *((uint32_t *) data);
-			break;
-		case CTRL_ATTR_OPS:
-			if (l_genl_attr_recurse(&attr, &nested))
-				family_ops(family, &nested);
-			break;
-		case CTRL_ATTR_MCAST_GROUPS:
-			if (l_genl_attr_recurse(&attr, &nested))
-				family_mcast_groups(family, &nested);
-			break;
-		}
 	}
 
 	if (family->watch_appeared)
@@ -1081,19 +1282,23 @@ LIB_EXPORT struct l_genl_family *l_genl_family_new(struct l_genl *genl,
 {
 	struct l_genl_family *family;
 	struct l_genl_msg *msg;
+	int len;
 
-	if (unlikely(!genl) || unlikely(!name) ||
-			unlikely(strlen(name) >= GENL_NAMSIZ))
+	if (unlikely(!genl) || unlikely(!name))
+		return NULL;
+
+	len = strlen(name);
+	if (unlikely(strlen(name) >= GENL_NAMSIZ))
 		return NULL;
 
 	family = family_alloc(genl, name);
 	if (!family)
 		return NULL;
 
-	msg = l_genl_msg_new_sized(CTRL_CMD_GETFAMILY, NLA_HDRLEN + GENL_NAMSIZ);
-
+	msg = l_genl_msg_new_sized(CTRL_CMD_GETFAMILY,
+						NLA_HDRLEN + GENL_NAMSIZ);
 	l_genl_msg_append_attr(msg, CTRL_ATTR_FAMILY_NAME,
-						GENL_NAMSIZ, family->name);
+						len + 1, name);
 
 	family->nlctrl_cmd = l_genl_family_send(genl->nlctrl, msg,
 					get_family_callback, family, NULL);
@@ -1136,15 +1341,11 @@ LIB_EXPORT void l_genl_family_unref(struct l_genl_family *family)
 	if (genl)
 		l_queue_remove(genl->family_list, family);
 
-	l_queue_destroy(family->op_list, op_free);
-
-	l_queue_foreach(family->mcast_list, mcast_free, genl);
-
-	l_queue_destroy(family->mcast_list, NULL);
-	family->mcast_list = NULL;
-
-	if (family->id > 0 && family->watch_vanished)
+	if (family->info.id > 0 && family->watch_vanished)
 		family->watch_vanished(family->watch_data);
+
+	l_queue_foreach(family->info.mcast_list, mcast_free, genl);
+	family_info_free(&family->info);
 
 	if (family->watch_destroy)
 		family->watch_destroy(family->watch_data);
@@ -1152,6 +1353,15 @@ LIB_EXPORT void l_genl_family_unref(struct l_genl_family *family)
 	l_genl_family_set_unicast_handler(family, NULL, NULL, NULL);
 
 	l_free(family);
+}
+
+LIB_EXPORT const struct l_genl_family_info *l_genl_family_get_info(
+						struct l_genl_family *family)
+{
+	if (unlikely(!family))
+		return NULL;
+
+	return &family->info;
 }
 
 LIB_EXPORT bool l_genl_family_set_unicast_handler(struct l_genl_family *family,
@@ -1209,64 +1419,12 @@ LIB_EXPORT bool l_genl_family_set_watches(struct l_genl_family *family,
 	return true;
 }
 
-LIB_EXPORT uint32_t l_genl_family_get_version(struct l_genl_family *family)
-{
-	if (unlikely(!family))
-		return 0;
-
-	return family->version;
-}
-
 LIB_EXPORT struct l_genl *l_genl_family_get_genl(struct l_genl_family *family)
 {
 	if (unlikely(!family))
 		return 0;
 
 	return family->genl;
-}
-
-static bool match_op_id(const void *a, const void *b)
-{
-	const struct genl_op *op = a;
-	uint32_t id = L_PTR_TO_UINT(b);
-
-	return op->id == id;
-}
-
-LIB_EXPORT bool l_genl_family_can_send(struct l_genl_family *family,
-								uint8_t cmd)
-{
-	struct genl_op *op;
-
-	if (unlikely(!family))
-		return false;
-
-	op = l_queue_find(family->op_list, match_op_id, L_UINT_TO_PTR(cmd));
-	if (!op)
-		return false;
-
-	if (op->flags & GENL_CMD_CAP_DO)
-		return true;
-
-	return false;
-}
-
-LIB_EXPORT bool l_genl_family_can_dump(struct l_genl_family *family,
-								uint8_t cmd)
-{
-	struct genl_op *op;
-
-	if (!family)
-		return false;
-
-	op = l_queue_find(family->op_list, match_op_id, L_UINT_TO_PTR(cmd));
-	if (!op)
-		return false;
-
-	if (op->flags & GENL_CMD_CAP_DUMP)
-		return true;
-
-	return false;
 }
 
 static unsigned int send_common(struct l_genl_family *family, uint16_t flags,
@@ -1285,7 +1443,7 @@ static unsigned int send_common(struct l_genl_family *family, uint16_t flags,
 
 	request = l_new(struct genl_request, 1);
 
-	request->type = family->id;
+	request->type = family->info.id;
 	request->flags = NLM_F_REQUEST | flags;
 
 	request->msg = msg;
@@ -1377,22 +1535,6 @@ static void add_membership(struct l_genl *genl, struct genl_mcast *mcast)
 	mcast->users++;
 }
 
-LIB_EXPORT bool l_genl_family_has_group(struct l_genl_family *family,
-							const char *group)
-{
-	struct genl_mcast *mcast;
-
-	if (unlikely(!family))
-		return false;
-
-	mcast = l_queue_find(family->mcast_list, match_mcast_name,
-							(char *) group);
-	if (!mcast)
-		return false;
-
-	return true;
-}
-
 LIB_EXPORT unsigned int l_genl_family_register(struct l_genl_family *family,
 						const char *group,
 						l_genl_msg_func_t callback,
@@ -1400,6 +1542,7 @@ LIB_EXPORT unsigned int l_genl_family_register(struct l_genl_family *family,
 						l_genl_destroy_func_t destroy)
 {
 	struct l_genl *genl;
+	struct l_genl_family_info *info;
 	struct genl_mcast_notify *notify;
 	struct genl_mcast *mcast;
 
@@ -1410,14 +1553,14 @@ LIB_EXPORT unsigned int l_genl_family_register(struct l_genl_family *family,
 	if (!genl)
 		return 0;
 
-	mcast = l_queue_find(family->mcast_list, match_mcast_name,
-							(char *) group);
+	info = &family->info;
+	mcast = l_queue_find(info->mcast_list, match_mcast_name, group);
 	if (!mcast)
 		return 0;
 
 	notify = l_new(struct genl_mcast_notify, 1);
 
-	notify->type = family->id;
+	notify->type = info->id;
 	notify->group = mcast->id;
 
 	notify->callback = callback;
