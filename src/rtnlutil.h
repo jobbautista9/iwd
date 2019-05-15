@@ -20,19 +20,8 @@
  *
  */
 
-void erp_add_key(const char *id, const void *session_id, size_t session_len,
-			const void *emsk, size_t emsk_len,
-			const char *ssid, const char *erp_domain);
-
-void erp_remove_key(const char *id);
-
-bool erp_find_key_by_identity(const char *id, void *session,
-			size_t *session_len, void *emsk, size_t *emsk_len,
-			const char **erp_domain);
-
-bool erp_has_key_for_ssid(const char *ssid);
-
-bool erp_has_key_for_identity(const char *id);
-
-void erp_init(void);
-void erp_exit(void);
+uint32_t rtnl_set_linkmode_and_operstate(struct l_netlink *rtnl, int ifindex,
+					uint8_t linkmode, uint8_t operstate,
+					l_netlink_command_func_t cb,
+					void *user_data,
+					l_netlink_destroy_func_t destroy);

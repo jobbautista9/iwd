@@ -117,6 +117,13 @@ void handshake_state_set_pmk(struct handshake_state *s, const uint8_t *pmk,
 	s->have_pmk = true;
 }
 
+void handshake_state_set_ptk(struct handshake_state *s, const uint8_t *ptk,
+				size_t ptk_len)
+{
+	memcpy(s->ptk, ptk, ptk_len);
+	s->ptk_complete = true;
+}
+
 void handshake_state_set_8021x_config(struct handshake_state *s,
 					struct l_settings *settings)
 {
@@ -368,7 +375,7 @@ static bool handshake_get_key_sizes(struct handshake_state *s, size_t *ptk_size,
 bool handshake_state_derive_ptk(struct handshake_state *s)
 {
 	size_t ptk_size;
-	bool use_sha256;
+	enum l_checksum_type type;
 
 	if (!s->have_snonce || !s->have_pmk)
 		return false;
@@ -381,14 +388,17 @@ bool handshake_state_derive_ptk(struct handshake_state *s)
 
 	s->ptk_complete = false;
 
-	if (s->akm_suite & (IE_RSN_AKM_SUITE_8021X_SHA256 |
+	if (s->akm_suite & IE_RSN_AKM_SUITE_FILS_SHA384)
+		type = L_CHECKSUM_SHA384;
+	else if (s->akm_suite & (IE_RSN_AKM_SUITE_8021X_SHA256 |
 			IE_RSN_AKM_SUITE_PSK_SHA256 |
 			IE_RSN_AKM_SUITE_SAE_SHA256 |
 			IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256 |
-			IE_RSN_AKM_SUITE_OWE))
-		use_sha256 = true;
+			IE_RSN_AKM_SUITE_OWE |
+			IE_RSN_AKM_SUITE_FILS_SHA256))
+		type = L_CHECKSUM_SHA256;
 	else
-		use_sha256 = false;
+		type = L_CHECKSUM_SHA1;
 
 	ptk_size = handshake_state_get_ptk_size(s);
 
@@ -432,7 +442,7 @@ bool handshake_state_derive_ptk(struct handshake_state *s)
 	} else
 		if (!crypto_derive_pairwise_ptk(s->pmk, s->pmk_len, s->spa,
 						s->aa, s->anonce, s->snonce,
-						s->ptk, ptk_size, use_sha256))
+						s->ptk, ptk_size, type))
 			return false;
 
 	return true;
@@ -451,6 +461,16 @@ size_t handshake_state_get_ptk_size(struct handshake_state *s)
 const uint8_t *handshake_state_get_kck(struct handshake_state *s)
 {
 	return s->ptk;
+}
+
+size_t handshake_state_get_kek_len(struct handshake_state *s)
+{
+	size_t kek_size;
+
+	if (!handshake_get_key_sizes(s, NULL, NULL, &kek_size))
+		return 0;
+
+	return kek_size;
 }
 
 const uint8_t *handshake_state_get_kek(struct handshake_state *s)

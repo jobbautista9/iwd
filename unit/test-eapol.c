@@ -1785,7 +1785,7 @@ static void eapol_4way_test(const void *data)
 	ptk = l_malloc(ptk_len);
 	ret = crypto_derive_pairwise_ptk(psk, sizeof(psk), aa, spa, anonce,
 						snonce, ptk, ptk_len,
-						false);
+						L_CHECKSUM_SHA1);
 	assert(ret);
 
 	frame = eapol_create_ptk_2_of_4(EAPOL_PROTOCOL_VERSION_2001,
@@ -1804,7 +1804,7 @@ static void eapol_4way_test(const void *data)
 	step3 = eapol_key_validate(eapol_key_data_5,
 					sizeof(eapol_key_data_5), 16);
 	assert(step3);
-	assert(eapol_verify_ptk_3_of_4(step3, false));
+	assert(eapol_verify_ptk_3_of_4(step3, false, 16));
 	assert(!memcmp(anonce, step3->key_nonce, sizeof(step3->key_nonce)));
 
 	assert(eapol_verify_mic(IE_RSN_AKM_SUITE_PSK, ptk, step3, 16));
@@ -1870,7 +1870,7 @@ static void eapol_wpa2_handshake_test(const void *data)
 	ptk = l_malloc(ptk_len);
 	ret = crypto_derive_pairwise_ptk(psk, sizeof(psk), aa, spa, anonce,
 						snonce, ptk, ptk_len,
-						false);
+						L_CHECKSUM_SHA1);
 	assert(ret);
 
 	frame = eapol_create_ptk_2_of_4(EAPOL_PROTOCOL_VERSION_2004,
@@ -1889,7 +1889,7 @@ static void eapol_wpa2_handshake_test(const void *data)
 	ptk_step3 = eapol_key_validate(eapol_key_data_9,
 					sizeof(eapol_key_data_9), 16);
 	assert(ptk_step3);
-	assert(eapol_verify_ptk_3_of_4(ptk_step3, false));
+	assert(eapol_verify_ptk_3_of_4(ptk_step3, false, 16));
 	assert(!memcmp(anonce, ptk_step3->key_nonce,
 				sizeof(ptk_step3->key_nonce)));
 
@@ -1920,7 +1920,7 @@ static void eapol_wpa2_handshake_test(const void *data)
 	gtk_step1 = eapol_key_validate(eapol_key_data_11,
 					sizeof(eapol_key_data_11), 16);
 	assert(gtk_step1);
-	assert(eapol_verify_gtk_1_of_2(gtk_step1, false));
+	assert(eapol_verify_gtk_1_of_2(gtk_step1, false, 16));
 
 	decrypted_key_data = eapol_decrypt_key_data(IE_RSN_AKM_SUITE_PSK,
 						ptk + 16, gtk_step1,
@@ -1999,7 +1999,7 @@ static void eapol_wpa_handshake_test(const void *data)
 	ptk = l_malloc(ptk_len);
 	ret = crypto_derive_pairwise_ptk(psk, sizeof(psk), aa, spa, anonce,
 						snonce, ptk, ptk_len,
-						false);
+						L_CHECKSUM_SHA1);
 	assert(ret);
 
 	frame = eapol_create_ptk_2_of_4(EAPOL_PROTOCOL_VERSION_2004,
@@ -2018,7 +2018,7 @@ static void eapol_wpa_handshake_test(const void *data)
 	ptk_step3 = eapol_key_validate(eapol_key_data_15,
 					sizeof(eapol_key_data_15), 16);
 	assert(ptk_step3);
-	assert(eapol_verify_ptk_3_of_4(ptk_step3, true));
+	assert(eapol_verify_ptk_3_of_4(ptk_step3, true, 16));
 	assert(!memcmp(anonce, ptk_step3->key_nonce,
 				sizeof(ptk_step3->key_nonce)));
 
@@ -2046,7 +2046,7 @@ static void eapol_wpa_handshake_test(const void *data)
 	gtk_step1 = eapol_key_validate(eapol_key_data_17,
 					sizeof(eapol_key_data_17), 16);
 	assert(gtk_step1);
-	assert(eapol_verify_gtk_1_of_2(gtk_step1, true));
+	assert(eapol_verify_gtk_1_of_2(gtk_step1, true, 16));
 
 	decrypted_key_data = eapol_decrypt_key_data(IE_RSN_AKM_SUITE_PSK,
 						ptk + 16, gtk_step1,
@@ -2584,7 +2584,7 @@ static void eapol_sm_wpa2_retransmit_test(const void *data)
 	assert(crypto_derive_pairwise_ptk(psk, sizeof(psk), aa, spa,
 						ptk_step1->key_nonce,
 						ptk_step2->key_nonce,
-						ptk, ptk_len, false));
+						ptk, ptk_len, L_CHECKSUM_SHA1));
 
 	verify_step2_called = false;
 	expected_step2_frame = (const uint8_t *) ptk_step2;
@@ -2947,9 +2947,9 @@ static void eapol_sm_test_tls(struct eapol_8021x_tls_test_state *s,
 	s->tx_buf_len = 0;
 	s->tx_buf_offset = 0;
 
-	assert(l_tls_set_auth_data(s->tls, ELL_UNIT_TEST_DATA "cert-server.pem",
-			ELL_UNIT_TEST_DATA "cert-server-key-pkcs8.pem", NULL));
-	assert(l_tls_set_cacert(s->tls, ELL_UNIT_TEST_DATA "cert-ca.pem"));
+	assert(l_tls_set_auth_data(s->tls, CERTDIR "cert-server.pem",
+				CERTDIR "cert-server-key-pkcs8.pem", NULL));
+	assert(l_tls_set_cacert(s->tls, CERTDIR "cert-ca.pem"));
 	assert(l_tls_start(s->tls));
 
 	start = 1;
@@ -3062,7 +3062,7 @@ static void eapol_sm_test_tls(struct eapol_8021x_tls_test_state *s,
 	crypto_derive_pairwise_ptk(s->pmk, sizeof(s->pmk), sta_address,
 					ap_address, step1->key_nonce,
 					step2->key_nonce, ptk, 64,
-					false);
+					L_CHECKSUM_SHA1);
 
 	memset(EAPOL_KEY_MIC(step2), 0, 16);
 	assert(eapol_calculate_mic(IE_RSN_AKM_SUITE_PSK, ptk, step2,
@@ -3113,9 +3113,9 @@ static void eapol_sm_test_eap_tls(const void *data)
 	static const char *eapol_8021x_config = "[Security]\n"
 		"EAP-Method=TLS\n"
 		"EAP-Identity=abc@example.com\n"
-		"EAP-TLS-CACert=" ELL_UNIT_TEST_DATA "cert-ca.pem\n"
-		"EAP-TLS-ClientCert=" ELL_UNIT_TEST_DATA "cert-client.pem\n"
-		"EAP-TLS-ClientKey=" ELL_UNIT_TEST_DATA "cert-client-key-pkcs8.pem";
+		"EAP-TLS-CACert=" CERTDIR "cert-ca.pem\n"
+		"EAP-TLS-ClientCert=" CERTDIR "cert-client.pem\n"
+		"EAP-TLS-ClientKey=" CERTDIR "cert-client-key-pkcs8.pem";
 	struct eapol_8021x_tls_test_state s;
 
 	s.app_data_cb = eapol_sm_test_tls_new_data;
@@ -3189,9 +3189,9 @@ static void eapol_sm_test_eap_ttls_md5(const void *data)
 	static const char *eapol_8021x_config = "[Security]\n"
 		"EAP-Method=TTLS\n"
 		"EAP-Identity=abc@example.com\n"
-		"EAP-TTLS-CACert=" ELL_UNIT_TEST_DATA "cert-ca.pem\n"
-		"EAP-TTLS-ClientCert=" ELL_UNIT_TEST_DATA "cert-client.pem\n"
-		"EAP-TTLS-ClientKey=" ELL_UNIT_TEST_DATA "cert-client-key-pkcs8.pem\n"
+		"EAP-TTLS-CACert=" CERTDIR "cert-ca.pem\n"
+		"EAP-TTLS-ClientCert=" CERTDIR "cert-client.pem\n"
+		"EAP-TTLS-ClientKey=" CERTDIR "cert-client-key-pkcs8.pem\n"
 		"EAP-TTLS-Phase2-Method=MD5\n"
 		"EAP-TTLS-Phase2-Identity=abc@example.com\n"
 		"EAP-TTLS-Phase2-Password=testpasswd";
@@ -3258,9 +3258,9 @@ static void eapol_sm_test_eap_nak(const void *data)
 	static const char *eapol_8021x_config = "[Security]\n"
 		"EAP-Method=TLS\n"
 		"EAP-Identity=abc@example.com\n"
-		"EAP-TLS-CACert=" ELL_UNIT_TEST_DATA "cert-ca.pem\n"
-		"EAP-TLS-ClientCert=" ELL_UNIT_TEST_DATA "cert-client.pem\n"
-		"EAP-TLS-ClientKey=" ELL_UNIT_TEST_DATA "cert-client-key-pkcs8.pem";
+		"EAP-TLS-CACert=" CERTDIR "cert-ca.pem\n"
+		"EAP-TLS-ClientCert=" CERTDIR "cert-client.pem\n"
+		"EAP-TLS-ClientKey=" CERTDIR "cert-client-key-pkcs8.pem";
 	static const unsigned char ap_wpa_ie[] = {
 		0xdd, 0x16, 0x00, 0x50, 0xf2, 0x01, 0x01, 0x00,
 		0x00, 0x50, 0xf2, 0x02, 0x01, 0x00, 0x00, 0x50,

@@ -118,6 +118,7 @@ struct handshake_state {
 	uint8_t gtk[32];
 	uint8_t gtk_rsc[6];
 	unsigned int gtk_index;
+	struct erp_cache_entry *erp_cache;
 	void *user_data;
 
 	void (*free)(struct handshake_state *s);
@@ -134,6 +135,8 @@ void handshake_state_set_authenticator_address(struct handshake_state *s,
 void handshake_state_set_authenticator(struct handshake_state *s, bool auth);
 void handshake_state_set_pmk(struct handshake_state *s, const uint8_t *pmk,
 				size_t pmk_len);
+void handshake_state_set_ptk(struct handshake_state *s, const uint8_t *ptk,
+				size_t ptk_len);
 void handshake_state_set_8021x_config(struct handshake_state *s,
 					struct l_settings *settings);
 bool handshake_state_set_supplicant_rsn(struct handshake_state *s,
@@ -169,6 +172,7 @@ void handshake_state_set_pmkid(struct handshake_state *s, const uint8_t *pmkid);
 bool handshake_state_derive_ptk(struct handshake_state *s);
 size_t handshake_state_get_ptk_size(struct handshake_state *s);
 const uint8_t *handshake_state_get_kck(struct handshake_state *s);
+size_t handshake_state_get_kek_len(struct handshake_state *s);
 const uint8_t *handshake_state_get_kek(struct handshake_state *s);
 void handshake_state_install_ptk(struct handshake_state *s);
 

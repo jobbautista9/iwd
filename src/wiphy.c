@@ -24,11 +24,14 @@
 #include <config.h>
 #endif
 
+#define _GNU_SOURCE
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
 #include <linux/if_ether.h>
 #include <fnmatch.h>
+#include <unistd.h>
+#include <string.h>
 
 #include <ell/ell.h>
 
@@ -63,6 +66,7 @@ struct wiphy {
 	struct scan_freq_set *supported_freqs;
 	char *model_str;
 	char *vendor_str;
+	char *driver_str;
 	struct watchlist state_watches;
 
 	bool support_scheduled_scan:1;
@@ -95,7 +99,8 @@ enum ie_rsn_cipher_suite wiphy_select_cipher(struct wiphy *wiphy, uint16_t mask)
 }
 
 enum ie_rsn_akm_suite wiphy_select_akm(struct wiphy *wiphy,
-					struct scan_bss *bss)
+					struct scan_bss *bss,
+					bool fils_capable_hint)
 {
 	struct ie_rsn_info info;
 	enum security security;
@@ -110,6 +115,15 @@ enum ie_rsn_akm_suite wiphy_select_akm(struct wiphy *wiphy,
 	 * for fast transitions.  Otherwise use SHA256 version if present.
 	 */
 	if (security == SECURITY_8021X) {
+		if (wiphy_has_feature(wiphy, NL80211_EXT_FEATURE_FILS_STA) &&
+				fils_capable_hint) {
+			if (info.akm_suites & IE_RSN_AKM_SUITE_FILS_SHA384)
+				return IE_RSN_AKM_SUITE_FILS_SHA384;
+
+			if (info.akm_suites & IE_RSN_AKM_SUITE_FILS_SHA256)
+				return IE_RSN_AKM_SUITE_FILS_SHA256;
+		}
+
 		if ((info.akm_suites & IE_RSN_AKM_SUITE_FT_OVER_8021X) &&
 				bss->rsne && bss->mde_present)
 			return IE_RSN_AKM_SUITE_FT_OVER_8021X;
@@ -175,6 +189,7 @@ static void wiphy_free(void *data)
 	watchlist_destroy(&wiphy->state_watches);
 	l_free(wiphy->model_str);
 	l_free(wiphy->vendor_str);
+	l_free(wiphy->driver_str);
 	l_free(wiphy);
 }
 
@@ -304,6 +319,23 @@ uint8_t wiphy_get_max_num_ssids_per_scan(struct wiphy *wiphy)
 bool wiphy_supports_adhoc_rsn(struct wiphy *wiphy)
 {
 	return wiphy->support_adhoc_rsn;
+}
+
+const char *wiphy_get_driver(struct wiphy *wiphy)
+{
+	return wiphy->driver_str;
+}
+
+bool wiphy_constrain_freq_set(const struct wiphy *wiphy,
+						struct scan_freq_set *set)
+{
+	scan_freq_set_constrain(set, wiphy->supported_freqs);
+
+	if (!scan_freq_set_get_bands(set))
+		/* The set is empty. */
+		return false;
+
+	return true;
 }
 
 static char **wiphy_get_supported_iftypes(struct wiphy *wiphy, uint16_t mask)
@@ -637,6 +669,26 @@ bool wiphy_parse_id_and_name(struct l_genl_attr *attr, uint32_t *out_id,
 	return true;
 }
 
+static bool wiphy_get_driver_name(struct wiphy *wiphy)
+{
+	L_AUTO_FREE_VAR(char *, driver_link) = NULL;
+	char driver_path[256];
+	ssize_t len;
+
+	driver_link = l_strdup_printf("/sys/class/ieee80211/%s/device/driver",
+					wiphy->name);
+	len = readlink(driver_link, driver_path, sizeof(driver_path) - 1);
+
+	if (len == -1) {
+		l_error("Can't read %s: %s", driver_link, strerror(errno));
+		return false;
+	}
+
+	driver_path[len] = '\0';
+	wiphy->driver_str = l_strdup(basename(driver_path));
+	return true;
+}
+
 static void wiphy_register(struct wiphy *wiphy)
 {
 	struct l_dbus *dbus = dbus_get_bus();
@@ -676,6 +728,8 @@ static void wiphy_register(struct wiphy *wiphy)
 
 		l_hwdb_lookup_free(entries);
 	}
+
+	wiphy_get_driver_name(wiphy);
 
 	if (!l_dbus_object_add_interface(dbus, wiphy_get_path(wiphy),
 					IWD_WIPHY_INTERFACE, wiphy))
@@ -729,11 +783,12 @@ void wiphy_update_from_genl(struct wiphy *wiphy, struct l_genl_msg *msg)
 					IWD_WIPHY_INTERFACE, "Name");
 	}
 
-	if (!wiphy->supported_iftypes) {
-		/* Most likely a new wiphy, set all the parameters */
-		wiphy_parse_attributes(wiphy, &attr);
-		wiphy_print_basic_info(wiphy);
-	}
+	wiphy_parse_attributes(wiphy, &attr);
+}
+
+void wiphy_create_complete(struct wiphy *wiphy)
+{
+	wiphy_print_basic_info(wiphy);
 }
 
 bool wiphy_destroy(struct wiphy *wiphy)
