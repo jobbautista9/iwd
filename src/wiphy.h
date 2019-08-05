@@ -62,12 +62,20 @@ const struct scan_freq_set *wiphy_get_supported_freqs(
 						const struct wiphy *wiphy);
 bool wiphy_can_connect(struct wiphy *wiphy, struct scan_bss *bss);
 bool wiphy_can_randomize_mac_addr(struct wiphy *wiphy);
+bool wiphy_rrm_capable(struct wiphy *wiphy);
 bool wiphy_has_feature(struct wiphy *wiphy, uint32_t feature);
 bool wiphy_has_ext_feature(struct wiphy *wiphy, uint32_t feature);
 uint8_t wiphy_get_max_num_ssids_per_scan(struct wiphy *wiphy);
 bool wiphy_supports_iftype(struct wiphy *wiphy, uint32_t iftype);
 bool wiphy_supports_adhoc_rsn(struct wiphy *wiphy);
+bool wiphy_can_offchannel_tx(struct wiphy *wiphy);
 const char *wiphy_get_driver(struct wiphy *wiphy);
+const char *wiphy_get_name(struct wiphy *wiphy);
+const uint8_t *wiphy_get_permanent_address(struct wiphy *wiphy);
+const uint8_t *wiphy_get_extended_capabilities(struct wiphy *wiphy,
+							uint32_t iftype);
+
+void wiphy_generate_random_address(struct wiphy *wiphy, uint8_t addr[static 6]);
 
 uint32_t wiphy_state_watch_add(struct wiphy *wiphy,
 				wiphy_state_watch_func_t func, void *user_data,

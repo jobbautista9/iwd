@@ -234,6 +234,24 @@ enum ie_type {
 	IE_TYPE_OWE_DH_PARAM                         = 256 + 32,
 };
 
+/*
+ * WiFi Alliance Hotspot 2.0 Specification - Section 3.1 Elements Definitions
+ */
+enum ie_vendor_wfa_oi_type {
+	IE_WFA_OI_HS20_INDICATION = 0x10,
+	IE_WFA_OI_OSEN = 0x12,
+	IE_WFA_OI_ROAMING_SELECTION = 0x1d,
+};
+
+enum ie_advertisement_id {
+	IE_ADVERTISEMENT_ANQP			= 0,
+	IE_ADVERTISEMENT_MIH_SERVICE		= 1,
+	IE_ADVERTISEMENT_MIH_DISCOVERY		= 2,
+	IE_ADVERTISEMENT_EAS			= 3,
+	IE_ADVERTISEMENT_RLQP			= 4,
+	IE_ADVERTISEMENT_VENDOR_SPECIFIC	= 221,
+};
+
 enum ie_rsn_cipher_suite {
 	IE_RSN_CIPHER_SUITE_USE_GROUP_CIPHER	= 0x0001,
 	IE_RSN_CIPHER_SUITE_WEP40		= 0x0002,
@@ -263,6 +281,7 @@ enum ie_rsn_akm_suite {
 	IE_RSN_AKM_SUITE_FILS_SHA384		= 0x8000,
 	IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256	= 0x10000,
 	IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384	= 0x20000,
+	IE_RSN_AKM_SUITE_OSEN			= 0x40000,
 };
 
 #define IE_AKM_IS_SAE(akm) \
@@ -315,16 +334,26 @@ struct ie_rsn_info {
 	enum ie_rsn_cipher_suite group_management_cipher;
 };
 
-/* See chapter 8.4.1.4 for capability details */
+/* IEEE 802.11-2016, Section 9.4.1.4 */
 enum ie_bss_capability {
-	IE_BSS_CAP_ESS     = 0x0001,
-	IE_BSS_CAP_IBSS    = 0x0002,
-	IE_BSS_CAP_PRIVACY = 0x0010,
+	IE_BSS_CAP_ESS			= 0x0001,
+	IE_BSS_CAP_IBSS			= 0x0002,
+	IE_BSS_CAP_CF_POLLABLE		= 0x0004,
+	IE_BSS_CAP_CF_POLL_REQ		= 0x0008,
+	IE_BSS_CAP_PRIVACY		= 0x0010,
+	IE_BSS_CAP_SHORT_PREAMBLE	= 0x0020,
+	IE_BSS_CAP_SPECTRUM_MANAGEMENT	= 0x0100,
+	IE_BSS_CAP_QOS			= 0x0200,
+	IE_BSS_CAP_SHORT_SLOT_TIME	= 0x0400,
+	IE_BSS_CAP_APSD			= 0x0800,
+	IE_BSS_CAP_RM			= 0x1000,
+	IE_BSS_CAP_DELAYED_BLOCK_ACK	= 0x4000,
+	IE_BSS_CAP_IMMEDIATE_BLOCK_ACK	= 0x8000,
 };
 
 struct ie_ft_info {
 	uint8_t mic_element_count;
-	uint8_t mic[16];
+	uint8_t mic[24];
 	uint8_t anonce[32];
 	uint8_t snonce[32];
 	uint8_t r0khid[48];
@@ -366,6 +395,10 @@ struct ie_neighbor_report_info {
 	bool bss_transition_pref_present : 1;
 };
 
+extern const unsigned char ieee_oui[3];
+extern const unsigned char microsoft_oui[3];
+extern const unsigned char wifi_alliance_oui[3];
+
 void ie_tlv_iter_init(struct ie_tlv_iter *iter, const unsigned char *tlv,
 			unsigned int len);
 void ie_tlv_iter_recurse(struct ie_tlv_iter *iter,
@@ -393,6 +426,11 @@ void *ie_tlv_extract_wsc_payload(const uint8_t *ies, size_t len,
 void *ie_tlv_encapsulate_wsc_payload(const uint8_t *data, size_t len,
 							size_t *out_len);
 
+void *ie_tlv_extract_p2p_payload(const uint8_t *ies, size_t len,
+							ssize_t *out_len);
+void *ie_tlv_encapsulate_p2p_payload(const uint8_t *data, size_t len,
+							size_t *out_len);
+
 bool ie_tlv_builder_init(struct ie_tlv_builder *builder, unsigned char *buf,
 				size_t len);
 bool ie_tlv_builder_set_length(struct ie_tlv_builder *builder,
@@ -416,6 +454,7 @@ bool ie_build_rsne(const struct ie_rsn_info *info, uint8_t *to);
 int ie_parse_wpa(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info);
 int ie_parse_wpa_from_data(const uint8_t *data, size_t len,
 						struct ie_rsn_info *info);
+bool is_ie_wfa_ie(const uint8_t *data, uint8_t len, uint8_t oi_type);
 bool is_ie_wpa_ie(const uint8_t *data, uint8_t len);
 bool ie_build_wpa(const struct ie_rsn_info *info, uint8_t *to);
 
@@ -449,10 +488,39 @@ bool ie_build_mobility_domain(uint16_t mdid, bool ft_over_ds,
 				bool resource_req, uint8_t *to);
 
 int ie_parse_fast_bss_transition(struct ie_tlv_iter *iter,
-				struct ie_ft_info *info);
+					uint32_t mic_len,
+					struct ie_ft_info *info);
 int ie_parse_fast_bss_transition_from_data(const uint8_t *data, uint8_t len,
-				struct ie_ft_info *info);
-bool ie_build_fast_bss_transition(const struct ie_ft_info *info, uint8_t *to);
+						uint32_t mic_len,
+						struct ie_ft_info *info);
+bool ie_build_fast_bss_transition(const struct ie_ft_info *info,
+					uint32_t mic_len, uint8_t *to);
 
 int ie_parse_neighbor_report(struct ie_tlv_iter *iter,
 				struct ie_neighbor_report_info *info);
+
+int ie_parse_osen_from_data(const uint8_t *data, size_t len,
+				struct ie_rsn_info *info);
+int ie_parse_osen(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info);
+
+bool ie_build_osen(const struct ie_rsn_info *info, uint8_t *to);
+
+int ie_parse_roaming_consortium(struct ie_tlv_iter *iter, size_t *num_anqp_out,
+				const uint8_t **oi1_out, size_t *oi1_len_out,
+				const uint8_t **oi2_out, size_t *oi2_len_out,
+				const uint8_t **oi3_out, size_t *oi3_len_out);
+
+int ie_parse_roaming_consortium_from_data(const uint8_t *data, size_t len,
+				size_t *num_anqp_out, const uint8_t **oi1_out,
+				size_t *oi1_len_out, const uint8_t **oi2_out,
+				size_t *oi2_len_out, const uint8_t **oi3_out,
+				size_t *oi3_len_out);
+
+int ie_build_roaming_consortium(const uint8_t *rc, size_t rc_len, uint8_t *to);
+
+int ie_parse_hs20_indication(struct ie_tlv_iter *iter, uint8_t *version,
+				uint16_t *pps_mo_id, uint8_t *domain_id);
+int ie_parse_hs20_indication_from_data(const uint8_t *data, size_t len,
+					uint8_t *version, uint16_t *pps_mo_id,
+					uint8_t *domain_id);
+int ie_build_hs20_indication(uint8_t version, uint8_t *to);

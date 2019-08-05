@@ -544,6 +544,20 @@ struct wsc_done {
 	uint8_t registrar_nonce[16];
 };
 
+int wsc_parse_primary_device_type(const uint8_t *pdu, size_t len,
+					struct wsc_primary_device_type *out);
+
+enum wsc_attr_flag {
+	WSC_ATTR_FLAG_REQUIRED  = 0x1,  /* Always required */
+	WSC_ATTR_FLAG_VERSION2  = 0x2,  /* Included if Version2 is present */
+	WSC_ATTR_FLAG_REGISTRAR = 0x4,  /* Included if Selected Registrar is true */
+};
+
+int wsc_parse_attrs(const unsigned char *pdu, unsigned int len,
+			bool *out_version2, struct wsc_wfa_ext_iter *ext_iter,
+			enum wsc_attr authenticator_type,
+			uint8_t *authenticator, int type, ...);
+
 int wsc_parse_credential(const uint8_t *pdu, uint32_t len,
 						struct wsc_credential *out);
 
@@ -627,6 +641,16 @@ uint8_t *wsc_build_wsc_ack(const struct wsc_ack *ack, size_t *out_len);
 uint8_t *wsc_build_wsc_nack(const struct wsc_nack *nack, size_t *out_len);
 
 uint8_t *wsc_build_wsc_done(const struct wsc_done *done, size_t *out_len);
+
+struct wsc_p2p_attrs {
+	bool version;
+	bool version2;
+	enum wsc_device_password_id device_password_id;
+	uint16_t config_methods;
+};
+
+uint8_t *wsc_build_p2p_attrs(const struct wsc_p2p_attrs *attrs,
+				size_t *out_len);
 
 bool wsc_uuid_from_addr(const uint8_t addr[], uint8_t *out_uuid);
 

@@ -50,6 +50,7 @@ enum crypto_akm {
 	CRYPTO_AKM_FT_OVER_FILS_SHA256 = 0x000fac10,
 	CRYPTO_AKM_FT_OVER_FILS_SHA384 = 0x000fac11,
 	CRYPTO_AKM_OWE = 0x000fac12,
+	CRYPTO_AKM_OSEN = 0x506f9a01,
 };
 
 /* Min & Max reported by crypto_cipher_key_len when ignoring WEP */
@@ -116,21 +117,21 @@ bool crypto_derive_pairwise_ptk(const uint8_t *pmk, size_t pmk_len,
 				uint8_t *out_ptk, size_t ptk_len,
 				enum l_checksum_type type);
 
-bool crypto_derive_pmk_r0(const uint8_t *xxkey,
+bool crypto_derive_pmk_r0(const uint8_t *xxkey, size_t xxkey_len,
 				const uint8_t *ssid, size_t ssid_len,
 				uint16_t mdid,
 				const uint8_t *r0khid, size_t r0kh_len,
-				const uint8_t *s0khid, uint8_t *out_pmk_r0,
-				uint8_t *out_pmk_r0_name);
+				const uint8_t *s0khid, bool sha384,
+				uint8_t *out_pmk_r0, uint8_t *out_pmk_r0_name);
 bool crypto_derive_pmk_r1(const uint8_t *pmk_r0,
 				const uint8_t *r1khid, const uint8_t *s1khid,
-				const uint8_t *pmk_r0_name,
+				const uint8_t *pmk_r0_name, bool sha384,
 				uint8_t *out_pmk_r1,
 				uint8_t *out_pmk_r1_name);
 bool crypto_derive_ft_ptk(const uint8_t *pmk_r1, const uint8_t *pmk_r1_name,
 				const uint8_t *addr1, const uint8_t *addr2,
 				const uint8_t *nonce1, const uint8_t *nonce2,
-				uint8_t *out_ptk, size_t ptk_len,
+				bool sha384, uint8_t *out_ptk, size_t ptk_len,
 				uint8_t *out_ptk_name);
 
 bool crypto_derive_pmkid(const uint8_t *pmk,

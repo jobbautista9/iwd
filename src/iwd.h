@@ -22,33 +22,30 @@
 
 #define uninitialized_var(x) x = x
 
+struct l_genl;
 struct l_genl_family;
 
 const struct l_settings *iwd_get_config(void);
+struct l_genl *iwd_get_genl(void);
 
-bool netdev_init(const char *whitelist, const char *blacklist);
+bool netdev_init(void);
 void netdev_exit(void);
 void netdev_set_nl80211(struct l_genl_family *nl80211);
 void netdev_shutdown(void);
 
-void network_init();
-void network_exit();
-
-void sim_auth_init(void);
-void sim_auth_exit(void);
-
-bool wsc_init(void);
-bool wsc_exit();
-
-bool known_networks_init(void);
-void known_networks_exit(void);
-
-bool device_init(void);
-void device_exit(void);
-
-bool station_init(void);
-void station_exit(void);
-
 bool manager_init(struct l_genl_family *in,
 			const char *if_whitelist, const char *if_blacklist);
 void manager_exit(void);
+
+struct iwd_module_desc {
+	const char *name;
+	int (*init)(void);
+	void (*exit)(void);
+	bool active;
+} __attribute__((aligned(8)));
+
+#define IWD_MODULE(name, init, exit)					\
+	static struct iwd_module_desc __iwd_module_ ## name		\
+		__attribute__((used, section("__iwd_module"), aligned(8))) = {\
+			#name, init, exit				\
+		};

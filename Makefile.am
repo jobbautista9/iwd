@@ -195,10 +195,10 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h src/missing.h \
 					src/knownnetworks.c \
 					src/rfkill.h src/rfkill.c \
 					src/ft.h src/ft.c \
-					src/ap.h src/ap.c \
-					src/adhoc.h src/adhoc.c \
+					src/ap.c src/adhoc.c \
 					src/sae.h src/sae.c \
 					src/nl80211util.h src/nl80211util.c \
+					src/nl80211cmd.h src/nl80211cmd.c \
 					src/owe.h src/owe.c \
 					src/blacklist.h src/blacklist.c \
 					src/manager.c \
@@ -206,8 +206,15 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h src/missing.h \
 					src/fils.h src/fils.c \
 					src/rtnlutil.h src/rtnlutil.c \
 					src/auth-proto.h \
+					src/anqp.h src/anqp.c \
+					src/anqputil.h src/anqputil.c \
+					src/netconfig.h src/netconfig.c\
+					src/resolve.h src/resolve.c\
+					src/hotspot.h src/hotspot.c \
+					src/p2putil.h src/p2putil.c \
 					$(eap_sources) \
 					$(builtin_sources)
+
 src_iwd_LDADD = $(ell_ldadd) -ldl
 src_iwd_DEPENDENCIES = $(ell_dependencies)
 
@@ -267,7 +274,10 @@ monitor_iwmon_SOURCES = monitor/main.c linux/nl80211.h \
 					src/crypto.h src/crypto.c \
 					src/watchlist.h src/watchlist.c \
 					src/eapolutil.h src/eapolutil.c \
-					src/handshake.h src/handshake.c
+					src/handshake.h src/handshake.c \
+					src/nl80211cmd.h src/nl80211cmd.c \
+					src/p2putil.c src/p2putil.h \
+					src/anqputil.h src/anqputil.c
 monitor_iwmon_LDADD = $(ell_ldadd)
 endif
 
@@ -319,7 +329,7 @@ unit_tests = unit/test-cmac-aes \
 		unit/test-crypto unit/test-eapol unit/test-mpdu \
 		unit/test-ie unit/test-util unit/test-ssid-security \
 		unit/test-arc4 unit/test-wsc unit/test-eap-mschapv2 \
-		unit/test-eap-sim unit/test-sae
+		unit/test-eap-sim unit/test-sae unit/test-p2p
 
 if CLIENT
 unit_tests += unit/test-client
@@ -453,6 +463,13 @@ unit_test_sae_SOURCES = unit/test-sae.c \
 				src/mpdu.h src/mpdu.c
 unit_test_sae_LDADD = $(ell_ldadd)
 
+unit_test_p2p_SOURCES = unit/test-p2p.c src/wscutil.h src/wscutil.c \
+				src/crypto.h src/crypto.c \
+				src/ie.h src/ie.c \
+				src/util.h src/util.c \
+				src/p2putil.h src/p2putil.c
+unit_test_p2p_LDADD = $(ell_ldadd)
+
 TESTS = $(unit_tests)
 
 manual_pages = doc/iwmon.1
@@ -551,8 +568,10 @@ ell/ell.h: Makefile
 		echo "#include <$$f>" >> $@ ; \
 	done
 
-SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && \
-		$(SED) -e 's,@libexecdir\@,$(libexecdir),g' \
+SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && $(SED) \
+		-e 's,@libexecdir\@,$(libexecdir),g' \
+		-e 's,@daemon_storagedir\@,$(daemon_storagedir),g' \
+		-e 's,@wired_storagedir\@,$(wired_storagedir),g' \
 		< $< > $@
 
 %.service: %.service.in Makefile

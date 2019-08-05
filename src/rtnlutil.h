@@ -25,3 +25,45 @@ uint32_t rtnl_set_linkmode_and_operstate(struct l_netlink *rtnl, int ifindex,
 					l_netlink_command_func_t cb,
 					void *user_data,
 					l_netlink_destroy_func_t destroy);
+
+uint32_t rtnl_set_mac(struct l_netlink *rtnl, int ifindex,
+					const uint8_t addr[static 6],
+					l_netlink_command_func_t cb,
+					void *user_data,
+					l_netlink_destroy_func_t destroy);
+
+void rtnl_ifaddr_extract(const struct ifaddrmsg *ifa, int bytes,
+				char **label, char **ip, char **broadcast);
+uint32_t rtnl_ifaddr_get(struct l_netlink *rtnl, l_netlink_command_func_t cb,
+				void *user_data,
+				l_netlink_destroy_func_t destroy);
+uint32_t rtnl_ifaddr_add(struct l_netlink *rtnl, int ifindex,
+				uint8_t prefix_len, const char *ip,
+				const char *broadcast,
+				l_netlink_command_func_t cb, void *user_data,
+				l_netlink_destroy_func_t destroy);
+uint32_t rtnl_ifaddr_delete(struct l_netlink *rtnl, int ifindex,
+				uint8_t prefix_len, const char *ip,
+				const char *broadcast,
+				l_netlink_command_func_t cb, void *user_data,
+				l_netlink_destroy_func_t destroy);
+
+void rtnl_route_extract_ipv4(const struct rtmsg *rtmsg, uint32_t len,
+				uint32_t *ifindex, char **dst, char **gateway,
+				char **src);
+uint32_t rtnl_route_dump_ipv4(struct l_netlink *rtnl,
+				l_netlink_command_func_t cb, void *user_data,
+				l_netlink_destroy_func_t destroy);
+uint32_t rtnl_route_ipv4_add_connected(struct l_netlink *rtnl, int ifindex,
+					uint8_t dst_len, const char *dst,
+					const char *src, uint8_t proto,
+					l_netlink_command_func_t cb,
+					void *user_data,
+					l_netlink_destroy_func_t destroy);
+uint32_t rtnl_route_ipv4_add_gateway(struct l_netlink *rtnl, int ifindex,
+					const char *gateway, const char *src,
+					uint32_t priority_offset,
+					uint8_t proto,
+					l_netlink_command_func_t cb,
+					void *user_data,
+					l_netlink_destroy_func_t destroy);

@@ -214,7 +214,7 @@ am__EXEEXT_8 = unit/test-cmac-aes$(EXEEXT) unit/test-hmac-md5$(EXEEXT) \
 	unit/test-util$(EXEEXT) unit/test-ssid-security$(EXEEXT) \
 	unit/test-arc4$(EXEEXT) unit/test-wsc$(EXEEXT) \
 	unit/test-eap-mschapv2$(EXEEXT) unit/test-eap-sim$(EXEEXT) \
-	unit/test-sae$(EXEEXT) $(am__EXEEXT_7)
+	unit/test-sae$(EXEEXT) unit/test-p2p$(EXEEXT) $(am__EXEEXT_7)
 @MAINTAINER_MODE_TRUE@am__EXEEXT_9 = $(am__EXEEXT_8)
 PROGRAMS = $(bin_PROGRAMS) $(libexec_PROGRAMS) $(noinst_PROGRAMS)
 am__client_iwctl_SOURCES_DIST = client/main.c client/adapter.c \
@@ -245,14 +245,17 @@ am__monitor_iwmon_SOURCES_DIST = monitor/main.c linux/nl80211.h \
 	src/wscutil.h src/wscutil.c src/mpdu.h src/mpdu.c src/util.h \
 	src/util.c src/crypto.h src/crypto.c src/watchlist.h \
 	src/watchlist.c src/eapolutil.h src/eapolutil.c \
-	src/handshake.h src/handshake.c
+	src/handshake.h src/handshake.c src/nl80211cmd.h \
+	src/nl80211cmd.c src/p2putil.c src/p2putil.h src/anqputil.h \
+	src/anqputil.c
 @MONITOR_TRUE@am_monitor_iwmon_OBJECTS = monitor/main.$(OBJEXT) \
 @MONITOR_TRUE@	monitor/nlmon.$(OBJEXT) monitor/pcap.$(OBJEXT) \
 @MONITOR_TRUE@	monitor/display.$(OBJEXT) src/ie.$(OBJEXT) \
 @MONITOR_TRUE@	src/wscutil.$(OBJEXT) src/mpdu.$(OBJEXT) \
 @MONITOR_TRUE@	src/util.$(OBJEXT) src/crypto.$(OBJEXT) \
 @MONITOR_TRUE@	src/watchlist.$(OBJEXT) src/eapolutil.$(OBJEXT) \
-@MONITOR_TRUE@	src/handshake.$(OBJEXT)
+@MONITOR_TRUE@	src/handshake.$(OBJEXT) src/nl80211cmd.$(OBJEXT) \
+@MONITOR_TRUE@	src/p2putil.$(OBJEXT) src/anqputil.$(OBJEXT)
 monitor_iwmon_OBJECTS = $(am_monitor_iwmon_OBJECTS)
 @MONITOR_TRUE@monitor_iwmon_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
@@ -266,20 +269,23 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/storage.c src/network.h src/network.c src/wsc.c \
 	src/backtrace.h src/backtrace.c src/knownnetworks.h \
 	src/knownnetworks.c src/rfkill.h src/rfkill.c src/ft.h \
-	src/ft.c src/ap.h src/ap.c src/adhoc.h src/adhoc.c src/sae.h \
-	src/sae.c src/nl80211util.h src/nl80211util.c src/owe.h \
-	src/owe.c src/blacklist.h src/blacklist.c src/manager.c \
-	src/erp.h src/erp.c src/fils.h src/fils.c src/rtnlutil.h \
-	src/rtnlutil.c src/auth-proto.h src/eap.c src/eap.h \
-	src/eap-private.h src/eap-wsc.c src/eap-wsc.h src/eap-md5.c \
-	src/eap-tls.c src/eap-ttls.c src/eap-mschapv2.c \
-	src/eap-mschapv2.h src/eap-sim.c src/eap-aka.c src/eap-peap.c \
-	src/eap-gtc.c src/eap-pwd.c src/util.h src/util.c src/crypto.h \
-	src/crypto.c src/wscutil.h src/wscutil.c src/simutil.h \
-	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
-	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c \
-	src/mschaputil.h src/mschaputil.c plugins/sim_hardcoded.c \
-	plugins/ofono.c
+	src/ft.c src/ap.c src/adhoc.c src/sae.h src/sae.c \
+	src/nl80211util.h src/nl80211util.c src/nl80211cmd.h \
+	src/nl80211cmd.c src/owe.h src/owe.c src/blacklist.h \
+	src/blacklist.c src/manager.c src/erp.h src/erp.c src/fils.h \
+	src/fils.c src/rtnlutil.h src/rtnlutil.c src/auth-proto.h \
+	src/anqp.h src/anqp.c src/anqputil.h src/anqputil.c \
+	src/netconfig.h src/netconfig.c src/resolve.h src/resolve.c \
+	src/hotspot.h src/hotspot.c src/p2putil.h src/p2putil.c \
+	src/eap.c src/eap.h src/eap-private.h src/eap-wsc.c \
+	src/eap-wsc.h src/eap-md5.c src/eap-tls.c src/eap-ttls.c \
+	src/eap-mschapv2.c src/eap-mschapv2.h src/eap-sim.c \
+	src/eap-aka.c src/eap-peap.c src/eap-gtc.c src/eap-pwd.c \
+	src/util.h src/util.c src/crypto.h src/crypto.c src/wscutil.h \
+	src/wscutil.c src/simutil.h src/simutil.c src/simauth.h \
+	src/simauth.c src/watchlist.h src/watchlist.c \
+	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
+	src/mschaputil.c plugins/sim_hardcoded.c plugins/ofono.c
 am__objects_3 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
 	src/eap-md5.$(OBJEXT) src/eap-tls.$(OBJEXT) \
 	src/eap-ttls.$(OBJEXT) src/eap-mschapv2.$(OBJEXT) \
@@ -305,10 +311,14 @@ am__objects_6 = $(am__objects_4) $(am__objects_5)
 @DAEMON_TRUE@	src/knownnetworks.$(OBJEXT) src/rfkill.$(OBJEXT) \
 @DAEMON_TRUE@	src/ft.$(OBJEXT) src/ap.$(OBJEXT) \
 @DAEMON_TRUE@	src/adhoc.$(OBJEXT) src/sae.$(OBJEXT) \
-@DAEMON_TRUE@	src/nl80211util.$(OBJEXT) src/owe.$(OBJEXT) \
+@DAEMON_TRUE@	src/nl80211util.$(OBJEXT) \
+@DAEMON_TRUE@	src/nl80211cmd.$(OBJEXT) src/owe.$(OBJEXT) \
 @DAEMON_TRUE@	src/blacklist.$(OBJEXT) src/manager.$(OBJEXT) \
 @DAEMON_TRUE@	src/erp.$(OBJEXT) src/fils.$(OBJEXT) \
-@DAEMON_TRUE@	src/rtnlutil.$(OBJEXT) $(am__objects_3) \
+@DAEMON_TRUE@	src/rtnlutil.$(OBJEXT) src/anqp.$(OBJEXT) \
+@DAEMON_TRUE@	src/anqputil.$(OBJEXT) src/netconfig.$(OBJEXT) \
+@DAEMON_TRUE@	src/resolve.$(OBJEXT) src/hotspot.$(OBJEXT) \
+@DAEMON_TRUE@	src/p2putil.$(OBJEXT) $(am__objects_3) \
 @DAEMON_TRUE@	$(am__objects_6)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am__tools_hwsim_SOURCES_DIST = tools/hwsim.c src/mpdu.h src/util.h \
@@ -396,6 +406,11 @@ am_unit_test_mpdu_OBJECTS = unit/test-mpdu.$(OBJEXT) \
 	src/mpdu.$(OBJEXT) src/ie.$(OBJEXT)
 unit_test_mpdu_OBJECTS = $(am_unit_test_mpdu_OBJECTS)
 unit_test_mpdu_DEPENDENCIES = $(am__DEPENDENCIES_1)
+am_unit_test_p2p_OBJECTS = unit/test-p2p.$(OBJEXT) \
+	src/wscutil.$(OBJEXT) src/crypto.$(OBJEXT) src/ie.$(OBJEXT) \
+	src/util.$(OBJEXT) src/p2putil.$(OBJEXT)
+unit_test_p2p_OBJECTS = $(am_unit_test_p2p_OBJECTS)
+unit_test_p2p_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am_unit_test_prf_sha1_OBJECTS = unit/test-prf-sha1.$(OBJEXT) \
 	src/crypto.$(OBJEXT)
 unit_test_prf_sha1_OBJECTS = $(am_unit_test_prf_sha1_OBJECTS)
@@ -482,9 +497,10 @@ SOURCES = $(ell_libell_internal_la_SOURCES) $(client_iwctl_SOURCES) \
 	$(unit_test_hmac_sha1_SOURCES) \
 	$(unit_test_hmac_sha256_SOURCES) $(unit_test_ie_SOURCES) \
 	$(unit_test_kdf_sha256_SOURCES) $(unit_test_mpdu_SOURCES) \
-	$(unit_test_prf_sha1_SOURCES) $(unit_test_sae_SOURCES) \
-	$(unit_test_ssid_security_SOURCES) $(unit_test_util_SOURCES) \
-	$(unit_test_wsc_SOURCES) $(wired_ead_SOURCES)
+	$(unit_test_p2p_SOURCES) $(unit_test_prf_sha1_SOURCES) \
+	$(unit_test_sae_SOURCES) $(unit_test_ssid_security_SOURCES) \
+	$(unit_test_util_SOURCES) $(unit_test_wsc_SOURCES) \
+	$(wired_ead_SOURCES)
 DIST_SOURCES = $(am__ell_libell_internal_la_SOURCES_DIST) \
 	$(am__client_iwctl_SOURCES_DIST) \
 	$(am__monitor_iwmon_SOURCES_DIST) $(am__src_iwd_SOURCES_DIST) \
@@ -497,9 +513,10 @@ DIST_SOURCES = $(am__ell_libell_internal_la_SOURCES_DIST) \
 	$(unit_test_hmac_sha1_SOURCES) \
 	$(unit_test_hmac_sha256_SOURCES) $(unit_test_ie_SOURCES) \
 	$(unit_test_kdf_sha256_SOURCES) $(unit_test_mpdu_SOURCES) \
-	$(unit_test_prf_sha1_SOURCES) $(unit_test_sae_SOURCES) \
-	$(unit_test_ssid_security_SOURCES) $(unit_test_util_SOURCES) \
-	$(unit_test_wsc_SOURCES) $(am__wired_ead_SOURCES_DIST)
+	$(unit_test_p2p_SOURCES) $(unit_test_prf_sha1_SOURCES) \
+	$(unit_test_sae_SOURCES) $(unit_test_ssid_security_SOURCES) \
+	$(unit_test_util_SOURCES) $(unit_test_wsc_SOURCES) \
+	$(am__wired_ead_SOURCES_DIST)
 am__can_run_installinfo = \
   case $$AM_UPDATE_INFO_DIR in \
     n|no|NO) false;; \
@@ -846,6 +863,7 @@ build_cpu = @build_cpu@
 build_os = @build_os@
 build_vendor = @build_vendor@
 builddir = @builddir@
+daemon_storagedir = @daemon_storagedir@
 datadir = @datadir@
 datarootdir = @datarootdir@
 docdir = @docdir@
@@ -879,6 +897,7 @@ target_alias = @target_alias@
 top_build_prefix = @top_build_prefix@
 top_builddir = @top_builddir@
 top_srcdir = @top_srcdir@
+wired_storagedir = @wired_storagedir@
 AM_MAKEFLAGS = --no-print-directory
 ACLOCAL_AMFLAGS = -I build-aux
 builtin_modules = $(am__append_2) $(am__append_4)
@@ -1053,10 +1072,10 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/knownnetworks.c \
 @DAEMON_TRUE@					src/rfkill.h src/rfkill.c \
 @DAEMON_TRUE@					src/ft.h src/ft.c \
-@DAEMON_TRUE@					src/ap.h src/ap.c \
-@DAEMON_TRUE@					src/adhoc.h src/adhoc.c \
+@DAEMON_TRUE@					src/ap.c src/adhoc.c \
 @DAEMON_TRUE@					src/sae.h src/sae.c \
 @DAEMON_TRUE@					src/nl80211util.h src/nl80211util.c \
+@DAEMON_TRUE@					src/nl80211cmd.h src/nl80211cmd.c \
 @DAEMON_TRUE@					src/owe.h src/owe.c \
 @DAEMON_TRUE@					src/blacklist.h src/blacklist.c \
 @DAEMON_TRUE@					src/manager.c \
@@ -1064,6 +1083,12 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/fils.h src/fils.c \
 @DAEMON_TRUE@					src/rtnlutil.h src/rtnlutil.c \
 @DAEMON_TRUE@					src/auth-proto.h \
+@DAEMON_TRUE@					src/anqp.h src/anqp.c \
+@DAEMON_TRUE@					src/anqputil.h src/anqputil.c \
+@DAEMON_TRUE@					src/netconfig.h src/netconfig.c\
+@DAEMON_TRUE@					src/resolve.h src/resolve.c\
+@DAEMON_TRUE@					src/hotspot.h src/hotspot.c \
+@DAEMON_TRUE@					src/p2putil.h src/p2putil.c \
 @DAEMON_TRUE@					$(eap_sources) \
 @DAEMON_TRUE@					$(builtin_sources)
 
@@ -1097,7 +1122,10 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @MONITOR_TRUE@					src/crypto.h src/crypto.c \
 @MONITOR_TRUE@					src/watchlist.h src/watchlist.c \
 @MONITOR_TRUE@					src/eapolutil.h src/eapolutil.c \
-@MONITOR_TRUE@					src/handshake.h src/handshake.c
+@MONITOR_TRUE@					src/handshake.h src/handshake.c \
+@MONITOR_TRUE@					src/nl80211cmd.h src/nl80211cmd.c \
+@MONITOR_TRUE@					src/p2putil.c src/p2putil.h \
+@MONITOR_TRUE@					src/anqputil.h src/anqputil.c
 
 @MONITOR_TRUE@monitor_iwmon_LDADD = $(ell_ldadd)
 @WIRED_TRUE@wired_ead_SOURCES = wired/main.c wired/ethdev.h wired/ethdev.c \
@@ -1120,7 +1148,7 @@ unit_tests = unit/test-cmac-aes unit/test-hmac-md5 unit/test-hmac-sha1 \
 	unit/test-crypto unit/test-eapol unit/test-mpdu unit/test-ie \
 	unit/test-util unit/test-ssid-security unit/test-arc4 \
 	unit/test-wsc unit/test-eap-mschapv2 unit/test-eap-sim \
-	unit/test-sae $(am__append_20)
+	unit/test-sae unit/test-p2p $(am__append_20)
 unit_test_eap_sim_SOURCES = unit/test-eap-sim.c \
 		src/crypto.h src/crypto.c src/simutil.h src/simutil.c \
 		src/ie.h src/ie.c \
@@ -1241,6 +1269,13 @@ unit_test_sae_SOURCES = unit/test-sae.c \
 				src/mpdu.h src/mpdu.c
 
 unit_test_sae_LDADD = $(ell_ldadd)
+unit_test_p2p_SOURCES = unit/test-p2p.c src/wscutil.h src/wscutil.c \
+				src/crypto.h src/crypto.c \
+				src/ie.h src/ie.c \
+				src/util.h src/util.c \
+				src/p2putil.h src/p2putil.c
+
+unit_test_p2p_LDADD = $(ell_ldadd)
 manual_pages = doc/iwmon.1
 @BUILD_DOCS_TRUE@dist_man_MANS = $(manual_pages)
 EXTRA_DIST = src/genbuiltin src/iwd.service.in src/net.connman.iwd.service \
@@ -1265,8 +1300,10 @@ MAINTAINERCLEANFILES = Makefile.in configure config.h.in aclocal.m4
 true_redirect_openssl = 2>&1
 false_redirect_openssl = 2>/dev/null
 BUILT_SOURCES = $(ell_built_sources) src/builtin.h
-SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && \
-		$(SED) -e 's,@libexecdir\@,$(libexecdir),g' \
+SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && $(SED) \
+		-e 's,@libexecdir\@,$(libexecdir),g' \
+		-e 's,@daemon_storagedir\@,$(daemon_storagedir),g' \
+		-e 's,@wired_storagedir\@,$(wired_storagedir),g' \
 		< $< > $@
 
 all: $(BUILT_SOURCES) config.h
@@ -1579,6 +1616,12 @@ src/eapolutil.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/handshake.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
+src/nl80211cmd.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/p2putil.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/anqputil.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
 
 monitor/iwmon$(EXEEXT): $(monitor_iwmon_OBJECTS) $(monitor_iwmon_DEPENDENCIES) $(EXTRA_monitor_iwmon_DEPENDENCIES) monitor/$(am__dirstamp)
 	@rm -f monitor/iwmon$(EXEEXT)
@@ -1624,6 +1667,13 @@ src/manager.$(OBJEXT): src/$(am__dirstamp) \
 src/erp.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/fils.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/rtnlutil.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/anqp.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/netconfig.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/resolve.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/hotspot.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/eap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/eap-wsc.$(OBJEXT): src/$(am__dirstamp) \
@@ -1770,6 +1820,12 @@ unit/test-mpdu.$(OBJEXT): unit/$(am__dirstamp) \
 unit/test-mpdu$(EXEEXT): $(unit_test_mpdu_OBJECTS) $(unit_test_mpdu_DEPENDENCIES) $(EXTRA_unit_test_mpdu_DEPENDENCIES) unit/$(am__dirstamp)
 	@rm -f unit/test-mpdu$(EXEEXT)
 	$(AM_V_CCLD)$(LINK) $(unit_test_mpdu_OBJECTS) $(unit_test_mpdu_LDADD) $(LIBS)
+unit/test-p2p.$(OBJEXT): unit/$(am__dirstamp) \
+	unit/$(DEPDIR)/$(am__dirstamp)
+
+unit/test-p2p$(EXEEXT): $(unit_test_p2p_OBJECTS) $(unit_test_p2p_DEPENDENCIES) $(EXTRA_unit_test_p2p_DEPENDENCIES) unit/$(am__dirstamp)
+	@rm -f unit/test-p2p$(EXEEXT)
+	$(AM_V_CCLD)$(LINK) $(unit_test_p2p_OBJECTS) $(unit_test_p2p_LDADD) $(LIBS)
 unit/test-prf-sha1.$(OBJEXT): unit/$(am__dirstamp) \
 	unit/$(DEPDIR)/$(am__dirstamp)
 
@@ -1909,6 +1965,8 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@plugins/$(DEPDIR)/sim_hardcoded.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/adhoc.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/agent.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/anqp.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/anqputil.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ap.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/backtrace.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/blacklist.Po@am__quote@
@@ -1934,17 +1992,22 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/fils.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ft.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/handshake.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/hotspot.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ie.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/knownnetworks.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/main.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/manager.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/mpdu.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/mschaputil.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/netconfig.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/netdev.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/network.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/nl80211cmd.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/nl80211util.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/owe.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/p2putil.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/plugin.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/resolve.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/rfkill.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/rtnlutil.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/sae.Po@am__quote@
@@ -1973,6 +2036,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-ie.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-kdf-sha256.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-mpdu.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-p2p.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-prf-sha1.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-sae.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@unit/$(DEPDIR)/test-ssid-security.Po@am__quote@
@@ -2465,6 +2529,13 @@ unit/test-eap-sim.log: unit/test-eap-sim$(EXEEXT)
 unit/test-sae.log: unit/test-sae$(EXEEXT)
 	@p='unit/test-sae$(EXEEXT)'; \
 	b='unit/test-sae'; \
+	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
+	--log-file $$b.log --trs-file $$b.trs \
+	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \
+	"$$tst" $(AM_TESTS_FD_REDIRECT)
+unit/test-p2p.log: unit/test-p2p$(EXEEXT)
+	@p='unit/test-p2p$(EXEEXT)'; \
+	b='unit/test-p2p'; \
 	$(am__check_pre) $(LOG_DRIVER) --test-name "$$f" \
 	--log-file $$b.log --trs-file $$b.trs \
 	$(am__common_driver_flags) $(AM_LOG_DRIVER_FLAGS) $(LOG_DRIVER_FLAGS) -- $(LOG_COMPILE) \

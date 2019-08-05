@@ -50,6 +50,10 @@
 #include "src/blacklist.h"
 #include "src/mpdu.h"
 #include "src/erp.h"
+#include "src/netconfig.h"
+#include "src/anqp.h"
+#include "src/anqputil.h"
+#include "src/hotspot.h"
 
 static struct l_queue *station_list;
 static uint32_t netdev_watch;
@@ -59,6 +63,8 @@ struct station {
 	struct watchlist state_watches;
 	struct scan_bss *connected_bss;
 	struct network *connected_network;
+	struct scan_bss *connect_pending_bss;
+	struct network *connect_pending_network;
 	struct l_queue *autoconnect_list;
 	struct l_queue *bss_list;
 	struct l_queue *hidden_bss_list_sorted;
@@ -81,12 +87,20 @@ struct station {
 	struct wiphy *wiphy;
 	struct netdev *netdev;
 
+	struct l_queue *anqp_pending;
+
 	bool preparing_roam : 1;
 	bool signal_low : 1;
 	bool roam_no_orig_ap : 1;
 	bool ap_directed_roaming : 1;
 	bool scanning : 1;
 	bool autoconnect : 1;
+};
+
+struct anqp_entry {
+	struct station *station;
+	struct network *network;
+	uint32_t pending;
 };
 
 struct wiphy *station_get_wiphy(struct station *station)
@@ -200,10 +214,6 @@ static void station_add_autoconnect_bss(struct station *station,
 static void bss_free(void *data)
 {
 	struct scan_bss *bss = data;
-	const char *addr;
-
-	addr = util_address_to_string(bss->addr);
-	l_debug("Freeing BSS %s", addr);
 
 	scan_bss_free(bss);
 }
@@ -391,6 +401,124 @@ static void station_bss_list_remove_expired_bsses(struct station *station)
 	l_queue_foreach_remove(station->bss_list, bss_free_if_expired, &data);
 }
 
+static void station_anqp_response_cb(enum anqp_result result,
+					const void *anqp, size_t anqp_len,
+					void *user_data)
+{
+	struct anqp_entry *entry = user_data;
+	struct station *station = entry->station;
+	struct network *network = entry->network;
+	struct anqp_iter iter;
+	uint16_t id;
+	uint16_t len;
+	const void *data;
+	char **realms = NULL;
+
+	entry->pending = 0;
+
+	l_debug("");
+
+	if (result == ANQP_TIMEOUT) {
+		l_queue_remove(station->anqp_pending, entry);
+		/* TODO: try next BSS */
+		goto request_done;
+	}
+
+	anqp_iter_init(&iter, anqp, anqp_len);
+
+	while (anqp_iter_next(&iter, &id, &len, &data)) {
+		switch (id) {
+		case ANQP_NAI_REALM:
+			if (realms)
+				break;
+
+			realms = anqp_parse_nai_realms(data, len);
+			if (!realms)
+				goto request_done;
+
+			break;
+		default:
+			continue;
+		}
+	}
+
+	network_set_nai_realms(network, realms);
+
+request_done:
+	l_queue_remove(station->anqp_pending, entry);
+
+	/* If no more requests, resume scanning */
+	if (l_queue_isempty(station->anqp_pending))
+		scan_resume(netdev_get_wdev_id(station->netdev));
+}
+
+static bool station_start_anqp(struct station *station, struct network *network,
+					struct scan_bss *bss)
+{
+	uint8_t anqp[256];
+	uint8_t *ptr = anqp;
+	struct anqp_entry *entry;
+	bool anqp_disabled = true;
+
+	if (!bss->hs20_capable)
+		return false;
+
+	/* Network already has ANQP data/HESSID */
+	if (hs20_find_settings_file(network))
+		return false;
+
+	l_settings_get_bool(iwd_get_config(), "General", "disable_anqp",
+				&anqp_disabled);
+
+	if (anqp_disabled) {
+		l_debug("Not querying AP for ANQP data (disabled)");
+		return false;
+	}
+
+	entry = l_new(struct anqp_entry, 1);
+	entry->station = station;
+	entry->network = network;
+
+	l_put_le16(ANQP_QUERY_LIST, ptr);
+	ptr += 2;
+	l_put_le16(2, ptr);
+	ptr += 2;
+	l_put_le16(ANQP_NAI_REALM, ptr);
+	ptr += 2;
+	l_put_le16(ANQP_VENDOR_SPECIFIC, ptr);
+	ptr += 2;
+	/* vendor length */
+	l_put_le16(7, ptr);
+	ptr += 2;
+	*ptr++ = 0x50;
+	*ptr++ = 0x6f;
+	*ptr++ = 0x9a;
+	*ptr++ = 0x11; /* HS20 ANQP Element type */
+	*ptr++ = ANQP_HS20_QUERY_LIST;
+	*ptr++ = 0; /* reserved */
+	*ptr++ = ANQP_HS20_OSU_PROVIDERS_NAI_LIST;
+
+	/*
+	 * TODO: Additional roaming consortiums can be queried if indicated
+	 * by the roaming consortium IE. The IE contains up to the first 3, and
+	 * these are checked in hs20_find_settings_file.
+	 */
+
+	entry->pending = anqp_request(netdev_get_ifindex(station->netdev),
+					netdev_get_address(station->netdev),
+					bss, anqp, ptr - anqp,
+					station_anqp_response_cb,
+					entry, l_free);
+	if (!entry->pending) {
+		l_free(entry);
+		return false;
+	}
+
+	l_queue_push_head(station->anqp_pending, entry);
+
+	return true;
+}
+
 /*
  * Used when scan results were obtained; either from scan running
  * inside station module or scans running in other state machines, e.g. wsc
@@ -401,6 +529,7 @@ void station_set_scan_results(struct station *station,
 {
 	const struct l_queue_entry *bss_entry;
 	struct network *network;
+	bool wait_for_anqp = false;
 
 	while ((network = l_queue_pop_head(station->networks_sorted)))
 		network_bss_list_clear(network);
@@ -442,7 +571,13 @@ void station_set_scan_results(struct station *station,
 		struct scan_bss *bss = bss_entry->data;
 		struct network *network = station_add_seen_bss(station, bss);
 
-		if (!network || !add_to_autoconnect)
+		if (!network)
+			continue;
+
+		if (station_start_anqp(station, network, bss))
+			wait_for_anqp = true;
+
+		if (!add_to_autoconnect)
 			continue;
 
 		station_add_autoconnect_bss(station, network, bss);
@@ -451,6 +586,19 @@ void station_set_scan_results(struct station *station,
 	station->bss_list = new_bss_list;
 
 	l_hashmap_foreach_remove(station->networks, process_network, station);
+
+	/*
+	 * ANQP requests are scheduled in the same manor as scans, and cannot
+	 * be done simultaneously. To avoid long queue times (waiting for a
+	 * scan to finish) its best to stop scanning, do ANQP, then resume
+	 * scanning.
+	 *
+	 * TODO: It may be possible for some hardware to actually scan and do
+	 * ANQP at the same time. Detecting this could allow us to continue
+	 * scanning.
+	 */
+	if (wait_for_anqp)
+		scan_suspend(netdev_get_wdev_id(station->netdev));
 }
 
 static void station_reconnect(struct station *station);
@@ -543,6 +691,7 @@ static int station_build_handshake_rsn(struct handshake_state *hs,
 	uint8_t rsne_buf[256];
 	struct ie_rsn_info info;
 	uint32_t mfp_setting;
+	uint8_t *ap_ie;
 
 	memset(&info, 0, sizeof(info));
 
@@ -582,9 +731,23 @@ static int station_build_handshake_rsn(struct handshake_state *hs,
 	if (!info.pairwise_ciphers || !info.group_cipher)
 		goto not_supported;
 
+	/* Management frame protection is explicitly off for OSEN */
+	if (info.akm_suites & IE_RSN_AKM_SUITE_OSEN) {
+		info.group_management_cipher =
+					IE_RSN_CIPHER_SUITE_NO_GROUP_TRAFFIC;
+		goto build_ie;
+	}
+
 	if (!l_settings_get_uint(settings, "General",
-			"ManagementFrameProtection", &mfp_setting))
-		mfp_setting = 1;
+					"management_frame_protection",
+					&mfp_setting)) {
+		if (!l_settings_get_uint(settings, "General",
+				"ManagementFrameProtection", &mfp_setting)) {
+			mfp_setting = 1;
+		} else
+			l_warn("ManagementFrameProtection option is deprecated "
+				"use 'management_frame_protection'");
+	}
 
 	if (mfp_setting > 2) {
 		l_error("Invalid MFP value, using default of 1");
@@ -620,20 +783,31 @@ static int station_build_handshake_rsn(struct handshake_state *hs,
 	if (bss_info.mfpr && !info.mfpc)
 		goto not_supported;
 
+build_ie:
 	/* RSN takes priority */
 	if (bss->rsne) {
+		ap_ie = bss->rsne;
 		ie_build_rsne(&info, rsne_buf);
-		handshake_state_set_authenticator_rsn(hs, bss->rsne);
-		handshake_state_set_supplicant_rsn(hs, rsne_buf);
-	} else {
+	} else if (bss->wpa) {
+		ap_ie = bss->wpa;
 		ie_build_wpa(&info, rsne_buf);
-		handshake_state_set_authenticator_wpa(hs, bss->wpa);
-		handshake_state_set_supplicant_wpa(hs, rsne_buf);
-	}
+	} else if (bss->osen) {
+		ap_ie = bss->osen;
+		ie_build_osen(&info, rsne_buf);
+	} else
+		goto not_supported;
+
+	if (!handshake_state_set_authenticator_ie(hs, ap_ie))
+		goto not_supported;
+
+	if (!handshake_state_set_supplicant_ie(hs, rsne_buf))
+		goto not_supported;
 
 	if (info.akm_suites & (IE_RSN_AKM_SUITE_FT_OVER_8021X |
 				IE_RSN_AKM_SUITE_FT_USING_PSK |
-				IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256))
+				IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256 |
+				IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256 |
+				IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384))
 		add_mde = true;
 
 open_network:
@@ -663,9 +837,11 @@ static struct handshake_state *station_handshake_setup(struct station *station,
 							struct scan_bss *bss)
 {
 	enum security security = network_get_security(network);
+	struct l_settings *settings = network_get_settings(network);
 	struct wiphy *wiphy = station->wiphy;
 	struct handshake_state *hs;
 	const char *ssid;
+	uint32_t eapol_proto_version;
 
 	hs = netdev_handshake_state_new(station->netdev);
 
@@ -676,6 +852,21 @@ static struct handshake_state *station_handshake_setup(struct station *station,
 
 	ssid = network_get_ssid(network);
 	handshake_state_set_ssid(hs, (void *) ssid, strlen(ssid));
+
+	if (settings && l_settings_get_uint(settings, "EAPoL",
+						"ProtocolVersion",
+						&eapol_proto_version)) {
+		if (eapol_proto_version > 3) {
+			l_warn("Invalid ProtocolVersion value - should be 0-3");
+			eapol_proto_version = 0;
+		}
+
+		if (eapol_proto_version)
+			l_debug("Overriding EAPoL protocol version to: %u",
+					eapol_proto_version);
+
+		handshake_state_set_protocol_version(hs, eapol_proto_version);
+	}
 
 	if (security == SECURITY_PSK) {
 		/* SAE will generate/set the PMK */
@@ -704,8 +895,10 @@ static struct handshake_state *station_handshake_setup(struct station *station,
 	 * wait to get it until here because at this point so there are no
 	 * failure paths before fils_sm_new
 	 */
-	if (hs->akm_suite == IE_RSN_AKM_SUITE_FILS_SHA256 ||
-			hs->akm_suite == IE_RSN_AKM_SUITE_FILS_SHA384)
+	if (hs->akm_suite & (IE_RSN_AKM_SUITE_FILS_SHA256 |
+				IE_RSN_AKM_SUITE_FILS_SHA384 |
+				IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256 |
+				IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384))
 		hs->erp_cache = erp_cache_get(network_get_ssid(network));
 
 	return hs;
@@ -746,9 +939,9 @@ static void periodic_scan_trigger(int err, void *user_data)
 
 static void periodic_scan_stop(struct station *station)
 {
-	uint32_t index = netdev_get_ifindex(station->netdev);
+	uint64_t id = netdev_get_wdev_id(station->netdev);
 
-	scan_periodic_stop(index);
+	scan_periodic_stop(id);
 
 	station_property_set_scanning(station, false);
 }
@@ -765,7 +958,7 @@ static uint32_t station_scan_trigger(struct station *station,
 					scan_notify_func_t notify,
 					scan_destroy_func_t destroy)
 {
-	uint32_t index = netdev_get_ifindex(station->netdev);
+	uint64_t id = netdev_get_wdev_id(station->netdev);
 
 	if (wiphy_can_randomize_mac_addr(station->wiphy) ||
 				station_needs_hidden_network_scan(station) ||
@@ -780,11 +973,11 @@ static uint32_t station_scan_trigger(struct station *station,
 
 		params.freqs = freqs;
 
-		return scan_active_full(index, &params, triggered, notify,
-							station, destroy);
+		return scan_active_full(id, &params, triggered, notify,
+					station, destroy);
 	}
 
-	return scan_passive(index, freqs, triggered, notify, station, destroy);
+	return scan_passive(id, freqs, triggered, notify, station, destroy);
 }
 
 static bool station_quick_scan_results(int err, struct l_queue *bss_list,
@@ -893,7 +1086,7 @@ static const char *station_state_to_string(enum station_state state)
 static void station_enter_state(struct station *station,
 						enum station_state state)
 {
-	uint32_t index = netdev_get_ifindex(station->netdev);
+	uint64_t id = netdev_get_wdev_id(station->netdev);
 	struct l_dbus *dbus = dbus_get_bus();
 	bool disconnected;
 
@@ -913,7 +1106,7 @@ static void station_enter_state(struct station *station,
 		station_quick_scan_trigger(station);
 		break;
 	case STATION_STATE_AUTOCONNECT_FULL:
-		scan_periodic_start(index, periodic_scan_trigger,
+		scan_periodic_start(id, periodic_scan_trigger,
 					new_scan_results, station);
 		break;
 	case STATION_STATE_CONNECTING:
@@ -981,7 +1174,7 @@ static void station_roam_state_clear(struct station *station)
 	station->roam_min_time.tv_sec = 0;
 
 	if (station->roam_scan_id)
-		scan_cancel(netdev_get_ifindex(station->netdev),
+		scan_cancel(netdev_get_wdev_id(station->netdev),
 						station->roam_scan_id);
 }
 
@@ -1195,7 +1388,7 @@ static void station_preauthenticate_cb(struct netdev *netdev,
 		rsn_info.pmkids = pmkid;
 
 		ie_build_rsne(&rsn_info, rsne_buf);
-		handshake_state_set_supplicant_rsn(new_hs, rsne_buf);
+		handshake_state_set_supplicant_ie(new_hs, rsne_buf);
 	}
 
 	station_transition_reassociate(station, bss, new_hs);
@@ -1453,7 +1646,7 @@ static void station_roam_scan(struct station *station,
 		params.ssid = network_get_ssid(station->connected_network);
 
 	station->roam_scan_id =
-		scan_active_full(netdev_get_ifindex(station->netdev), &params,
+		scan_active_full(netdev_get_wdev_id(station->netdev), &params,
 					station_roam_scan_triggered,
 					station_roam_scan_notify, station,
 					station_roam_scan_destroy);
@@ -1994,6 +2187,12 @@ static void station_connect_cb(struct netdev *netdev, enum netdev_result result,
 int __station_connect_network(struct station *station, struct network *network,
 				struct scan_bss *bss)
 {
+	const uint8_t *rc = NULL;
+	uint8_t hs20_ie[7];
+	size_t rc_len = 0;
+	uint8_t rc_buf[32];
+	struct iovec iov[2];
+	int iov_elems = 0;
 	struct handshake_state *hs;
 	int r;
 
@@ -2001,8 +2200,32 @@ int __station_connect_network(struct station *station, struct network *network,
 	if (!hs)
 		return -ENOTSUP;
 
-	r = netdev_connect(station->netdev, bss, hs, station_netdev_event,
-					station_connect_cb, station);
+	if (bss->hs20_capable) {
+		/* Include HS20 Indication with (Re)Association */
+		ie_build_hs20_indication(bss->hs20_version, hs20_ie);
+
+		iov[iov_elems].iov_base = hs20_ie;
+		iov[iov_elems].iov_len = hs20_ie[1] + 2;
+		iov_elems++;
+
+		/*
+		 * If a matching roaming consortium OI is found for the network
+		 * this single RC value will be set in the handshake and used
+		 * during (Re)Association.
+		 */
+		rc = hs20_get_roaming_consortium(network, &rc_len);
+		if (rc) {
+			ie_build_roaming_consortium(rc, rc_len, rc_buf);
+
+			iov[iov_elems].iov_base = rc_buf;
+			iov[iov_elems].iov_len = rc_buf[1] + 2;
+			iov_elems++;
+		}
+	}
+
+	r = netdev_connect(station->netdev, bss, hs, iov_elems ? iov : NULL,
+				iov_elems, station_netdev_event,
+				station_connect_cb, station);
 	if (r < 0) {
 		handshake_state_free(hs);
 		return r;
@@ -2014,6 +2237,53 @@ int __station_connect_network(struct station *station, struct network *network,
 	return 0;
 }
 
+static void station_disconnect_onconnect_cb(struct netdev *netdev, bool success,
+					void *user_data)
+{
+	struct station *station = user_data;
+	int err;
+
+	station_enter_state(station, STATION_STATE_DISCONNECTED);
+
+	err = __station_connect_network(station,
+					station->connect_pending_network,
+					station->connect_pending_bss);
+
+	station->connect_pending_network = NULL;
+	station->connect_pending_bss = NULL;
+
+	if (err < 0) {
+		l_dbus_send(dbus_get_bus(),
+				dbus_error_from_errno(err,
+						station->connect_pending));
+		return;
+	}
+
+	station_enter_state(station, STATION_STATE_CONNECTING);
+}
+
+static void station_disconnect_onconnect(struct station *station,
+					struct network *network,
+					struct scan_bss *bss,
+					struct l_dbus_message *message)
+{
+	if (netdev_disconnect(station->netdev, station_disconnect_onconnect_cb,
+								station) < 0) {
+		l_dbus_send(dbus_get_bus(),
+					dbus_error_from_errno(-EIO, message));
+		return;
+	}
+
+	station_reset_connection_state(station);
+
+	station_enter_state(station, STATION_STATE_DISCONNECTING);
+
+	station->connect_pending_network = network;
+	station->connect_pending_bss = bss;
+
+	station->connect_pending = l_dbus_message_ref(message);
+}
+
 void station_connect_network(struct station *station, struct network *network,
 				struct scan_bss *bss,
 				struct l_dbus_message *message)
@@ -2022,8 +2292,9 @@ void station_connect_network(struct station *station, struct network *network,
 	int err;
 
 	if (station_is_busy(station)) {
-		err = -EBUSY;
-		goto error;
+		station_disconnect_onconnect(station, network, bss, message);
+
+		return;
 	}
 
 	err = __station_connect_network(station, network, bss);
@@ -2135,7 +2406,7 @@ static struct l_dbus_message *station_dbus_connect_hidden_network(
 						void *user_data)
 {
 	struct station *station = user_data;
-	uint32_t index = netdev_get_ifindex(station->netdev);
+	uint64_t id = netdev_get_wdev_id(station->netdev);
 	struct scan_parameters params = {
 		.flush = true,
 		.randomize_mac_addr_hint = true,
@@ -2163,7 +2434,7 @@ static struct l_dbus_message *station_dbus_connect_hidden_network(
 
 	params.ssid = ssid;
 
-	station->hidden_network_scan_id = scan_active_full(index, &params,
+	station->hidden_network_scan_id = scan_active_full(id, &params,
 				station_hidden_network_scan_triggered,
 				station_hidden_network_scan_results,
 				station, station_hidden_network_scan_destroy);
@@ -2674,6 +2945,10 @@ static struct station *station_create(struct netdev *netdev)
 	l_dbus_object_add_interface(dbus, netdev_get_path(netdev),
 					IWD_STATION_INTERFACE, station);
 
+	netconfig_ifindex_add(netdev_get_ifindex(netdev));
+
+	station->anqp_pending = l_queue_new();
+
 	return station;
 }
 
@@ -2686,6 +2961,8 @@ static void station_free(struct station *station)
 
 	if (station->connected_bss)
 		netdev_disconnect(station->netdev, NULL, NULL);
+
+	netconfig_ifindex_remove(netdev_get_ifindex(station->netdev));
 
 	periodic_scan_stop(station);
 
@@ -2708,15 +2985,15 @@ static void station_free(struct station *station)
 			dbus_error_aborted(station->scan_pending));
 
 	if (station->dbus_scan_id)
-		scan_cancel(netdev_get_ifindex(station->netdev),
+		scan_cancel(netdev_get_wdev_id(station->netdev),
 				station->dbus_scan_id);
 
 	if (station->quick_scan_id)
-		scan_cancel(netdev_get_ifindex(station->netdev),
+		scan_cancel(netdev_get_wdev_id(station->netdev),
 				station->quick_scan_id);
 
 	if (station->hidden_network_scan_id)
-		scan_cancel(netdev_get_ifindex(station->netdev),
+		scan_cancel(netdev_get_wdev_id(station->netdev),
 				station->hidden_network_scan_id);
 
 	station_roam_state_clear(station);
@@ -2728,6 +3005,8 @@ static void station_free(struct station *station)
 	l_queue_destroy(station->autoconnect_list, l_free);
 
 	watchlist_destroy(&station->state_watches);
+
+	l_queue_destroy(station->anqp_pending, l_free);
 
 	l_free(station);
 }
@@ -2792,7 +3071,7 @@ static void station_netdev_watch(struct netdev *netdev,
 	}
 }
 
-bool station_init(void)
+static int station_init(void)
 {
 	station_list = l_queue_new();
 	netdev_watch = netdev_watch_add(station_netdev_watch, NULL, NULL);
@@ -2802,10 +3081,12 @@ bool station_init(void)
 	return true;
 }
 
-void station_exit(void)
+static void station_exit(void)
 {
 	l_dbus_unregister_interface(dbus_get_bus(), IWD_STATION_INTERFACE);
 	netdev_watch_remove(netdev_watch);
 	l_queue_destroy(station_list, NULL);
 	station_list = NULL;
 }
+
+IWD_MODULE(station, station_init, station_exit)

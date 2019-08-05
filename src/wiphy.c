@@ -50,14 +50,18 @@
 #include "src/common.h"
 #include "src/watchlist.h"
 
+#define EXT_CAP_LEN 10
+
 static struct l_genl_family *nl80211 = NULL;
 static struct l_hwdb *hwdb;
 static char **whitelist_filter;
 static char **blacklist_filter;
+static int mac_randomize_bytes = 6;
 
 struct wiphy {
 	uint32_t id;
 	char name[20];
+	uint8_t permanent_addr[ETH_ALEN];
 	uint32_t feature_flags;
 	uint8_t ext_features[(NUM_NL80211_EXT_FEATURES + 7) / 8];
 	uint8_t max_num_ssids_per_scan;
@@ -68,12 +72,15 @@ struct wiphy {
 	char *vendor_str;
 	char *driver_str;
 	struct watchlist state_watches;
+	uint8_t extended_capabilities[EXT_CAP_LEN + 2]; /* max bitmap size + IE header */
+	uint8_t *iftype_extended_capabilities[NUM_NL80211_IFTYPES];
 
 	bool support_scheduled_scan:1;
 	bool support_rekey_offload:1;
 	bool support_adhoc_rsn:1;
 	bool soft_rfkill : 1;
 	bool hard_rfkill : 1;
+	bool offchannel_tx_ok : 1;
 };
 
 static struct l_queue *wiphy_list = NULL;
@@ -117,6 +124,16 @@ enum ie_rsn_akm_suite wiphy_select_akm(struct wiphy *wiphy,
 	if (security == SECURITY_8021X) {
 		if (wiphy_has_feature(wiphy, NL80211_EXT_FEATURE_FILS_STA) &&
 				fils_capable_hint) {
+			if ((info.akm_suites &
+					IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384) &&
+					bss->rsne && bss->mde_present)
+				return IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384;
+
+			if ((info.akm_suites &
+					IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256) &&
+					bss->rsne && bss->mde_present)
+				return IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256;
+
 			if (info.akm_suites & IE_RSN_AKM_SUITE_FILS_SHA384)
 				return IE_RSN_AKM_SUITE_FILS_SHA384;
 
@@ -175,6 +192,8 @@ static struct wiphy *wiphy_new(uint32_t id)
 	wiphy->id = id;
 	wiphy->supported_freqs = scan_freq_set_new();
 	watchlist_init(&wiphy->state_watches, NULL);
+	wiphy->extended_capabilities[0] = IE_TYPE_EXTENDED_CAPABILITIES;
+	wiphy->extended_capabilities[1] = EXT_CAP_LEN;
 
 	return wiphy;
 }
@@ -182,8 +201,12 @@ static struct wiphy *wiphy_new(uint32_t id)
 static void wiphy_free(void *data)
 {
 	struct wiphy *wiphy = data;
+	uint32_t i;
 
 	l_debug("Freeing wiphy %s[%u]", wiphy->name, wiphy->id);
+
+	for (i = 0; i < NUM_NL80211_IFTYPES; i++)
+		l_free(wiphy->iftype_extended_capabilities[i]);
 
 	scan_freq_set_free(wiphy->supported_freqs);
 	watchlist_destroy(&wiphy->state_watches);
@@ -305,6 +328,19 @@ bool wiphy_can_randomize_mac_addr(struct wiphy *wiphy)
 	return wiphy_has_feature(wiphy, NL80211_FEATURE_SCAN_RANDOM_MAC_ADDR);
 }
 
+bool wiphy_rrm_capable(struct wiphy *wiphy)
+{
+	if (wiphy_has_feature(wiphy,
+				NL80211_FEATURE_DS_PARAM_SET_IE_IN_PROBES) &&
+			wiphy_has_feature(wiphy, NL80211_FEATURE_QUIET))
+		return true;
+
+	if (wiphy_has_ext_feature(wiphy, NL80211_EXT_FEATURE_RRM))
+		return true;
+
+	return false;
+}
+
 bool wiphy_has_ext_feature(struct wiphy *wiphy, uint32_t feature)
 {
 	return feature < sizeof(wiphy->ext_features) * 8 &&
@@ -321,9 +357,62 @@ bool wiphy_supports_adhoc_rsn(struct wiphy *wiphy)
 	return wiphy->support_adhoc_rsn;
 }
 
+bool wiphy_can_offchannel_tx(struct wiphy *wiphy)
+{
+	return wiphy->offchannel_tx_ok;
+}
+
 const char *wiphy_get_driver(struct wiphy *wiphy)
 {
 	return wiphy->driver_str;
+}
+
+const char *wiphy_get_name(struct wiphy *wiphy)
+{
+	return wiphy->name;
+}
+
+const uint8_t *wiphy_get_permanent_address(struct wiphy *wiphy)
+{
+	return wiphy->permanent_addr;
+}
+
+const uint8_t *wiphy_get_extended_capabilities(struct wiphy *wiphy,
+							uint32_t iftype)
+{
+	if (wiphy->iftype_extended_capabilities[iftype])
+		return wiphy->iftype_extended_capabilities[iftype];
+
+	return wiphy->extended_capabilities;
+}
+
+void wiphy_generate_random_address(struct wiphy *wiphy, uint8_t addr[static 6])
+{
+	switch (mac_randomize_bytes) {
+	case 6:
+		l_getrandom(addr, 6);
+
+		/* Set the locally administered bit */
+		addr[0] |= 0x2;
+
+		/* Reset multicast bit */
+		addr[0] &= 0xfe;
+		break;
+	case 3:
+		l_getrandom(addr + 3, 3);
+		memcpy(addr, wiphy->permanent_addr, 3);
+		break;
+	}
+
+	/*
+	 * Constrain the last NIC byte to 0x00 .. 0xfe, otherwise we might be
+	 * able to generate an address of 0xff 0xff 0xff which might be
+	 * interpreted as a vendor broadcast.  Similarly, 0x00 0x00 0x00 is
+	 * also not valid
+	 */
+	addr[5] &= 0xfe;
+	if (util_mem_is_zero(addr + 3, 3))
+		addr[5] = 0x01;
 }
 
 bool wiphy_constrain_freq_set(const struct wiphy *wiphy,
@@ -385,6 +474,7 @@ static void wiphy_print_basic_info(struct wiphy *wiphy)
 	char buf[1024];
 
 	l_info("Wiphy: %d, Name: %s", wiphy->id, wiphy->name);
+	l_info("\tPermanent Address: "MAC, MAC_STR(wiphy->permanent_addr));
 
 	bands = scan_freq_set_get_bands(wiphy->supported_freqs);
 
@@ -554,6 +644,45 @@ static void parse_supported_iftypes(struct wiphy *wiphy,
 	}
 }
 
+static void parse_iftype_extended_capabilities(struct wiphy *wiphy,
+						struct l_genl_attr *attr)
+{
+	uint16_t type;
+	uint16_t len;
+	const void *data;
+	struct l_genl_attr nested;
+
+	while (l_genl_attr_next(attr, &type, &len, &data)) {
+		uint32_t iftype;
+
+		if (!l_genl_attr_recurse(attr, &nested))
+			continue;
+
+		if (!l_genl_attr_next(&nested, &type, &len, &data))
+			continue;
+
+		if (type != NL80211_ATTR_IFTYPE)
+			continue;
+
+		iftype = l_get_u32(data);
+
+		if (!l_genl_attr_next(&nested, &type, &len, &data))
+			continue;
+
+		if (type != NL80211_ATTR_EXT_CAPA)
+			continue;
+
+		wiphy->iftype_extended_capabilities[iftype] =
+					l_new(uint8_t, EXT_CAP_LEN + 2);
+		wiphy->iftype_extended_capabilities[iftype][0] =
+					IE_TYPE_EXTENDED_CAPABILITIES;
+		wiphy->iftype_extended_capabilities[iftype][1] =
+					EXT_CAP_LEN;
+		memcpy(wiphy->iftype_extended_capabilities[iftype] + 2,
+				data, minsize(len, EXT_CAP_LEN));
+	}
+}
+
 static void wiphy_parse_attributes(struct wiphy *wiphy,
 					struct l_genl_attr *attr)
 {
@@ -602,6 +731,19 @@ static void wiphy_parse_attributes(struct wiphy *wiphy,
 		case NL80211_ATTR_SUPPORTED_IFTYPES:
 			if (l_genl_attr_recurse(attr, &nested))
 				parse_supported_iftypes(wiphy, &nested);
+			break;
+		case NL80211_ATTR_OFFCHANNEL_TX_OK:
+			wiphy->offchannel_tx_ok = true;
+			break;
+		case NL80211_ATTR_EXT_CAPA:
+			memcpy(wiphy->extended_capabilities + 2,
+				data, minsize(EXT_CAP_LEN, len));
+			break;
+		case NL80211_ATTR_IFTYPE_EXT_CAPA:
+			if (!l_genl_attr_recurse(attr, &nested))
+				break;
+
+			parse_iftype_extended_capabilities(wiphy, &nested);
 			break;
 		}
 	}
@@ -687,6 +829,29 @@ static bool wiphy_get_driver_name(struct wiphy *wiphy)
 	driver_path[len] = '\0';
 	wiphy->driver_str = l_strdup(basename(driver_path));
 	return true;
+}
+
+static int wiphy_get_permanent_addr_from_sysfs(struct wiphy *wiphy)
+{
+	char addr[32];
+	ssize_t len;
+
+	len = read_file(addr, sizeof(addr),
+				"/sys/class/ieee80211/%s/macaddress",
+				wiphy->name);
+	if (len != 18) {
+		if (len < 0)
+			return -errno;
+		return -EINVAL;
+	}
+
+	/* Sysfs appends a \n at the end, strip it */
+	addr[17] = '\0';
+
+	if (!util_string_to_address(addr, wiphy->permanent_addr))
+		return -EINVAL;
+
+	return 0;
 }
 
 static void wiphy_register(struct wiphy *wiphy)
@@ -788,6 +953,14 @@ void wiphy_update_from_genl(struct wiphy *wiphy, struct l_genl_msg *msg)
 
 void wiphy_create_complete(struct wiphy *wiphy)
 {
+	if (util_mem_is_zero(wiphy->permanent_addr, 6)) {
+		int err = wiphy_get_permanent_addr_from_sysfs(wiphy);
+
+		if (err < 0)
+			l_error("Can't read sysfs maccaddr for %s: %s",
+					wiphy->name, strerror(-err));
+	}
+
 	wiphy_print_basic_info(wiphy);
 }
 
@@ -802,74 +975,6 @@ bool wiphy_destroy(struct wiphy *wiphy)
 
 	wiphy_free(wiphy);
 	return true;
-}
-
-static void wiphy_regulatory_notify(struct l_genl_msg *msg, void *user_data)
-{
-	struct l_genl_attr attr;
-	uint16_t type, len;
-	const void *data;
-	uint8_t cmd;
-
-	cmd = l_genl_msg_get_command(msg);
-
-	l_debug("Regulatory notification %u", cmd);
-
-	if (!l_genl_attr_init(&attr, msg))
-		return;
-
-	while (l_genl_attr_next(&attr, &type, &len, &data)) {
-	}
-}
-
-static void regulatory_info_callback(struct l_genl_msg *msg, void *user_data)
-{
-	struct l_genl_attr attr;
-	uint16_t type, len;
-	const void *data;
-
-	if (!l_genl_attr_init(&attr, msg))
-		return;
-
-	while (l_genl_attr_next(&attr, &type, &len, &data)) {
-		switch (type) {
-		case NL80211_ATTR_REG_ALPHA2:
-			if (len != 3) {
-				l_warn("Invalid regulatory alpha2 attribute");
-				return;
-			}
-
-			l_debug("Regulatory alpha2 is %s", (char *) data);
-			break;
-		}
-	}
-}
-
-static void protocol_features_callback(struct l_genl_msg *msg, void *user_data)
-{
-	struct l_genl_attr attr;
-	uint16_t type, len;
-	const void *data;
-	uint32_t features = 0;
-
-	if (!l_genl_attr_init(&attr, msg))
-		return;
-
-	while (l_genl_attr_next(&attr, &type, &len, &data)) {
-		switch (type) {
-		case NL80211_ATTR_PROTOCOL_FEATURES:
-			if (len != sizeof(uint32_t)) {
-				l_warn("Invalid protocol features attribute");
-				return;
-			}
-
-			features = *((uint32_t *) data);
-			break;
-		}
-	}
-
-	if (features & NL80211_PROTOCOL_FEATURE_SPLIT_WIPHY_DUMP)
-		l_debug("Found split wiphy dump support");
 }
 
 static void wiphy_rfkill_cb(unsigned int wiphy_id, bool soft, bool hard,
@@ -1043,7 +1148,12 @@ static void setup_wiphy_interface(struct l_dbus_interface *interface)
 bool wiphy_init(struct l_genl_family *in, const char *whitelist,
 							const char *blacklist)
 {
-	struct l_genl_msg *msg;
+	const struct l_settings *config = iwd_get_config();
+	const char *s = l_settings_get_value(config, "General",
+							"mac_randomize_bytes");
+
+	if (s && !strcmp(s, "nic"))
+		mac_randomize_bytes = 3;
 
 	/*
 	 * This is an extra sanity check so that no memory is leaked
@@ -1056,21 +1166,7 @@ bool wiphy_init(struct l_genl_family *in, const char *whitelist,
 
 	nl80211 = in;
 
-	if (!l_genl_family_register(nl80211, "regulatory",
-					wiphy_regulatory_notify, NULL, NULL))
-		l_error("Registering for regulatory notification failed");
-
 	wiphy_list = l_queue_new();
-
-	msg = l_genl_msg_new(NL80211_CMD_GET_PROTOCOL_FEATURES);
-	if (!l_genl_family_send(nl80211, msg, protocol_features_callback,
-								NULL, NULL))
-		l_error("Getting protocol features failed");
-
-	msg = l_genl_msg_new(NL80211_CMD_GET_REG);
-	if (!l_genl_family_send(nl80211, msg, regulatory_info_callback,
-								NULL, NULL))
-		l_error("Getting regulatory info failed");
 
 	rfkill_watch_add(wiphy_rfkill_cb, NULL);
 
@@ -1101,6 +1197,7 @@ bool wiphy_exit(void)
 	wiphy_list = NULL;
 
 	nl80211 = NULL;
+	mac_randomize_bytes = 6;
 
 	l_dbus_unregister_interface(dbus_get_bus(), IWD_WIPHY_INTERFACE);
 

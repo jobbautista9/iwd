@@ -48,6 +48,8 @@
 #include "src/knownnetworks.h"
 #include "src/network.h"
 #include "src/blacklist.h"
+#include "src/util.h"
+#include "src/hotspot.h"
 
 struct network {
 	char *object_path;
@@ -60,8 +62,12 @@ struct network {
 	struct l_settings *settings;
 	struct l_queue *secrets;
 	struct l_queue *blacklist; /* temporary blacklist for BSS's */
+	uint8_t hessid[6];
+	char **nai_realms;
+	uint8_t *rc_ie;
 	bool update_psk:1;  /* Whether PSK should be written to storage */
 	bool ask_passphrase:1; /* Whether we should force-ask agent */
+	bool is_hs20:1;
 	int rank;
 };
 
@@ -72,8 +78,24 @@ static bool network_settings_load(struct network *network)
 	if (network->settings)
 		return true;
 
-	network->settings = storage_network_open(network_get_security(network),
-							network->info->ssid);
+	/*
+	 * If this network contains NAI realm info OR we have a Hotspot
+	 * provisioning file containing the HESSID we know this is a Hotspot
+	 * network.
+	 */
+	if (network->is_hs20 && (network->nai_realms || network->rc_ie ||
+				!util_mem_is_zero(network->hessid, 6))) {
+		network->settings = l_settings_new();
+
+		if (!l_settings_load_from_file(network->settings,
+					hs20_find_settings_file(network))) {
+			l_settings_free(network->settings);
+			network->settings = NULL;
+		}
+	} else
+		network->settings = storage_network_open(
+						network_get_security(network),
+						network->info->ssid);
 
 	return network->settings != NULL;
 }
@@ -520,6 +542,34 @@ void network_sync_psk(struct network *network)
 					network->settings);
 }
 
+void network_set_hessid(struct network *network, uint8_t *hessid)
+{
+	memcpy(network->hessid, hessid, 6);
+}
+
+void network_set_nai_realms(struct network *network, char **realms)
+{
+	if (network->nai_realms)
+		l_strv_free(network->nai_realms);
+
+	network->nai_realms = realms;
+}
+
+const uint8_t *network_get_hessid(const struct network *network)
+{
+	return network->hessid;
+}
+
+char **network_get_nai_realms(const struct network *network)
+{
+	return network->nai_realms;
+}
+
+const uint8_t *network_get_roaming_consortium(const struct network *network)
+{
+	return network->rc_ie;
+}
+
 static inline bool __bss_is_sae(const struct scan_bss *bss,
 						const struct ie_rsn_info *rsn)
 {
@@ -658,6 +708,15 @@ bool network_bss_add(struct network *network, struct scan_bss *bss)
 	}
 
 	l_queue_push_head(network->info->known_frequencies, known_freq);
+
+	if (!util_mem_is_zero(bss->hessid, 6))
+		memcpy(network->hessid, bss->hessid, 6);
+
+	if (bss->rc_ie && !network->rc_ie)
+		network->rc_ie = l_memdup(bss->rc_ie, bss->rc_ie[1] + 2);
+
+	if (bss->hs20_capable)
+		network->is_hs20 = true;
 
 	return true;
 }
@@ -1117,8 +1176,11 @@ static struct l_dbus_message *network_connect(struct l_dbus *dbus,
 
 	l_debug("");
 
-	if (station_is_busy(station))
-		return dbus_error_busy(message);
+	if (network == station_get_connected_network(station))
+		/*
+		 * The requested network is already connected, return success.
+		 */
+		return l_dbus_message_new_method_return(message);
 
 	/*
 	 * Select the best BSS to use at this time.  If we have to query the
@@ -1270,29 +1332,6 @@ static bool network_property_get_known_network(struct l_dbus *dbus,
 	return true;
 }
 
-static void setup_network_interface(struct l_dbus_interface *interface)
-{
-	l_dbus_interface_method(interface, "Connect", 0,
-				network_connect,
-				"", "");
-
-	l_dbus_interface_property(interface, "Name", 0, "s",
-					network_property_get_name, NULL);
-
-	l_dbus_interface_property(interface, "Connected", 0, "b",
-					network_property_is_connected,
-					NULL);
-
-	l_dbus_interface_property(interface, "Device", 0, "o",
-					network_property_get_device, NULL);
-
-	l_dbus_interface_property(interface, "Type", 0, "s",
-					network_property_get_type, NULL);
-
-	l_dbus_interface_property(interface, "KnownNetwork", 0, "o",
-				network_property_get_known_network, NULL);
-}
-
 bool network_register(struct network *network, const char *path)
 {
 	if (!l_dbus_object_add_interface(dbus_get_bus(), path,
@@ -1338,25 +1377,13 @@ void network_remove(struct network *network, int reason)
 
 	l_queue_destroy(network->blacklist, NULL);
 
+	if (network->nai_realms)
+		l_strv_free(network->nai_realms);
+
+	if (network->rc_ie)
+		l_free(network->rc_ie);
+
 	l_free(network);
-}
-
-void network_init()
-{
-	if (!l_dbus_register_interface(dbus_get_bus(), IWD_NETWORK_INTERFACE,
-					setup_network_interface, NULL, false))
-		l_error("Unable to register %s interface",
-						IWD_NETWORK_INTERFACE);
-
-	networks = l_queue_new();
-}
-
-void network_exit()
-{
-	l_queue_destroy(networks, network_info_free);
-	networks = NULL;
-
-	l_dbus_unregister_interface(dbus_get_bus(), IWD_NETWORK_INTERFACE);
 }
 
 int network_rank_compare(const void *a, const void *b, void *user)
@@ -1473,3 +1500,47 @@ void network_info_forget_known(struct network_info *network)
 	else
 		network_info_free(network);
 }
+
+static void setup_network_interface(struct l_dbus_interface *interface)
+{
+	l_dbus_interface_method(interface, "Connect", 0,
+				network_connect,
+				"", "");
+
+	l_dbus_interface_property(interface, "Name", 0, "s",
+					network_property_get_name, NULL);
+
+	l_dbus_interface_property(interface, "Connected", 0, "b",
+					network_property_is_connected,
+					NULL);
+
+	l_dbus_interface_property(interface, "Device", 0, "o",
+					network_property_get_device, NULL);
+
+	l_dbus_interface_property(interface, "Type", 0, "s",
+					network_property_get_type, NULL);
+
+	l_dbus_interface_property(interface, "KnownNetwork", 0, "o",
+				network_property_get_known_network, NULL);
+}
+
+static int network_init(void)
+{
+	if (!l_dbus_register_interface(dbus_get_bus(), IWD_NETWORK_INTERFACE,
+					setup_network_interface, NULL, false))
+		l_error("Unable to register %s interface",
+						IWD_NETWORK_INTERFACE);
+
+	networks = l_queue_new();
+	return 0;
+}
+
+static void network_exit(void)
+{
+	l_queue_destroy(networks, network_info_free);
+	networks = NULL;
+
+	l_dbus_unregister_interface(dbus_get_bus(), IWD_NETWORK_INTERFACE);
+}
+
+IWD_MODULE(network, network_init, network_exit)

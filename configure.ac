@@ -1,5 +1,5 @@
 AC_PREREQ(2.60)
-AC_INIT(iwd, 0.18)
+AC_INIT(iwd, 0.19)
 
 AC_CONFIG_HEADERS(config.h)
 AC_CONFIG_AUX_DIR(build-aux)
@@ -115,6 +115,9 @@ else
 	daemon_storagedir="${localstatedir}/lib/iwd"
 	wired_storagedir="${localstatedir}/lib/ead"
 fi
+
+AC_SUBST([daemon_storagedir], [${daemon_storagedir}])
+AC_SUBST([wired_storagedir], [${wired_storagedir}])
 
 AC_DEFINE_UNQUOTED(DAEMON_STORAGEDIR, "${daemon_storagedir}",
 			[Directory for Wireless daemon storage files])
@@ -244,15 +247,6 @@ if (test "${enable_external_ell}" = "yes"); then
 fi
 AM_CONDITIONAL(EXTERNAL_ELL, test "${enable_external_ell}" = "yes")
 
-AC_ARG_ENABLE([sim_hardcoded], AC_HELP_STRING([--enable-sim-hardcoded],
-				[enable hard coded SIM keys]),
-					[enable_sim_hardcoded=${enableval}])
-AM_CONDITIONAL(SIM_HARDCODED, test "${enable_sim_hardcoded}" = "yes")
-
-AC_ARG_ENABLE([ofono], AC_HELP_STRING([--enable-ofono],
-				[enable oFono SIM authentication support]),
-					[enable_ofono=${enableval}])
-AM_CONDITIONAL(OFONO, test "${enable_ofono}" = "yes")
 
 AC_ARG_ENABLE([wired], AC_HELP_STRING([--enable-wired],
 				[enable Ethernet authentication support]),
@@ -268,6 +262,16 @@ AC_ARG_ENABLE([tools], AC_HELP_STRING([--enable-tools],
 				[enable internal testing utilities]),
 					[enable_tools=${enableval}])
 AM_CONDITIONAL(TOOLS, test "${enable_tools}" = "yes")
+
+AC_ARG_ENABLE([ofono], AC_HELP_STRING([--enable-ofono],
+				[enable oFono SIM authentication support]),
+					[enable_ofono=${enableval}])
+AM_CONDITIONAL(OFONO, test "${enable_ofono}" = "yes")
+
+AC_ARG_ENABLE([sim_hardcoded], AC_HELP_STRING([--enable-sim-hardcoded],
+				[enable hard coded SIM keys]),
+					[enable_sim_hardcoded=${enableval}])
+AM_CONDITIONAL(SIM_HARDCODED, test "${enable_sim_hardcoded}" = "yes")
 
 AC_ARG_ENABLE([docs], AC_HELP_STRING([--enable-docs],
 				[build documentation and manual pages]),

@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2019 Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,7 +20,4 @@
  *
  */
 
-struct device;
-
-bool adhoc_init(struct l_genl_family *nl);
-void adhoc_exit(void);
+const char *nl80211cmd_to_string(uint32_t cmd);

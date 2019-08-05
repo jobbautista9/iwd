@@ -152,13 +152,14 @@ static const char * const qemu_table[] = { NULL };
 
 struct wiphy {
 	char name[20];
-	uint32_t id;
+	int id;
 	unsigned int interface_index;
 	bool interface_created : 1;
 	bool used_by_hostapd : 1;
 	char *interface_name;
 	char *hostapd_ctrl_interface;
 	char *hostapd_config;
+	bool can_ap;
 };
 
 static bool check_verbosity(const char *app)
@@ -742,31 +743,50 @@ static bool list_hwsim_radios(void)
 	return true;
 }
 
-static uint32_t read_radio_id(void)
+static int read_radio_id(void)
 {
 	static int current_radio_id;
 
-	return ++current_radio_id;
+	return current_radio_id++;
 }
 
-static uint32_t create_hwsim_radio(const char *radio_name,
-				const unsigned int channels, bool p2p_device,
-							bool use_chanctx)
+struct hwsim_radio_params {
+	unsigned int channels;
+	bool p2p_device;
+	bool use_chanctx;
+	char *iftype_disable;
+	char *cipher_disable;
+};
+
+static int create_hwsim_radio(const char *radio_name,
+				struct hwsim_radio_params *params)
 {
-	char *argv[7];
+	char *argv[10];
 	pid_t pid;
+	int idx = 0;
 
 	/*TODO add the rest of params*/
-	argv[0] = BIN_HWSIM;
-	argv[1] = "--create";
-	argv[2] = "--name";
-	argv[3] = (char *) radio_name;
-	argv[4] = "--nointerface";
-	argv[5] = NULL;
+	argv[idx++] = BIN_HWSIM;
+	argv[idx++] = "--create";
+	argv[idx++] = "--name";
+	argv[idx++] = (char *) radio_name;
+	argv[idx++] = "--nointerface";
+
+	if (params->iftype_disable) {
+		argv[idx++] = "--iftype-disable";
+		argv[idx++] = params->iftype_disable;
+	}
+
+	if (params->cipher_disable) {
+		argv[idx++] = "--cipher-disable";
+		argv[idx++] = params->cipher_disable;
+	}
+
+	argv[idx] = NULL;
 
 	pid = execute_program(argv, true, check_verbosity(BIN_HWSIM));
 	if (pid < 0)
-		return 0;
+		return -1;
 
 	return read_radio_id();
 }
@@ -988,15 +1008,14 @@ static int is_test_dir(const char *dir)
 }
 
 static bool find_test_configuration(const char *path, int level,
-						struct l_hashmap *config_map)
+						struct l_hashmap *config_map);
+
+static bool add_path(const char *path, int level, struct l_hashmap *config_map)
 {
 	DIR *dir = NULL;
 	struct l_queue *py_test_queue = NULL;
 	struct dirent *entry;
 	char *npath;
-
-	if (!config_map)
-		return false;
 
 	dir = opendir(path);
 	if (!dir) {
@@ -1031,6 +1050,32 @@ static bool find_test_configuration(const char *path, int level,
 		l_hashmap_insert(config_map, path, py_test_queue);
 
 	closedir(dir);
+	return true;
+}
+
+static bool find_test_configuration(const char *path, int level,
+						struct l_hashmap *config_map)
+{
+	glob_t glist;
+	int i = 0;
+	int ret;
+
+	if (!config_map)
+		return false;
+
+	ret = glob(path, 0, NULL, &glist);
+	if (ret != 0) {
+		l_error("Could not match glob %s", path);
+		return false;
+	}
+
+	while (glist.gl_pathv[i]) {
+		if (!add_path(glist.gl_pathv[i], level, config_map))
+			return false;
+
+		i++;
+	}
+
 	return true;
 }
 
@@ -1079,6 +1124,8 @@ error_exit:
 #define HW_CONFIG_PHY_CHANNELS	"channels"
 #define HW_CONFIG_PHY_CHANCTX	"use_chanctx"
 #define HW_CONFIG_PHY_P2P	"p2p_device"
+#define HW_CONFIG_PHY_IFTYPE_DISABLE "iftype_disable"
+#define HW_CONFIG_PHY_CIPHER_DISABLE "cipher_disable"
 
 #define HW_MIN_NUM_RADIOS	1
 
@@ -1090,9 +1137,8 @@ static bool configure_hw_radios(struct l_settings *hw_settings,
 						struct l_queue *wiphy_list)
 {
 	char **radio_conf_list;
-	int num_radios_requested, num_radios_created;
+	int i, num_radios_requested;
 	bool status = false;
-	bool has_hw_conf;
 
 	l_settings_get_int(hw_settings, HW_CONFIG_GROUP_SETUP,
 						HW_CONFIG_SETUP_NUM_RADIOS,
@@ -1104,96 +1150,57 @@ static bool configure_hw_radios(struct l_settings *hw_settings,
 		return false;
 	}
 
-	has_hw_conf = l_settings_has_key(hw_settings, HW_CONFIG_GROUP_SETUP,
-						HW_CONFIG_SETUP_RADIO_CONFS);
-
 	radio_conf_list =
 		l_settings_get_string_list(hw_settings, HW_CONFIG_GROUP_SETUP,
 						HW_CONFIG_SETUP_RADIO_CONFS,
 									':');
-	if (has_hw_conf && !radio_conf_list) {
-		l_error("%s doesn't parse", HW_CONFIG_SETUP_RADIO_CONFS);
-		return false;
-	}
-
-	if (has_hw_conf) {
-		int i;
-
-		for (i = 0; radio_conf_list[i]; i++) {
-			size_t len = strlen(radio_conf_list[i]);
-
-			if (len >= sizeof(((struct wiphy *) 0)->name)) {
-				l_error("Radio name: '%s' is too big",
-						radio_conf_list[i]);
-				goto exit;
-			}
-
-			if (len == 0) {
-				l_error("Radio name cannot be empty");
-				goto exit;
-			}
-
-			if (!l_settings_has_group(hw_settings,
-							radio_conf_list[i])) {
-				l_error("No radio configuration group [%s]"
-						" found in config file.",
-						radio_conf_list[i]);
-				goto exit;
-			}
-		}
-
-		if (i != num_radios_requested) {
-			l_error(HW_CONFIG_SETUP_RADIO_CONFS "should contain"
-					" %d radios", num_radios_requested);
-			goto exit;
-		}
-	}
-
-	num_radios_created = 0;
-
-	while (num_radios_requested > num_radios_created) {
+	for (i = 0; i < num_radios_requested; i++) {
 		struct wiphy *wiphy;
-
-		unsigned int channels;
-		bool p2p_device;
-		bool use_chanctx;
+		struct hwsim_radio_params params = { 0 };
 
 		wiphy = l_new(struct wiphy, 1);
 
-		if (!has_hw_conf) {
-			channels = 1;
-			p2p_device = true;
-			use_chanctx = true;
+		sprintf(wiphy->name, "rad%d", i);
 
-			sprintf(wiphy->name, "rad%d", num_radios_created);
-			goto configure;
+		/* radio not in radio_confs, use default parameters */
+		if (!l_strv_contains(radio_conf_list, wiphy->name)) {
+			params.channels = 1;
+			params.p2p_device = true;
+			params.use_chanctx = true;
+			goto create;
 		}
 
-		strcpy(wiphy->name, radio_conf_list[num_radios_created]);
-
 		if (!l_settings_get_uint(hw_settings, wiphy->name,
-					HW_CONFIG_PHY_CHANNELS, &channels))
-			channels = 1;
+					HW_CONFIG_PHY_CHANNELS,
+					&params.channels))
+			params.channels = 1;
 
 		if (!l_settings_get_bool(hw_settings, wiphy->name,
-					HW_CONFIG_PHY_P2P, &p2p_device))
-			p2p_device = true;
+					HW_CONFIG_PHY_P2P, &params.p2p_device))
+			params.p2p_device = true;
 
 		if (!l_settings_get_bool(hw_settings, wiphy->name,
-					HW_CONFIG_PHY_CHANCTX, &use_chanctx))
-			use_chanctx = true;
+					HW_CONFIG_PHY_CHANCTX,
+					&params.use_chanctx))
+			params.use_chanctx = true;
 
-configure:
-		wiphy->id = create_hwsim_radio(wiphy->name, channels,
-						p2p_device, use_chanctx);
+		params.iftype_disable = l_settings_get_string(hw_settings,
+					wiphy->name,
+					HW_CONFIG_PHY_IFTYPE_DISABLE);
+		params.cipher_disable = l_settings_get_string(hw_settings,
+					wiphy->name,
+					HW_CONFIG_PHY_CIPHER_DISABLE);
 
-		if (wiphy->id == 0) {
+create:
+		wiphy->id = create_hwsim_radio(wiphy->name, &params);
+		wiphy->can_ap = true;
+
+		if (wiphy->id < 0) {
 			l_free(wiphy);
 			goto exit;
 		}
 
 		l_queue_push_tail(wiphy_list, wiphy);
-		num_radios_created++;
 	}
 
 	status = true;
@@ -1313,6 +1320,9 @@ static bool configure_hostapd_instances(struct l_settings *hw_settings,
 				goto done;
 			}
 
+			if (!wiphy->can_ap)
+				continue;
+
 			wiphys[i] = wiphy;
 			break;
 		}
@@ -1321,6 +1331,9 @@ static bool configure_hostapd_instances(struct l_settings *hw_settings,
 			l_error("Failed to find available wiphy.");
 			goto done;
 		}
+
+		if (native_hw)
+			goto hostapd_done;
 
 		wiphys[i]->interface_name = l_strdup_printf("%s%d",
 							HW_INTERFACE_PREFIX,
@@ -1344,6 +1357,7 @@ static bool configure_hostapd_instances(struct l_settings *hw_settings,
 			goto done;
 		}
 
+hostapd_done:
 		wiphys[i]->used_by_hostapd = true;
 		wiphys[i]->hostapd_ctrl_interface =
 			l_strdup_printf("%s/%s", HOSTAPD_CTRL_INTERFACE_PREFIX,
@@ -2301,64 +2315,86 @@ exit:
 static bool wiphy_match(const void *a, const void *b)
 {
 	const struct wiphy *wiphy = a;
-	uint32_t id = L_PTR_TO_UINT(b);
+	int id = L_PTR_TO_INT(b);
 
 	return (wiphy->id == id);
 }
 
 static struct wiphy *wiphy_find(int wiphy_id)
 {
-	return l_queue_find(wiphy_list, wiphy_match, L_UINT_TO_PTR(wiphy_id));
+	return l_queue_find(wiphy_list, wiphy_match, L_INT_TO_PTR(wiphy_id));
+}
+
+static void parse_supported_iftypes(uint16_t *iftypes,
+						struct l_genl_attr *attr)
+{
+	uint16_t type, len;
+	const void *data;
+
+	while (l_genl_attr_next(attr, &type, &len, &data)) {
+		/*
+		 * NL80211_IFTYPE_UNSPECIFIED can be ignored, so we start
+		 * at the first bit
+		 */
+		if (type > sizeof(uint16_t) * 8) {
+			l_warn("unsupported iftype: %u", type);
+			continue;
+		}
+
+		*iftypes |= 1 << (type - 1);
+	}
 }
 
 static void wiphy_dump_callback(struct l_genl_msg *msg, void *user_data)
 {
 	struct wiphy *wiphy;
 	struct l_genl_attr attr;
-	uint32_t id;
+	struct l_genl_attr nested;
+	uint32_t id = UINT32_MAX;
 	uint16_t type, len;
 	const void *data;
-	const char *name;
-	uint32_t name_len;
+	const char *name = NULL;
+	uint32_t name_len = 0;
+	uint16_t iftypes = 0;
 
 	if (!l_genl_attr_init(&attr, msg))
 		return;
 
-	/*
-	 * The wiphy attribute, name and generation are always the first
-	 * three attributes (in that order) in every NEW_WIPHY & DEL_WIPHY
-	 * message.  If not, then error out with a warning and ignore the
-	 * whole message.
-	 */
-	if (!l_genl_attr_next(&attr, &type, &len, &data))
+	while (l_genl_attr_next(&attr, &type, &len, &data)) {
+		switch (type) {
+		case NL80211_ATTR_WIPHY:
+			if (len != sizeof(uint32_t))
+				return;
+
+			id = *((uint32_t *) data);
+
+			if (wiphy_find(id))
+				return;
+
+			break;
+		case NL80211_ATTR_WIPHY_NAME:
+			if (len > sizeof(((struct wiphy *) 0)->name))
+				return;
+
+			name = data;
+			name_len = len;
+
+			break;
+		case NL80211_ATTR_SUPPORTED_IFTYPES:
+			if (l_genl_attr_recurse(&attr, &nested))
+				parse_supported_iftypes(&iftypes, &nested);
+
+			break;
+		}
+	}
+
+	if (id == UINT32_MAX || !name)
 		return;
-
-	if (type != NL80211_ATTR_WIPHY)
-		return;
-
-	if (len != sizeof(uint32_t))
-		return;
-
-	id = *((uint32_t *) data);
-
-	if (wiphy_find(id))
-		return;
-
-	if (!l_genl_attr_next(&attr, &type, &len, &data))
-		return;
-
-	if (type != NL80211_ATTR_WIPHY_NAME)
-		return;
-
-	if (len > sizeof(((struct wiphy *) 0)->name))
-		return;
-
-	name = data;
-	name_len = len;
 
 	wiphy = l_new(struct wiphy, 1);
 	strncpy(wiphy->name, name, name_len);
 	wiphy->id = id;
+	wiphy->can_ap = iftypes & (1 << NL80211_IFTYPE_AP);
 
 	l_queue_push_tail(wiphy_list, wiphy);
 }
@@ -2423,7 +2459,7 @@ static void iface_dump_done(void *user_data)
 
 	l_queue_destroy(wiphy_list, wiphy_free);
 
-	l_genl_family_unref(data->nl80211);
+	l_genl_family_free(data->nl80211);
 	l_genl_unref(data->genl);
 	l_free(data);
 
@@ -2443,25 +2479,29 @@ static void wiphy_dump_done(void *user_data)
 		l_error("Getting all interface information failed");
 }
 
-static void nl80211_appeared(void *user_data)
+static void nl80211_requested(const struct l_genl_family_info *info,
+							void *user_data)
 {
 	struct nl_data *data = user_data;
 	struct l_genl_msg *msg;
 
-	wiphy_list = l_queue_new();
+	if (info == NULL) {
+		l_info("No nl80211 family found");
+		goto done;
+	}
 
 	l_debug("Found nl80211 interface");
+
+	data->nl80211 = l_genl_family_new(data->genl, NL80211_GENL_NAME);
+	wiphy_list = l_queue_new();
 
 	msg = l_genl_msg_new(NL80211_CMD_GET_WIPHY);
 	if (!l_genl_family_dump(data->nl80211, msg, wiphy_dump_callback,
 						data, wiphy_dump_done))
 		l_error("Getting all wiphy devices failed");
-}
 
-static void nl80211_vanished(void *user_data)
-{
-	l_debug("Lost nl80211 interface");
-
+	return;
+done:
 	l_main_quit();
 }
 
@@ -2469,12 +2509,9 @@ static void start_hw_discovery(void)
 {
 	struct nl_data *data = l_new(struct nl_data, 1);
 
-	data->genl = l_genl_new_default();
-	data->nl80211 = l_genl_family_new(data->genl, NL80211_GENL_NAME);
-
-	l_genl_family_set_watches(data->nl80211, nl80211_appeared,
-					nl80211_vanished, data, NULL);
-
+	data->genl = l_genl_new();
+	l_genl_request_family(data->genl, NL80211_GENL_NAME,
+				nl80211_requested, data, NULL);
 	/*
 	 * This is somewhat of a mystery, but it appears that
 	 * calling lshw causes the OS to re-enumerate the USB

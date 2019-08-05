@@ -127,6 +127,7 @@ typedef void (*netdev_station_watch_func_t)(struct netdev *netdev,
 struct wiphy *netdev_get_wiphy(struct netdev *netdev);
 const uint8_t *netdev_get_address(struct netdev *netdev);
 uint32_t netdev_get_ifindex(struct netdev *netdev);
+uint64_t netdev_get_wdev_id(struct netdev *netdev);
 enum netdev_iftype netdev_get_iftype(struct netdev *netdev);
 int netdev_set_iftype(struct netdev *netdev, enum netdev_iftype type,
 			netdev_command_cb_t cb, void *user_data,
@@ -145,6 +146,8 @@ struct handshake_state *netdev_get_handshake(struct netdev *netdev);
 
 int netdev_connect(struct netdev *netdev, struct scan_bss *bss,
 				struct handshake_state *hs,
+				struct iovec *vendor_ies,
+				size_t num_vendor_ies,
 				netdev_event_func_t event_filter,
 				netdev_connect_cb_t cb, void *user_data);
 int netdev_connect_wsc(struct netdev *netdev, struct scan_bss *bss,
@@ -207,5 +210,5 @@ uint32_t netdev_station_watch_add(struct netdev *netdev,
 
 bool netdev_station_watch_remove(struct netdev *netdev, uint32_t id);
 
-struct netdev *netdev_create_from_genl(struct l_genl_msg *msg);
+struct netdev *netdev_create_from_genl(struct l_genl_msg *msg, bool random_mac);
 bool netdev_destroy(struct netdev *netdev);

@@ -48,8 +48,11 @@ struct scan_bss {
 	uint16_t capability;
 	uint8_t *rsne;
 	uint8_t *wpa;
+	uint8_t *osen;
 	uint8_t *wsc;		/* Concatenated WSC IEs */
 	ssize_t wsc_size;	/* Size of Concatenated WSC IEs */
+	uint8_t *p2p;		/* Concatenated P2P IEs */
+	ssize_t p2p_size;	/* Size of Concatenated P2P IEs */
 	uint8_t mde[3];
 	uint8_t ssid[32];
 	uint8_t ssid_len;
@@ -61,12 +64,17 @@ struct scan_bss {
 	uint8_t ht_ie[28];
 	uint8_t vht_ie[14];
 	uint64_t time_stamp;
+	uint8_t hessid[6];
+	uint8_t *rc_ie;		/* Roaming consortium IE */
+	uint8_t hs20_version;
 	bool mde_present : 1;
 	bool cc_present : 1;
 	bool cap_rm_neighbor_report : 1;
 	bool has_sup_rates : 1;
 	bool ht_capable : 1;
 	bool vht_capable : 1;
+	bool anqp_capable : 1;
+	bool hs20_capable : 1;
 };
 
 struct scan_parameters {
@@ -75,37 +83,38 @@ struct scan_parameters {
 	struct scan_freq_set *freqs;
 	bool flush : 1;
 	bool randomize_mac_addr_hint : 1;
+	bool no_cck_rates : 1;
 	const char *ssid;	/* Used for direct probe request */
 };
 
 static inline int scan_bss_addr_cmp(const struct scan_bss *a1,
 					const struct scan_bss *a2)
 {
-        return memcmp(a1->addr, a2->addr, sizeof(a1->addr));
+	return memcmp(a1->addr, a2->addr, sizeof(a1->addr));
 }
 
 static inline bool scan_bss_addr_eq(const struct scan_bss *a1,
 					const struct scan_bss *a2)
 {
-        return !memcmp(a1->addr, a2->addr, sizeof(a1->addr));
+	return !memcmp(a1->addr, a2->addr, sizeof(a1->addr));
 }
 
-uint32_t scan_passive(uint32_t ifindex, struct scan_freq_set *freqs,
+uint32_t scan_passive(uint64_t wdev_id, struct scan_freq_set *freqs,
 			scan_trigger_func_t trigger, scan_notify_func_t notify,
 			void *userdata, scan_destroy_func_t destroy);
-uint32_t scan_active(uint32_t ifindex, uint8_t *extra_ie, size_t extra_ie_size,
+uint32_t scan_active(uint64_t wdev_id, uint8_t *extra_ie, size_t extra_ie_size,
 			scan_trigger_func_t trigger,
 			scan_notify_func_t notify, void *userdata,
 			scan_destroy_func_t destroy);
-uint32_t scan_active_full(uint32_t ifindex,
+uint32_t scan_active_full(uint64_t wdev_id,
 			const struct scan_parameters *params,
 			scan_trigger_func_t trigger, scan_notify_func_t notify,
 			void *userdata, scan_destroy_func_t destroy);
-bool scan_cancel(uint32_t ifindex, uint32_t id);
+bool scan_cancel(uint64_t wdev_id, uint32_t id);
 
-void scan_periodic_start(uint32_t ifindex, scan_trigger_func_t trigger,
+void scan_periodic_start(uint64_t wdev_id, scan_trigger_func_t trigger,
 				scan_notify_func_t func, void *userdata);
-bool scan_periodic_stop(uint32_t ifindex);
+bool scan_periodic_stop(uint64_t wdev_id);
 
 void scan_bss_free(struct scan_bss *bss);
 int scan_bss_rank_compare(const void *a, const void *b, void *user);
@@ -129,8 +138,8 @@ void scan_freq_set_merge(struct scan_freq_set *to,
 void scan_freq_set_constrain(struct scan_freq_set *set,
 					const struct scan_freq_set *constraint);
 
-bool scan_ifindex_add(uint32_t ifindex);
-bool scan_ifindex_remove(uint32_t ifindex);
+bool scan_wdev_add(uint64_t wdev_id);
+bool scan_wdev_remove(uint64_t wdev_id);
 
-bool scan_init(struct l_genl_family *in);
-bool scan_exit();
+bool scan_suspend(uint64_t wdev_id);
+void scan_resume(uint64_t wdev_id);
