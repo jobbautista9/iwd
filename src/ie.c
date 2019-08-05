@@ -32,8 +32,9 @@
 #include "src/crypto.h"
 #include "src/ie.h"
 
-static const uint8_t ieee_oui[3] = { 0x00, 0x0f, 0xac };
-static const uint8_t microsoft_oui[3] = { 0x00, 0x50, 0xf2 };
+const unsigned char ieee_oui[3] = { 0x00, 0x0f, 0xac };
+const unsigned char microsoft_oui[3] = { 0x00, 0x50, 0xf2 };
+const unsigned char wifi_alliance_oui[3] = { 0x50, 0x6f, 0x9a };
 
 void ie_tlv_iter_init(struct ie_tlv_iter *iter, const unsigned char *tlv,
 			unsigned int len)
@@ -96,6 +97,7 @@ static void *ie_tlv_vendor_ie_concat(const unsigned char oui[],
 					unsigned char type,
 					const unsigned char *ies,
 					unsigned int len,
+					bool empty_ok,
 					ssize_t *out_len)
 {
 	struct ie_tlv_iter iter;
@@ -103,6 +105,7 @@ static void *ie_tlv_vendor_ie_concat(const unsigned char oui[],
 	unsigned int ie_len;
 	unsigned int concat_len = 0;
 	unsigned char *ret;
+	bool ie_found = false;
 
 	ie_tlv_iter_init(&iter, ies, len);
 
@@ -123,11 +126,12 @@ static void *ie_tlv_vendor_ie_concat(const unsigned char oui[],
 			continue;
 
 		concat_len += ie_len - 4;
+		ie_found = true;
 	}
 
 	if (concat_len == 0) {
 		if (out_len)
-			*out_len = -ENOENT;
+			*out_len = (ie_found && empty_ok) ? 0 : -ENOENT;
 
 		return NULL;
 	}
@@ -175,7 +179,25 @@ static void *ie_tlv_vendor_ie_concat(const unsigned char oui[],
 void *ie_tlv_extract_wsc_payload(const unsigned char *ies, size_t len,
 							ssize_t *out_len)
 {
-	return ie_tlv_vendor_ie_concat(microsoft_oui, 0x04, ies, len, out_len);
+	return ie_tlv_vendor_ie_concat(microsoft_oui, 0x04,
+					ies, len, false, out_len);
+}
+
+/*
+ * Wi-Fi P2P Technical Specification v1.7, Section 8.2:
+ * "More than one P2P IE may be included in a single frame.  If multiple P2P
+ * IEs are present, the complete P2P attribute data consists of the
+ * concatenation of the P2P Attribute fields of the P2P IEs.  The P2P
+ * Attributes field of each P2P IE may be any length up to the maximum
+ * (251 octets).  The order of the concatenated P2P attribute data shall be
+ * preserved in the ordering of the P2P IEs in the frame.  All of the P2P IEs
+ * shall fit within a single frame and shall be adjacent in the frame."
+ */
+void *ie_tlv_extract_p2p_payload(const unsigned char *ies, size_t len,
+							ssize_t *out_len)
+{
+	return ie_tlv_vendor_ie_concat(wifi_alliance_oui, 0x09,
+					ies, len, true, out_len);
 }
 
 /*
@@ -187,6 +209,7 @@ void *ie_tlv_extract_wsc_payload(const unsigned char *ies, size_t len,
 static void *ie_tlv_vendor_ie_encapsulate(const unsigned char oui[],
 					uint8_t type,
 					const void *data, size_t len,
+					bool build_empty,
 					size_t *out_len)
 {
 	size_t overhead;
@@ -200,6 +223,9 @@ static void *ie_tlv_vendor_ie_encapsulate(const unsigned char oui[],
 	 */
 	overhead = (len + 250) / 251 * 6;
 
+	if (len == 0 && build_empty)
+		overhead = 6;
+
 	ret = l_malloc(len + overhead);
 
 	if (out_len)
@@ -207,7 +233,7 @@ static void *ie_tlv_vendor_ie_encapsulate(const unsigned char oui[],
 
 	offset = 0;
 
-	while (len) {
+	while (overhead) {
 		ie_len = len <= 251 ? len : 251;
 		ret[offset++] = IE_TYPE_VENDOR_SPECIFIC;
 		ret[offset++] = ie_len + 4;
@@ -218,6 +244,7 @@ static void *ie_tlv_vendor_ie_encapsulate(const unsigned char oui[],
 
 		data += ie_len;
 		len -= ie_len;
+		overhead -= 6;
 	}
 
 	return ret;
@@ -227,7 +254,14 @@ void *ie_tlv_encapsulate_wsc_payload(const uint8_t *data, size_t len,
 								size_t *out_len)
 {
 	return ie_tlv_vendor_ie_encapsulate(microsoft_oui, 0x04,
-							data, len, out_len);
+						data, len, false, out_len);
+}
+
+void *ie_tlv_encapsulate_p2p_payload(const uint8_t *data, size_t len,
+								size_t *out_len)
+{
+	return ie_tlv_vendor_ie_encapsulate(wifi_alliance_oui, 0x09,
+						data, len, true, out_len);
 }
 
 #define TLV_HEADER_LEN 2
@@ -423,7 +457,7 @@ static bool ie_parse_cipher_suite(const uint8_t *data,
 }
 
 /* 802.11, Section 8.4.2.27.2 */
-static int ie_parse_akm_suite(const uint8_t *data,
+static int ie_parse_rsn_akm_suite(const uint8_t *data,
 					enum ie_rsn_akm_suite *out)
 {
 	/*
@@ -497,6 +531,20 @@ static int ie_parse_akm_suite(const uint8_t *data,
 	return -ENOENT;
 }
 
+static int ie_parse_osen_akm_suite(const uint8_t *data,
+					enum ie_rsn_akm_suite *out)
+{
+	if (memcmp(data, wifi_alliance_oui, 3))
+		return -ENOENT;
+
+	if (data[3] != 1)
+		return -ENOENT;
+
+	*out = IE_RSN_AKM_SUITE_OSEN;
+
+	return 0;
+}
+
 static bool ie_parse_group_cipher(const uint8_t *data,
 					enum ie_rsn_cipher_suite *out)
 {
@@ -559,6 +607,7 @@ static bool ie_parse_group_management_cipher(const uint8_t *data,
 
 	switch (tmp) {
 	case IE_RSN_CIPHER_SUITE_BIP:
+	case IE_RSN_CIPHER_SUITE_NO_GROUP_TRAFFIC:
 		break;
 	default:
 		return false;
@@ -575,35 +624,19 @@ static bool ie_parse_group_management_cipher(const uint8_t *data,
 	if (len == 0)			\
 		goto done		\
 
-int ie_parse_rsne(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info)
+static int parse_ciphers(const uint8_t *data, size_t len,
+			int (*akm_parse)(const uint8_t *data,
+						enum ie_rsn_akm_suite *out),
+			struct ie_rsn_info *out_info)
 {
-	const uint8_t *data = iter->data;
-	size_t len = iter->len;
-	uint16_t version;
-	struct ie_rsn_info info;
 	uint16_t count;
 	uint16_t i;
-
-	memset(&info, 0, sizeof(info));
-	info.group_cipher = IE_RSN_CIPHER_SUITE_CCMP;
-	info.pairwise_ciphers = IE_RSN_CIPHER_SUITE_CCMP;
-	info.akm_suites = IE_RSN_AKM_SUITE_8021X;
-
-	/* Parse Version field */
-	if (len < 2)
-		return -EMSGSIZE;
-
-	version = l_get_le16(data);
-	if (version != 0x01)
-		return -EBADMSG;
-
-	RSNE_ADVANCE(data, len, 2);
 
 	/* Parse Group Cipher Suite field */
 	if (len < 4)
 		return -EBADMSG;
 
-	if (!ie_parse_group_cipher(data, &info.group_cipher))
+	if (!ie_parse_group_cipher(data, &out_info->group_cipher))
 		return -ERANGE;
 
 	RSNE_ADVANCE(data, len, 4);
@@ -628,13 +661,13 @@ int ie_parse_rsne(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info)
 		return -EBADMSG;
 
 	/* Parse Pairwise Cipher Suite List field */
-	for (i = 0, info.pairwise_ciphers = 0; i < count; i++) {
+	for (i = 0, out_info->pairwise_ciphers = 0; i < count; i++) {
 		enum ie_rsn_cipher_suite suite;
 
 		if (!ie_parse_pairwise_cipher(data + i * 4, &suite))
 			return -ERANGE;
 
-		info.pairwise_ciphers |= suite;
+		out_info->pairwise_ciphers |= suite;
 	}
 
 	RSNE_ADVANCE(data, len, count * 4);
@@ -654,14 +687,14 @@ int ie_parse_rsne(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info)
 		return -EBADMSG;
 
 	/* Parse AKM Suite List field */
-	for (i = 0, info.akm_suites = 0; i < count; i++) {
+	for (i = 0, out_info->akm_suites = 0; i < count; i++) {
 		enum ie_rsn_akm_suite suite;
 		int ret;
 
-		ret = ie_parse_akm_suite(data + i * 4, &suite);
+		ret = akm_parse(data + i * 4, &suite);
 		switch (ret) {
 		case 0:
-			info.akm_suites |= suite;
+			out_info->akm_suites |= suite;
 			break;
 		case -ENOENT:
 			/* Skip unknown or vendor specific AKMs */
@@ -676,24 +709,24 @@ int ie_parse_rsne(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info)
 	if (len < 2)
 		return -EBADMSG;
 
-	info.preauthentication = util_is_bit_set(data[0], 0);
-	info.no_pairwise = util_is_bit_set(data[0], 1);
-	info.ptksa_replay_counter = util_bit_field(data[0], 2, 2);
-	info.gtksa_replay_counter = util_bit_field(data[0], 4, 2);
-	info.mfpr = util_is_bit_set(data[0], 6);
-	info.mfpc = util_is_bit_set(data[0], 7);
-	info.peerkey_enabled = util_is_bit_set(data[1], 1);
-	info.spp_a_msdu_capable = util_is_bit_set(data[1], 2);
-	info.spp_a_msdu_required = util_is_bit_set(data[1], 3);
-	info.pbac = util_is_bit_set(data[1], 4);
-	info.extended_key_id = util_is_bit_set(data[1], 5);
+	out_info->preauthentication = util_is_bit_set(data[0], 0);
+	out_info->no_pairwise = util_is_bit_set(data[0], 1);
+	out_info->ptksa_replay_counter = util_bit_field(data[0], 2, 2);
+	out_info->gtksa_replay_counter = util_bit_field(data[0], 4, 2);
+	out_info->mfpr = util_is_bit_set(data[0], 6);
+	out_info->mfpc = util_is_bit_set(data[0], 7);
+	out_info->peerkey_enabled = util_is_bit_set(data[1], 1);
+	out_info->spp_a_msdu_capable = util_is_bit_set(data[1], 2);
+	out_info->spp_a_msdu_required = util_is_bit_set(data[1], 3);
+	out_info->pbac = util_is_bit_set(data[1], 4);
+	out_info->extended_key_id = util_is_bit_set(data[1], 5);
 
 	/*
 	 * BIP—default group management cipher suite in an RSNA with
 	 * management frame protection enabled
 	 */
-	if (info.mfpc)
-		info.group_management_cipher = IE_RSN_CIPHER_SUITE_BIP;
+	if (out_info->mfpc)
+		out_info->group_management_cipher = IE_RSN_CIPHER_SUITE_BIP;
 
 	RSNE_ADVANCE(data, len, 2);
 
@@ -701,11 +734,11 @@ int ie_parse_rsne(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info)
 	if (len < 2)
 		return -EBADMSG;
 
-	info.num_pmkids = l_get_le16(data);
+	out_info->num_pmkids = l_get_le16(data);
 	RSNE_ADVANCE(data, len, 2);
 
-	if (info.num_pmkids > 0) {
-		if (len < 16 * info.num_pmkids)
+	if (out_info->num_pmkids > 0) {
+		if (len < 16 * out_info->num_pmkids)
 			return -EBADMSG;
 
 		/*
@@ -714,8 +747,8 @@ int ie_parse_rsne(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info)
 		 * We simply assign the pointer to the PMKIDs to the structure.
 		 * The PMKIDs are fixed size, 16 bytes each.
 		 */
-		info.pmkids = data;
-		RSNE_ADVANCE(data, len, info.num_pmkids * 16);
+		out_info->pmkids = data;
+		RSNE_ADVANCE(data, len, out_info->num_pmkids * 16);
 	}
 
 	/* Parse Group Management Cipher Suite field */
@@ -723,12 +756,41 @@ int ie_parse_rsne(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info)
 		return -EBADMSG;
 
 	if (!ie_parse_group_management_cipher(data,
-						&info.group_management_cipher))
+					&out_info->group_management_cipher))
 		return -ERANGE;
 
 	RSNE_ADVANCE(data, len, 4);
 
 	return -EBADMSG;
+
+done:
+	return 0;
+}
+
+int ie_parse_rsne(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info)
+{
+	const uint8_t *data = iter->data;
+	size_t len = iter->len;
+	uint16_t version;
+	struct ie_rsn_info info;
+
+	memset(&info, 0, sizeof(info));
+	info.group_cipher = IE_RSN_CIPHER_SUITE_CCMP;
+	info.pairwise_ciphers = IE_RSN_CIPHER_SUITE_CCMP;
+	info.akm_suites = IE_RSN_AKM_SUITE_8021X;
+
+	/* Parse Version field */
+	if (len < 2)
+		return -EMSGSIZE;
+
+	version = l_get_le16(data);
+	if (version != 0x01)
+		return -EBADMSG;
+
+	RSNE_ADVANCE(data, len, 2);
+
+	if (parse_ciphers(data, len, ie_parse_rsn_akm_suite, &info) < 0)
+		return -EBADMSG;
 
 done:
 	if (out_info)
@@ -751,6 +813,48 @@ int ie_parse_rsne_from_data(const uint8_t *data, size_t len,
 		return -EPROTOTYPE;
 
 	return ie_parse_rsne(&iter, info);
+}
+
+int ie_parse_osen(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info)
+{
+	const uint8_t *data = iter->data;
+	size_t len = iter->len;
+	struct ie_rsn_info info;
+
+	if (ie_tlv_iter_get_tag(iter) != IE_TYPE_VENDOR_SPECIFIC)
+		return -EPROTOTYPE;
+
+	if (!is_ie_wfa_ie(iter->data, iter->len, IE_WFA_OI_OSEN))
+		return -EPROTOTYPE;
+
+	RSNE_ADVANCE(data, len, 4);
+
+	memset(&info, 0, sizeof(info));
+	info.group_cipher = IE_RSN_CIPHER_SUITE_NO_GROUP_TRAFFIC;
+	info.pairwise_ciphers = IE_RSN_CIPHER_SUITE_CCMP;
+	info.akm_suites = IE_RSN_AKM_SUITE_8021X;
+
+	if (parse_ciphers(data, len, ie_parse_osen_akm_suite, &info) < 0)
+		return -EBADMSG;
+
+done:
+	if (out_info)
+		memcpy(out_info, &info, sizeof(info));
+
+	return 0;
+}
+
+int ie_parse_osen_from_data(const uint8_t *data, size_t len,
+				struct ie_rsn_info *info)
+{
+	struct ie_tlv_iter iter;
+
+	ie_tlv_iter_init(&iter, data, len);
+
+	if (!ie_tlv_iter_next(&iter))
+		return -EMSGSIZE;
+
+	return ie_parse_osen(&iter, info);
 }
 
 /*
@@ -839,6 +943,8 @@ static bool ie_build_rsn_akm_suite(uint8_t *data, enum ie_rsn_akm_suite suite)
 		RETURN_AKM(data, ieee_oui, 17);
 	case IE_RSN_AKM_SUITE_OWE:
 		RETURN_AKM(data, ieee_oui, 18);
+	case IE_RSN_AKM_SUITE_OSEN:
+		RETURN_AKM(data, wifi_alliance_oui, 1);
 	}
 
 	return false;
@@ -859,15 +965,8 @@ static bool ie_build_wpa_akm_suite(uint8_t *data, enum ie_rsn_akm_suite suite)
 	return false;
 }
 
-/*
- * Generate an RSNE IE based on the information found in info.
- * The to array must be 256 bytes in size
- *
- * In theory it is possible to generate 257 byte IE RSNs (1 byte for IE Type,
- * 1 byte for Length and 255 bytes of data) but we don't support this
- * possibility.
- */
-bool ie_build_rsne(const struct ie_rsn_info *info, uint8_t *to)
+static int build_ciphers_common(const struct ie_rsn_info *info, uint8_t *to,
+				uint8_t max_len, bool force_group_mgmt_cipher)
 {
 	/* These are the only valid pairwise suites */
 	static enum ie_rsn_cipher_suite pairwise_suites[] = {
@@ -877,22 +976,15 @@ bool ie_build_rsne(const struct ie_rsn_info *info, uint8_t *to)
 		IE_RSN_CIPHER_SUITE_WEP40,
 		IE_RSN_CIPHER_SUITE_USE_GROUP_CIPHER,
 	};
-	unsigned int pos;
+	unsigned int pos = 0;
 	unsigned int i;
 	uint8_t *countptr;
 	uint16_t count;
 	enum ie_rsn_akm_suite akm_suite;
 
-	to[0] = IE_TYPE_RSN;
-
-	/* Version field, always 1 */
-	pos = 2;
-	l_put_le16(1, to + pos);
-	pos += 2;
-
 	/* Group Data Cipher Suite */
 	if (!ie_build_cipher_suite(to + pos, ieee_oui, info->group_cipher))
-		return false;
+		return -EINVAL;
 
 	pos += 4;
 
@@ -906,11 +998,11 @@ bool ie_build_rsne(const struct ie_rsn_info *info, uint8_t *to)
 		if (!(info->pairwise_ciphers & suite))
 			continue;
 
-		if (pos + 4 > 242)
-			return false;
+		if (pos + 4 > max_len)
+			return -EBADMSG;
 
 		if (!ie_build_cipher_suite(to + pos, ieee_oui, suite))
-			return false;
+			return -EINVAL;
 
 		pos += 4;
 		count += 1;
@@ -926,16 +1018,16 @@ bool ie_build_rsne(const struct ie_rsn_info *info, uint8_t *to)
 	count = 0;
 
 	for (count = 0, akm_suite = IE_RSN_AKM_SUITE_8021X;
-			akm_suite <= IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384;
+			akm_suite <= IE_RSN_AKM_SUITE_OSEN;
 				akm_suite <<= 1) {
 		if (!(info->akm_suites & akm_suite))
 			continue;
 
-		if (pos + 4 > 248)
-			return false;
+		if (pos + 4 > max_len)
+			return -EBADMSG;
 
 		if (!ie_build_rsn_akm_suite(to + pos, akm_suite))
-			return false;
+			return -EINVAL;
 
 		pos += 4;
 		count += 1;
@@ -984,7 +1076,7 @@ bool ie_build_rsne(const struct ie_rsn_info *info, uint8_t *to)
 	pos += 1;
 
 	/* Short hand the generated RSNE if possible */
-	if (info->num_pmkids == 0) {
+	if (info->num_pmkids == 0 && !force_group_mgmt_cipher) {
 		/* No Group Management Cipher Suite */
 		if (to[pos - 2] == 0 && to[pos - 1] == 0) {
 			pos -= 2;
@@ -1000,26 +1092,81 @@ bool ie_build_rsne(const struct ie_rsn_info *info, uint8_t *to)
 	l_put_le16(info->num_pmkids, to + pos);
 	pos += 2;
 
-	if (pos + info->num_pmkids * 16 > 252)
-		return false;
+	if (pos + info->num_pmkids * 16 > max_len)
+		return -EINVAL;
 
 	/* PMKID List */
-	memcpy(to + pos, info->pmkids, 16 * info->num_pmkids);
-	pos += 16 * info->num_pmkids;
+	if (info->num_pmkids) {
+		memcpy(to + pos, info->pmkids, 16 * info->num_pmkids);
+		pos += 16 * info->num_pmkids;
+	}
 
-	if (!info->mfpc)
+	if (!force_group_mgmt_cipher && !info->mfpc)
 		goto done;
 
-	if (info->group_management_cipher == IE_RSN_CIPHER_SUITE_BIP)
+	if (!force_group_mgmt_cipher && info->group_management_cipher ==
+							IE_RSN_CIPHER_SUITE_BIP)
 		goto done;
 
 	/* Group Management Cipher Suite */
-	if (!ie_build_cipher_suite(to, ieee_oui, info->group_management_cipher))
-		return false;
+	if (!ie_build_cipher_suite(to + pos, ieee_oui,
+					info->group_management_cipher))
+		return -EINVAL;
 
 	pos += 4;
 
 done:
+	return pos;
+}
+
+/*
+ * Generate an RSNE IE based on the information found in info.
+ * The to array must be 256 bytes in size
+ *
+ * In theory it is possible to generate 257 byte IE RSNs (1 byte for IE Type,
+ * 1 byte for Length and 255 bytes of data) but we don't support this
+ * possibility.
+ */
+bool ie_build_rsne(const struct ie_rsn_info *info, uint8_t *to)
+{
+	unsigned int pos;
+	int ret;
+
+	to[0] = IE_TYPE_RSN;
+
+	/* Version field, always 1 */
+	pos = 2;
+	l_put_le16(1, to + pos);
+	pos += 2;
+
+	ret = build_ciphers_common(info, to + 4, 252, false);
+	if (ret < 0)
+		return false;
+
+	pos += ret;
+
+	to[1] = pos - 2;
+
+	return true;
+}
+
+bool ie_build_osen(const struct ie_rsn_info *info, uint8_t *to)
+{
+	unsigned int pos;
+	int ret;
+
+	to[0] = IE_TYPE_VENDOR_SPECIFIC;
+	pos = 2;
+	memcpy(to + pos, wifi_alliance_oui, 3);
+	pos += 3;
+	to[pos++] = 0x12;
+
+	ret = build_ciphers_common(info, to + 6, 250, true);
+	if (ret < 0)
+		return false;
+
+	pos += ret;
+
 	to[1] = pos - 2;
 
 	return true;
@@ -1131,6 +1278,24 @@ static bool ie_parse_wpa_pairwise_cipher(const uint8_t *data,
 
 	*out = tmp;
 	return true;
+}
+
+bool is_ie_wfa_ie(const uint8_t *data, uint8_t len, uint8_t oi_type)
+{
+	if (!data)
+		return false;
+
+	if (oi_type == IE_WFA_OI_OSEN && len < 22)
+		return false;
+	else if (oi_type == IE_WFA_OI_HS20_INDICATION && len != 5 && len != 7)
+		return false;
+	else if (len < 4) /* OI not handled, but at least check length */
+		return false;
+
+	if (!memcmp(data, wifi_alliance_oui, 3) && data[3] == oi_type)
+		return true;
+
+	return false;
 }
 
 bool is_ie_wpa_ie(const uint8_t *data, uint8_t len)
@@ -2010,14 +2175,14 @@ bool ie_build_mobility_domain(uint16_t mdid, bool ft_over_ds, bool resource_req,
 	return true;
 }
 
-int ie_parse_fast_bss_transition(struct ie_tlv_iter *iter,
-				struct ie_ft_info *info)
+int ie_parse_fast_bss_transition(struct ie_tlv_iter *iter, uint32_t mic_len,
+					struct ie_ft_info *info)
 {
 	const uint8_t *data;
 	uint8_t len, subelem_id, subelem_len;
 
 	len = ie_tlv_iter_get_length(iter);
-	if (len < 82)
+	if (len < 66 + mic_len)
 		return -EINVAL;
 
 	data = ie_tlv_iter_get_data(iter);
@@ -2026,14 +2191,14 @@ int ie_parse_fast_bss_transition(struct ie_tlv_iter *iter,
 
 	info->mic_element_count = data[1];
 
-	memcpy(info->mic, data + 2, 16);
+	memcpy(info->mic, data + 2, mic_len);
 
-	memcpy(info->anonce, data + 18, 32);
+	memcpy(info->anonce, data + mic_len + 2, 32);
 
-	memcpy(info->snonce, data + 50, 32);
+	memcpy(info->snonce, data + mic_len + 34, 32);
 
-	len -= 82;
-	data += 82;
+	len -= 66 + mic_len;
+	data += 66 + mic_len;
 
 	while (len >= 2) {
 		subelem_id = *data++;
@@ -2104,7 +2269,8 @@ int ie_parse_fast_bss_transition(struct ie_tlv_iter *iter,
 }
 
 int ie_parse_fast_bss_transition_from_data(const uint8_t *data, uint8_t len,
-				struct ie_ft_info *info)
+						uint32_t mic_len,
+						struct ie_ft_info *info)
 {
 	struct ie_tlv_iter iter;
 
@@ -2116,28 +2282,29 @@ int ie_parse_fast_bss_transition_from_data(const uint8_t *data, uint8_t len,
 	if (ie_tlv_iter_get_tag(&iter) != IE_TYPE_FAST_BSS_TRANSITION)
 		return -EPROTOTYPE;
 
-	return ie_parse_fast_bss_transition(&iter, info);
+	return ie_parse_fast_bss_transition(&iter, mic_len, info);
 }
 
-bool ie_build_fast_bss_transition(const struct ie_ft_info *info, uint8_t *to)
+bool ie_build_fast_bss_transition(const struct ie_ft_info *info,
+					uint32_t mic_len, uint8_t *to)
 {
 	uint8_t *len;
 
 	*to++ = IE_TYPE_FAST_BSS_TRANSITION;
 
 	len = to++;
-	*len = 82;
+	*len = (mic_len == 16) ? 82 : 90;
 
 	to[0] = 0x00;
 	to[1] = info->mic_element_count;
 
-	memcpy(to + 2, info->mic, 16);
+	memcpy(to + 2, info->mic, mic_len);
 
-	memcpy(to + 18, info->anonce, 32);
+	memcpy(to + mic_len + 2, info->anonce, 32);
 
-	memcpy(to + 50, info->snonce, 32);
+	memcpy(to + mic_len + 34, info->snonce, 32);
 
-	to += 82;
+	to += (mic_len == 16) ? 82 : 90;
 
 	if (info->r1khid_present) {
 		to[0] = 1;
@@ -2217,6 +2384,193 @@ int ie_parse_neighbor_report(struct ie_tlv_iter *iter,
 		info->bss_transition_pref = ie_tlv_iter_get_data(&opt_iter)[0];
 		info->bss_transition_pref_present = true;
 	}
+
+	return 0;
+}
+
+
+int ie_parse_roaming_consortium(struct ie_tlv_iter *iter, size_t *num_anqp_out,
+				const uint8_t **oi1_out, size_t *oi1_len_out,
+				const uint8_t **oi2_out, size_t *oi2_len_out,
+				const uint8_t **oi3_out, size_t *oi3_len_out)
+{
+	unsigned int len = ie_tlv_iter_get_length(iter);
+	const uint8_t *data = ie_tlv_iter_get_data(iter);
+	size_t num_anqp;
+	size_t oi1_len;
+	size_t oi2_len;
+	size_t oi3_len;
+
+	if (len < 4)
+		return -EINVAL;
+
+	num_anqp = l_get_u8(data);
+	oi1_len = util_bit_field(l_get_u8(data + 1), 0, 4);
+	oi2_len = util_bit_field(l_get_u8(data + 1), 4, 4);
+	oi3_len = len - (2 + oi1_len + oi2_len);
+
+	if (!oi1_len)
+		return -EINVAL;
+
+	if (len < oi1_len + oi2_len + oi3_len + 2)
+		return -EINVAL;
+
+	if (num_anqp_out)
+		*num_anqp_out = num_anqp;
+
+	if (oi1_out)
+		*oi1_out = data + 2;
+
+	if (oi1_len_out)
+		*oi1_len_out = oi1_len;
+
+	/* OI2/3 are optional, explicitly set to NULL if not included */
+	if (oi2_len) {
+		if (oi2_out)
+			*oi2_out = data + 2 + oi1_len;
+
+		if (oi2_len_out)
+			*oi2_len_out = oi2_len;
+	} else if (oi2_out)
+		*oi2_out = NULL;
+
+	if (oi3_len) {
+		if (oi3_out)
+			*oi3_out = data + 2 + oi1_len + oi2_len;
+
+		if (oi3_len_out)
+			*oi3_len_out = oi3_len;
+	} else if (oi3_out)
+		*oi3_out = NULL;
+
+	return 0;
+}
+
+int ie_parse_roaming_consortium_from_data(const uint8_t *data, size_t len,
+				size_t *num_anqp_out, const uint8_t **oi1_out,
+				size_t *oi1_len_out, const uint8_t **oi2_out,
+				size_t *oi2_len_out, const uint8_t **oi3_out,
+				size_t *oi3_len_out)
+{
+	struct ie_tlv_iter iter;
+
+	ie_tlv_iter_init(&iter, data, len);
+
+	if (!ie_tlv_iter_next(&iter))
+		return -EMSGSIZE;
+
+	if (ie_tlv_iter_get_tag(&iter) != IE_TYPE_ROAMING_CONSORTIUM)
+		return -EPROTOTYPE;
+
+	return ie_parse_roaming_consortium(&iter, num_anqp_out, oi1_out,
+						oi1_len_out, oi2_out,
+						oi2_len_out, oi3_out,
+						oi3_len_out);
+}
+
+int ie_build_roaming_consortium(const uint8_t *rc, size_t rc_len, uint8_t *to)
+{
+	*to++ = IE_TYPE_VENDOR_SPECIFIC;
+
+	*to++ = rc_len + 4;
+
+	memcpy(to, wifi_alliance_oui, 3);
+	to += 3;
+
+	*to++ = 0x1d;
+
+	memcpy(to, rc, rc_len);
+
+	return 0;
+}
+
+int ie_parse_hs20_indication(struct ie_tlv_iter *iter, uint8_t *version_out,
+				uint16_t *pps_mo_id_out, uint8_t *domain_id_out)
+{
+	unsigned int len = ie_tlv_iter_get_length(iter);
+	const uint8_t *data = ie_tlv_iter_get_data(iter);
+	uint8_t hs20_config;
+	bool pps_mo_present, domain_id_present;
+
+	if (!is_ie_wfa_ie(data, iter->len, IE_WFA_OI_HS20_INDICATION))
+		return -EPROTOTYPE;
+
+	hs20_config = l_get_u8(data + 4);
+
+	pps_mo_present = util_is_bit_set(hs20_config, 1);
+	domain_id_present = util_is_bit_set(hs20_config, 2);
+
+	/*
+	 * Hotspot 2.0 Spec - Section 3.1.1
+	 *
+	 * "Either the PPS MO ID field or the ANQP Domain ID field (these
+	 * are mutually exclusive fields) is included in the HS2.0 Indication
+	 * element"
+	 */
+	if (pps_mo_present && domain_id_present)
+		return -EPROTOTYPE;
+
+	if (version_out)
+		*version_out = util_bit_field(hs20_config, 4, 4);
+
+	if (pps_mo_id_out)
+		*pps_mo_id_out = 0;
+
+	if (domain_id_out)
+		*domain_id_out = 0;
+
+	/* No PPS MO ID or Domain ID */
+	if (len == 5)
+		return 0;
+
+	/* we know from is_ie_wfa_ie that the length must be 7 */
+	if (pps_mo_present) {
+		if (pps_mo_id_out)
+			*pps_mo_id_out = l_get_u16(data + 5);
+	} else if (domain_id_present) {
+		if (domain_id_out)
+			*domain_id_out = l_get_u16(data + 5);
+	}
+
+	return 0;
+}
+
+int ie_parse_hs20_indication_from_data(const uint8_t *data, size_t len,
+					uint8_t *version, uint16_t *pps_mo_id,
+					uint8_t *domain_id)
+{
+	struct ie_tlv_iter iter;
+
+	ie_tlv_iter_init(&iter, data, len);
+
+	if (!ie_tlv_iter_next(&iter))
+		return -EMSGSIZE;
+
+	if (ie_tlv_iter_get_tag(&iter) != IE_TYPE_VENDOR_SPECIFIC)
+		return -EPROTOTYPE;
+
+	return ie_parse_hs20_indication(&iter, version, pps_mo_id, domain_id);
+}
+
+/*
+ * Only use version for building as this is meant for the (Re)Association IE.
+ * In this case DGAF is always disabled, Domain ID should not be present, and
+ * this device was not configured with PerProviderSubscription MO.
+ */
+int ie_build_hs20_indication(uint8_t version, uint8_t *to)
+{
+	if (version > 2)
+		return -EINVAL;
+
+	*to++ = IE_TYPE_VENDOR_SPECIFIC;
+	*to++ = 5;
+
+	memcpy(to, wifi_alliance_oui, 3);
+	to += 3;
+
+	*to++ = IE_WFA_OI_HS20_INDICATION;
+
+	*to++ = (version << 4) & 0xf0;
 
 	return 0;
 }

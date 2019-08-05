@@ -104,6 +104,7 @@ bool eapol_calculate_mic(enum ie_rsn_akm_suite akm, const uint8_t *kck,
 		switch (akm) {
 		case IE_RSN_AKM_SUITE_SAE_SHA256:
 		case IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256:
+		case IE_RSN_AKM_SUITE_OSEN:
 			return cmac_aes(kck, 16, frame, frame_len,
 						mic, mic_len);
 		case IE_RSN_AKM_SUITE_OWE:
@@ -157,6 +158,7 @@ bool eapol_verify_mic(enum ie_rsn_akm_suite akm, const uint8_t *kck,
 		switch (akm) {
 		case IE_RSN_AKM_SUITE_SAE_SHA256:
 		case IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256:
+		case IE_RSN_AKM_SUITE_OSEN:
 			checksum = l_checksum_new_cmac_aes(kck, 16);
 			break;
 		case IE_RSN_AKM_SUITE_OWE:
@@ -257,6 +259,7 @@ uint8_t *eapol_decrypt_key_data(enum ie_rsn_akm_suite akm, const uint8_t *kek,
 		case IE_RSN_AKM_SUITE_SAE_SHA256:
 		case IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256:
 		case IE_RSN_AKM_SUITE_OWE:
+		case IE_RSN_AKM_SUITE_OSEN:
 			if (key_data_len < 24 || key_data_len % 8)
 				return NULL;
 
@@ -887,12 +890,6 @@ void eapol_sm_free(struct eapol_sm *sm)
 	eapol_sm_destroy(sm);
 }
 
-void eapol_sm_set_protocol_version(struct eapol_sm *sm,
-				enum eapol_protocol_version protocol_version)
-{
-	sm->protocol_version = protocol_version;
-}
-
 void eapol_sm_set_listen_interval(struct eapol_sm *sm, uint16_t interval)
 {
 	sm->listen_interval = interval;
@@ -978,10 +975,7 @@ static void send_eapol_start(struct l_timeout *timeout, void *user_data)
 	l_timeout_remove(sm->eapol_start_timeout);
 	sm->eapol_start_timeout = NULL;
 
-	if (!sm->protocol_version)
-		sm->protocol_version = EAPOL_PROTOCOL_VERSION_2001;
-
-	frame->header.protocol_version = sm->protocol_version;
+	frame->header.protocol_version = EAPOL_PROTOCOL_VERSION_2001;
 	frame->header.packet_type = 1;
 	l_put_be16(0, &frame->header.packet_len);
 
@@ -1388,6 +1382,25 @@ static const uint8_t *eapol_find_rsne(const uint8_t *data, size_t data_len,
 	return first;
 }
 
+static const uint8_t *eapol_find_osen(const uint8_t *data, size_t data_len)
+{
+	struct ie_tlv_iter iter;
+
+	ie_tlv_iter_init(&iter, data, data_len);
+
+	while (ie_tlv_iter_next(&iter)) {
+		if (ie_tlv_iter_get_tag(&iter) == IE_TYPE_VENDOR_SPECIFIC) {
+			if (!is_ie_wfa_ie(iter.data, iter.len, IE_WFA_OI_OSEN))
+				continue;
+		} else
+			continue;
+
+		return ie_tlv_iter_get_data(&iter) - 2;
+	}
+
+	return NULL;
+}
+
 /* 802.11-2016 Section 12.7.6.3 */
 static void eapol_handle_ptk_2_of_4(struct eapol_sm *sm,
 					const struct eapol_key *ek)
@@ -1504,13 +1517,16 @@ static void eapol_handle_ptk_3_of_4(struct eapol_sm *sm,
 	 * not identical to that the STA received in the Beacon or Probe
 	 * Response frame, the STA shall disassociate.
 	 */
-	if (!sm->handshake->wpa_ie)
+	if (sm->handshake->wpa_ie)
+		rsne = eapol_find_wpa_ie(decrypted_key_data,
+					decrypted_key_data_size);
+	else if (sm->handshake->osen_ie)
+		rsne = eapol_find_osen(decrypted_key_data,
+					decrypted_key_data_size);
+	else
 		rsne = eapol_find_rsne(decrypted_key_data,
 					decrypted_key_data_size,
 					&optional_rsne);
-	else
-		rsne = eapol_find_wpa_ie(decrypted_key_data,
-					decrypted_key_data_size);
 
 	if (!rsne)
 		goto error_ie_different;
@@ -2314,15 +2330,22 @@ void eapol_register(struct eapol_sm *sm)
 		sm->watch_id = eapol_frame_watch_add(sm->handshake->ifindex,
 						eapol_rx_auth_packet, sm);
 
+		if (!sm->handshake->proto_version)
+			sm->protocol_version = EAPOL_PROTOCOL_VERSION_2004;
+		else
+			sm->protocol_version = sm->handshake->proto_version;
+
 		sm->started = true;
 		/* Since AP/AdHoc only support AKM PSK we can hard code this */
 		sm->mic_len = 16;
 
 		/* kick off handshake */
 		eapol_ptk_1_of_4_retry(NULL, sm);
-	} else
+	} else {
 		sm->watch_id = eapol_frame_watch_add(sm->handshake->ifindex,
 						eapol_rx_packet, sm);
+		sm->protocol_version = sm->handshake->proto_version;
+	}
 }
 
 bool eapol_start(struct eapol_sm *sm)
@@ -2352,7 +2375,9 @@ bool eapol_start(struct eapol_sm *sm)
 	 * then we wait for a rekey.
 	 */
 	if (sm->handshake->akm_suite & (IE_RSN_AKM_SUITE_FILS_SHA256 |
-			IE_RSN_AKM_SUITE_FILS_SHA384))
+			IE_RSN_AKM_SUITE_FILS_SHA384 |
+			IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384 |
+			IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256))
 		return true;
 
 	if (sm->require_handshake)

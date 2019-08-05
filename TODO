@@ -279,16 +279,6 @@ Wireless daemon
   Priority: Low
   Complexity: C2
 
-- Implement 4-Address mode when acting as a client
-
-  NL80211 allows one to use 4-address mode in STA role.  In this case the
-  EAPoL packets flow over the bridge interface while the rest of the commands
-  are addressed to the actual interface index.  This can be useful to share
-  the WiFi interface over various VM instances.
-
-  Priority: Low
-  Complexity: C2
-
 - Use NL80211_CMD_CRIT_PROTOCOL_START / CRIT_PROTOCOL_STOP
 
   Research whether iwd should be making use of these commands in order to
@@ -331,3 +321,106 @@ Wireless daemon
 
   Priority: Medium
   Complexity: C8
+
+- Support receiving OCE FILS Discovery Frames
+
+  When operating in station mode, we should support receiving of FILS
+  Discovery frames.
+
+  Priority: Medium
+  Complexity: C2
+
+- Support OCE Reduced Neighbor Reports
+
+  OCE specifies that the AP can send Reduced Neighbor Reports if the STA sets
+  the FILS Capability bit to true.  Reduced Neighbor Reports can be used to
+  replace the need to scan, particularly if the AP reports RNR Completeness
+  attribute.  RNRs can be sent in Probe Responses, Beacons and FILS Discovery
+  frames.
+
+  Priority: Medium
+  Complexity: C2
+
+- Support OCE Scanning
+
+  OCE Specifies various scanning optimizations.  When OCE scanning is enabled,
+  (e.g. when OCE APs are detected, or via some other means), enable the
+  relevant optimizations if driver support is present:
+    NL80211_SCAN_FLAG_FILS_MAX_CHANNEL_TIME
+    NL80211_SCAN_FLAG_ACCEPT_BCAST_PROBE_RESP
+    NL80211_SCAN_FLAG_OCE_PROBE_REQ_HIGH_TX_RATE
+    NL80211_SCAN_FLAG_OCE_PROBE_REQ_DEFERRAL_SUPPRESSION
+
+  Priority: Medium
+  Complexity: C2
+
+- Support OCE mutually non-overlapping channels optimization.
+
+  OCE Section 3.10 mandates that the STA should scan channels 1, 6 and 11 in
+  the 2.4Ghz band first, unless it expects to find an AP on a different
+  channel.
+
+  Priority: Low
+  Complexity: C1
+
+- Support OCE RSSI-based Association Rejection attribute
+
+  OCE APs can reject a Re(Association) request with Status Code 34 and
+  optionally include RSSI-based Association Rejection attribute.  This
+  attribute can either contain a time delay information or an RSSI delta
+  value.  If the time delay info is included, make sure that this particular
+  BSS is blacklisted only for the duration of the delay.  If RSSI delta
+  is included, make sure to handle that as well.
+
+  Priority: Low
+  Complexity: C1
+
+- Support additional metrics sent by OCE APs
+
+  OCE APs can send BSS Load and Extended BSS Load IEs.  iwd already takes the
+  BSS Load IE into account for ranking purposes.  If Extended BSS Load IE is
+  present, it should be taken into account as well.
+
+  Additionally, Estimated Service Parameter (ESP) and Reduced WAN Metrics
+  should be taken into account if available.
+
+  Priority: Low
+  Complexity: C4
+
+- Support OCE FILS Indication element
+
+  OCE APs that support FILS authentication can notify which domains they
+  support.  This information is made available using the FILS Indication
+  element as part of the Probe Response and Beacon frames.
+
+  Priority: Low
+  Complexity: C4
+
+- Support OCE Higher Layer Protocol Encapsulation
+
+  This can be used to obtain DHCPv4 address faster.
+
+  Priority: Medium
+  Complexity: C4
+
+- Support Diagnostics interface
+
+  The diagnostic interface for a particular Device would contain information
+  (and possibly operations) that would be meant for diagnostics applications
+  or other applications that require access to very low level details.  Such
+  applications would be expected how to interpret this information
+  appropriately.
+
+  This interface would also be heavily utilized by the Auto-Test framework
+  in order to more easily ascertain the internal state of the hardware & the
+  daemon itself.
+
+  The list of possible information exposed via this interface includes:
+    - MAC address of the currently connected AP (in a Station)
+    - MAC addresses of currently connected clients (Adhoc, AP, etc)
+    - packet error rates or signal strength
+    - Throughput statistics
+    - FTM / direction finding operations
+
+  Priority: Medium
+  Complexity: C4

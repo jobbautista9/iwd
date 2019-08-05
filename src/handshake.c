@@ -143,25 +143,35 @@ static bool handshake_state_setup_own_ciphers(struct handshake_state *s,
 	s->pairwise_cipher = info->pairwise_ciphers;
 	s->group_cipher = info->group_cipher;
 	s->group_management_cipher = info->group_management_cipher;
-	s->mfp = info->mfpc;
+
+	/*
+	 * Dont set MFP for OSEN otherwise EAPoL will attempt to negotiate a
+	 * iGTK which is not allowe for OSEN.
+	 */
+	if (!s->osen_ie)
+		s->mfp = info->mfpc;
 
 	return true;
 }
 
-static bool handshake_state_set_authenticator_ie(struct handshake_state *s,
-						const uint8_t *ie, bool is_wpa)
+bool handshake_state_set_authenticator_ie(struct handshake_state *s,
+						const uint8_t *ie)
 {
 	struct ie_rsn_info info;
 
 	l_free(s->authenticator_ie);
 	s->authenticator_ie = l_memdup(ie, ie[1] + 2u);
-	s->wpa_ie = is_wpa;
+	s->wpa_ie = is_ie_wpa_ie(ie + 2, ie[1]);
+	s->osen_ie = is_ie_wfa_ie(ie + 2, ie[1], IE_WFA_OI_OSEN);
 
 	if (!s->authenticator)
 		return true;
 
-	if (is_wpa) {
+	if (s->wpa_ie) {
 		if (ie_parse_wpa_from_data(ie, ie[1] + 2, &info) < 0)
+			return false;
+	} else if (s->osen_ie) {
+		if (ie_parse_osen_from_data(ie, ie[1] + 2, &info) < 0)
 			return false;
 	} else {
 		if (ie_parse_rsne_from_data(ie, ie[1] + 2, &info) < 0)
@@ -171,20 +181,24 @@ static bool handshake_state_set_authenticator_ie(struct handshake_state *s,
 	return handshake_state_setup_own_ciphers(s, &info);
 }
 
-static bool handshake_state_set_supplicant_ie(struct handshake_state *s,
-						const uint8_t *ie, bool is_wpa)
+bool handshake_state_set_supplicant_ie(struct handshake_state *s,
+						const uint8_t *ie)
 {
 	struct ie_rsn_info info;
 
 	l_free(s->supplicant_ie);
 	s->supplicant_ie = l_memdup(ie, ie[1] + 2u);
-	s->wpa_ie = is_wpa;
+	s->wpa_ie = is_ie_wpa_ie(ie + 2, ie[1]);
+	s->osen_ie = is_ie_wfa_ie(ie + 2, ie[1], IE_WFA_OI_OSEN);
 
 	if (s->authenticator)
 		return true;
 
-	if (is_wpa) {
+	if (s->wpa_ie) {
 		if (ie_parse_wpa_from_data(ie, ie[1] + 2, &info) < 0)
+			return false;
+	} else if (s->osen_ie) {
+		if (ie_parse_osen_from_data(ie, ie[1] + 2, &info) < 0)
 			return false;
 	} else {
 		if (ie_parse_rsne_from_data(ie, ie[1] + 2, &info) < 0)
@@ -192,30 +206,6 @@ static bool handshake_state_set_supplicant_ie(struct handshake_state *s,
 	}
 
 	return handshake_state_setup_own_ciphers(s, &info);
-}
-
-bool handshake_state_set_authenticator_rsn(struct handshake_state *s,
-						const uint8_t *rsn_ie)
-{
-	return handshake_state_set_authenticator_ie(s, rsn_ie, false);
-}
-
-bool handshake_state_set_supplicant_rsn(struct handshake_state *s,
-					const uint8_t *rsn_ie)
-{
-	return handshake_state_set_supplicant_ie(s, rsn_ie, false);
-}
-
-bool handshake_state_set_authenticator_wpa(struct handshake_state *s,
-				const uint8_t *wpa_ie)
-{
-	return handshake_state_set_authenticator_ie(s, wpa_ie, true);
-}
-
-bool handshake_state_set_supplicant_wpa(struct handshake_state *s,
-					const uint8_t *wpa_ie)
-{
-	return handshake_state_set_supplicant_ie(s, wpa_ie, true);
 }
 
 void handshake_state_set_ssid(struct handshake_state *s, const uint8_t *ssid,
@@ -268,6 +258,29 @@ void handshake_state_set_passphrase(struct handshake_state *s,
 void handshake_state_set_no_rekey(struct handshake_state *s, bool no_rekey)
 {
 	s->no_rekey = no_rekey;
+}
+
+void handshake_state_set_fils_ft(struct handshake_state *s,
+					const uint8_t *fils_ft,
+					size_t fils_ft_len)
+{
+	memcpy(s->fils_ft, fils_ft, fils_ft_len);
+	s->fils_ft_len = fils_ft_len;
+}
+
+/*
+ * Override the protocol version used for EAPoL packets.  The selection is as
+ * follows:
+ *  0 -> Automatic, use same proto as the request for the response and
+ *       2004 when in authenticator mode
+ *  1 -> Chooses 2001 Protocol Version
+ *  2 -> Chooses 2004 Protocol Version
+ *  3 -> Chooses 2010 Protocol Version
+ */
+void handshake_state_set_protocol_version(struct handshake_state *s,
+						uint8_t proto_version)
+{
+	s->proto_version = proto_version;
 }
 
 void handshake_state_new_snonce(struct handshake_state *s)
@@ -360,8 +373,13 @@ static bool handshake_get_key_sizes(struct handshake_state *s, size_t *ptk_size,
 		break;
 	}
 
-	if (ptk_size)
+	if (ptk_size) {
 		*ptk_size = kck + kek + tk;
+		if (s->akm_suite == IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256)
+			*ptk_size += 32;
+		else if (s->akm_suite == IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384)
+			*ptk_size += 56;
+	}
 
 	if (kck_size)
 		*kck_size = kck;
@@ -377,25 +395,32 @@ bool handshake_state_derive_ptk(struct handshake_state *s)
 	size_t ptk_size;
 	enum l_checksum_type type;
 
-	if (!s->have_snonce || !s->have_pmk)
-		return false;
+	if (!(s->akm_suite & (IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256 |
+			IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384)))
+		if (!s->have_snonce || !s->have_pmk)
+			return false;
 
 	if ((s->akm_suite & (IE_RSN_AKM_SUITE_FT_OVER_8021X |
 				IE_RSN_AKM_SUITE_FT_USING_PSK |
-				IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256)) &&
+				IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256 |
+				IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256 |
+				IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384)) &&
 			(!s->mde || !s->fte))
 		return false;
 
 	s->ptk_complete = false;
 
-	if (s->akm_suite & IE_RSN_AKM_SUITE_FILS_SHA384)
+	if (s->akm_suite & (IE_RSN_AKM_SUITE_FILS_SHA384 |
+			IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384))
 		type = L_CHECKSUM_SHA384;
 	else if (s->akm_suite & (IE_RSN_AKM_SUITE_8021X_SHA256 |
 			IE_RSN_AKM_SUITE_PSK_SHA256 |
 			IE_RSN_AKM_SUITE_SAE_SHA256 |
 			IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256 |
 			IE_RSN_AKM_SUITE_OWE |
-			IE_RSN_AKM_SUITE_FILS_SHA256))
+			IE_RSN_AKM_SUITE_FILS_SHA256 |
+			IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256 |
+			IE_RSN_AKM_SUITE_OSEN))
 		type = L_CHECKSUM_SHA256;
 	else
 		type = L_CHECKSUM_SHA1;
@@ -404,10 +429,15 @@ bool handshake_state_derive_ptk(struct handshake_state *s)
 
 	if (s->akm_suite & (IE_RSN_AKM_SUITE_FT_OVER_8021X |
 				IE_RSN_AKM_SUITE_FT_USING_PSK |
-				IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256)) {
+				IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256 |
+				IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256 |
+				IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384)) {
 		uint16_t mdid;
 		uint8_t ptk_name[16];
 		const uint8_t *xxkey = s->pmk;
+		size_t xxkey_len = 32;
+		bool sha384 = (s->akm_suite &
+					IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384);
 
 		/*
 		 * In a Fast Transition initial mobility domain association
@@ -420,24 +450,31 @@ bool handshake_state_derive_ptk(struct handshake_state *s)
 		 */
 		if (s->akm_suite == IE_RSN_AKM_SUITE_FT_OVER_8021X)
 			xxkey = s->pmk + 32;
+		else if (s->akm_suite & (IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256 |
+				IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384)) {
+			xxkey = s->fils_ft;
+			xxkey_len = s->fils_ft_len;
+		}
 
 		ie_parse_mobility_domain_from_data(s->mde, s->mde[1] + 2,
 							&mdid, NULL, NULL);
 
-		if (!crypto_derive_pmk_r0(xxkey, s->ssid, s->ssid_len, mdid,
+		if (!crypto_derive_pmk_r0(xxkey, xxkey_len, s->ssid,
+						s->ssid_len, mdid,
 						s->r0khid, s->r0khid_len,
-						s->spa,
+						s->spa, sha384,
 						s->pmk_r0, s->pmk_r0_name))
 			return false;
 
 		if (!crypto_derive_pmk_r1(s->pmk_r0, s->r1khid, s->spa,
-						s->pmk_r0_name,
+						s->pmk_r0_name, sha384,
 						s->pmk_r1, s->pmk_r1_name))
 			return false;
 
 		if (!crypto_derive_ft_ptk(s->pmk_r1, s->pmk_r1_name, s->aa,
 						s->spa, s->snonce, s->anonce,
-						s->ptk, ptk_size, ptk_name))
+						sha384, s->ptk, ptk_size,
+						ptk_name))
 			return false;
 	} else
 		if (!crypto_derive_pairwise_ptk(s->pmk, s->pmk_len, s->spa,
@@ -460,7 +497,27 @@ size_t handshake_state_get_ptk_size(struct handshake_state *s)
 
 const uint8_t *handshake_state_get_kck(struct handshake_state *s)
 {
+	/*
+	 * FILS itself does not derive a KCK, but FILS-FT derives additional
+	 * key bytes at the end of the PTK, which contains a special KCK used
+	 * for fast transition. Since the normal FILS protocol will never call
+	 * this, we can assume that its only being called for FILS-FT and is
+	 * requesting this special KCK.
+	 */
+	if (s->akm_suite & IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256)
+		return s->ptk + 48;
+	else if (s->akm_suite & IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384)
+		return s->ptk + 80;
+
 	return s->ptk;
+}
+
+size_t handshake_state_get_kck_len(struct handshake_state *s)
+{
+	if (s->akm_suite & IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384)
+		return 24;
+
+	return 16;
 }
 
 size_t handshake_state_get_kek_len(struct handshake_state *s)
@@ -799,6 +856,24 @@ void handshake_util_build_gtk_kde(enum crypto_cipher cipher, const uint8_t *key,
 	memcpy(to, key, key_len);
 }
 
+static const uint8_t *handshake_state_get_ft_fils_kek(struct handshake_state *s,
+						size_t *len)
+{
+	if (s->akm_suite & IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256) {
+		if (len)
+			*len = 16;
+
+		return s->ptk + 64;
+	} else if (s->akm_suite & IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384) {
+		if (len)
+			*len = 32;
+
+		return s->ptk + 104;
+	}
+
+	return NULL;
+}
+
 /*
  * Unwrap a GTK / IGTK included in an FTE following 802.11-2012, Section 12.8.5:
  *
@@ -815,10 +890,17 @@ void handshake_util_build_gtk_kde(enum crypto_cipher cipher, const uint8_t *key,
 bool handshake_decode_fte_key(struct handshake_state *s, const uint8_t *wrapped,
 				size_t key_len, uint8_t *key_out)
 {
-	const uint8_t *kek = handshake_state_get_kek(s);
+	const uint8_t *kek;
+	size_t kek_len = 16;
 	size_t padded_len = key_len < 16 ? 16 : align_len(key_len, 8);
 
-	if (!aes_unwrap(kek, 16, wrapped, padded_len + 8, key_out))
+	if (s->akm_suite & (IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256 |
+				IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384))
+		kek = handshake_state_get_ft_fils_kek(s, &kek_len);
+	else
+		kek = handshake_state_get_kek(s);
+
+	if (!aes_unwrap(kek, kek_len, wrapped, padded_len + 8, key_out))
 		return false;
 
 	if (key_len < padded_len && key_out[key_len++] != 0xdd)

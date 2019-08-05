@@ -91,16 +91,19 @@ struct handshake_state {
 	size_t pmk_len;
 	uint8_t snonce[32];
 	uint8_t anonce[32];
-	uint8_t ptk[80];
-	uint8_t pmk_r0[32];
+	uint8_t ptk[136];
+	uint8_t pmk_r0[48];
 	uint8_t pmk_r0_name[16];
-	uint8_t pmk_r1[32];
+	uint8_t pmk_r1[48];
 	uint8_t pmk_r1_name[16];
 	uint8_t pmkid[16];
+	uint8_t fils_ft[48];
+	uint8_t fils_ft_len;
 	struct l_settings *settings_8021x;
 	bool have_snonce : 1;
 	bool ptk_complete : 1;
 	bool wpa_ie : 1;
+	bool osen_ie : 1;
 	bool have_pmk : 1;
 	bool mfp : 1;
 	bool have_anonce : 1;
@@ -117,6 +120,7 @@ struct handshake_state {
 	uint8_t r1khid[6];
 	uint8_t gtk[32];
 	uint8_t gtk_rsc[6];
+	uint8_t proto_version : 2;
 	unsigned int gtk_index;
 	struct erp_cache_entry *erp_cache;
 	void *user_data;
@@ -139,14 +143,10 @@ void handshake_state_set_ptk(struct handshake_state *s, const uint8_t *ptk,
 				size_t ptk_len);
 void handshake_state_set_8021x_config(struct handshake_state *s,
 					struct l_settings *settings);
-bool handshake_state_set_supplicant_rsn(struct handshake_state *s,
-					const uint8_t *rsn_ie);
-bool handshake_state_set_authenticator_rsn(struct handshake_state *s,
-					const uint8_t *rsn_ie);
-bool handshake_state_set_supplicant_wpa(struct handshake_state *s,
-					const uint8_t *wpa_ie);
-bool handshake_state_set_authenticator_wpa(struct handshake_state *s,
-					const uint8_t *wpa_ie);
+bool handshake_state_set_authenticator_ie(struct handshake_state *s,
+						const uint8_t *ie);
+bool handshake_state_set_supplicant_ie(struct handshake_state *s,
+						const uint8_t *ie);
 void handshake_state_set_ssid(struct handshake_state *s,
 					const uint8_t *ssid, size_t ssid_len);
 void handshake_state_set_mde(struct handshake_state *s,
@@ -164,6 +164,13 @@ void handshake_state_set_passphrase(struct handshake_state *s,
 					const char *passphrase);
 void handshake_state_set_no_rekey(struct handshake_state *s, bool no_rekey);
 
+void handshake_state_set_fils_ft(struct handshake_state *s,
+					const uint8_t *fils_ft,
+					size_t fils_ft_len);
+
+void handshake_state_set_protocol_version(struct handshake_state *s,
+						uint8_t proto_version);
+
 void handshake_state_new_snonce(struct handshake_state *s);
 void handshake_state_new_anonce(struct handshake_state *s);
 void handshake_state_set_anonce(struct handshake_state *s,
@@ -171,6 +178,7 @@ void handshake_state_set_anonce(struct handshake_state *s,
 void handshake_state_set_pmkid(struct handshake_state *s, const uint8_t *pmkid);
 bool handshake_state_derive_ptk(struct handshake_state *s);
 size_t handshake_state_get_ptk_size(struct handshake_state *s);
+size_t handshake_state_get_kck_len(struct handshake_state *s);
 const uint8_t *handshake_state_get_kck(struct handshake_state *s);
 size_t handshake_state_get_kek_len(struct handshake_state *s);
 const uint8_t *handshake_state_get_kek(struct handshake_state *s);

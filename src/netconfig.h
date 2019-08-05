@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,7 +20,5 @@
  *
  */
 
-struct device;
-
-bool ap_init(struct l_genl_family *in);
-void ap_exit(void);
+bool netconfig_ifindex_add(uint32_t ifindex);
+bool netconfig_ifindex_remove(uint32_t ifindex);

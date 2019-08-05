@@ -38,25 +38,40 @@ struct l_genl_msg;
 
 typedef void (*l_genl_destroy_func_t)(void *user_data);
 typedef void (*l_genl_debug_func_t)(const char *str, void *user_data);
-typedef void (*l_genl_watch_func_t)(void *user_data);
 typedef void (*l_genl_msg_func_t)(struct l_genl_msg *msg, void *user_data);
 typedef void (*l_genl_discover_func_t)(const struct l_genl_family_info *info,
 						void *user_data);
+typedef void (*l_genl_vanished_func_t)(const char *name, void *user_data);
 
-struct l_genl *l_genl_new(int fd);
-struct l_genl *l_genl_new_default(void);
-
+struct l_genl *l_genl_new(void);
 struct l_genl *l_genl_ref(struct l_genl *genl);
 void l_genl_unref(struct l_genl *genl);
 
 bool l_genl_set_debug(struct l_genl *genl, l_genl_debug_func_t callback,
 				void *user_data, l_genl_destroy_func_t destroy);
 
-bool l_genl_set_close_on_unref(struct l_genl *genl, bool do_close);
-
 bool l_genl_discover_families(struct l_genl *genl,
 				l_genl_discover_func_t cb, void *user_data,
 				l_genl_destroy_func_t destroy);
+
+unsigned int l_genl_add_unicast_watch(struct l_genl *genl,
+						const char *family,
+						l_genl_msg_func_t handler,
+						void *user_data,
+						l_genl_destroy_func_t destroy);
+bool l_genl_remove_unicast_watch(struct l_genl *genl, unsigned int id);
+
+unsigned int l_genl_add_family_watch(struct l_genl *genl,
+					const char *name,
+					l_genl_discover_func_t appeared_func,
+					l_genl_vanished_func_t vanished_func,
+					void *user_data,
+					l_genl_destroy_func_t destroy);
+bool l_genl_remove_family_watch(struct l_genl *genl, unsigned int id);
+bool l_genl_request_family(struct l_genl *genl, const char *name,
+					l_genl_discover_func_t appeared_func,
+					void *user_data,
+					l_genl_destroy_func_t destroy);
 
 struct l_genl_attr {
 	struct l_genl_msg *msg;
@@ -100,22 +115,10 @@ const char *l_genl_family_info_get_name(const struct l_genl_family_info *info);
 uint32_t l_genl_family_info_get_version(const struct l_genl_family_info *info);
 
 struct l_genl_family *l_genl_family_new(struct l_genl *genl, const char *name);
-
-struct l_genl_family *l_genl_family_ref(struct l_genl_family *family);
-void l_genl_family_unref(struct l_genl_family *family);
+void l_genl_family_free(struct l_genl_family *family);
 
 const struct l_genl_family_info *l_genl_family_get_info(
 						struct l_genl_family *family);
-
-bool l_genl_family_set_unicast_handler(struct l_genl_family *family,
-						l_genl_msg_func_t handler,
-						void *user_data,
-						l_genl_destroy_func_t destroy);
-
-bool l_genl_family_set_watches(struct l_genl_family *family,
-				l_genl_watch_func_t appeared,
-				l_genl_watch_func_t vanished,
-				void *user_data, l_genl_destroy_func_t destroy);
 
 struct l_genl *l_genl_family_get_genl(struct l_genl_family *family);
 

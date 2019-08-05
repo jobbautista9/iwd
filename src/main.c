@@ -38,15 +38,10 @@
 #include "src/dbus.h"
 #include "src/eap.h"
 #include "src/eapol.h"
-#include "src/scan.h"
 #include "src/rfkill.h"
-#include "src/ap.h"
 #include "src/plugin.h"
-#include "src/simauth.h"
-#include "src/adhoc.h"
-#include "src/blacklist.h"
 #include "src/storage.h"
-#include "src/erp.h"
+#include "src/anqp.h"
 
 #include "src/backtrace.h"
 
@@ -103,6 +98,11 @@ const struct l_settings *iwd_get_config(void)
 	return iwd_config;
 }
 
+struct l_genl *iwd_get_genl(void)
+{
+	return genl;
+}
+
 static void usage(void)
 {
 	printf("iwd - Wireless daemon\n"
@@ -118,6 +118,7 @@ static void usage(void)
 		"\t-l, --plugin           Plugins to include\n"
 		"\t-L, --noplugin         Plugins to exclude\n"
 		"\t-d, --debug            Enable debug output\n"
+		"\t-v, --version          Show version\n"
 		"\t-h, --help             Show help options\n");
 }
 
@@ -143,38 +144,57 @@ static void do_debug(const char *str, void *user_data)
 	l_info("%s%s", prefix, str);
 }
 
-static void nl80211_appeared(void *user_data)
+static void nl80211_appeared(const struct l_genl_family_info *info,
+							void *user_data)
 {
-	struct l_genl_family *nl80211 = user_data;
-
-	if (terminating)
-		return;
-
 	l_debug("Found nl80211 interface");
+	nl80211 = l_genl_family_new(genl, NL80211_GENL_NAME);
 
 	manager_init(nl80211, interfaces, nointerfaces);
+	anqp_init(nl80211);
 
 	if (!wiphy_init(nl80211, phys, nophys))
 		l_error("Unable to init wiphy functionality");
 
 	netdev_set_nl80211(nl80211);
-
-	if (!scan_init(nl80211))
-		l_error("Unable to init scan functionality");
-
-	ap_init(nl80211);
-	adhoc_init(nl80211);
 }
 
-static void nl80211_vanished(void *user_data)
-{
-	l_debug("Lost nl80211 interface");
+extern struct iwd_module_desc __start___iwd_module[];
+extern struct iwd_module_desc __stop___iwd_module[];
 
-	manager_exit();
-	ap_exit();
-	adhoc_exit();
-	scan_exit();
-	wiphy_exit();
+static int iwd_modules_init()
+{
+	struct iwd_module_desc *desc;
+	int r;
+
+	l_debug("");
+
+	for (desc = __start___iwd_module; desc < __stop___iwd_module; desc++) {
+		r = desc->init();
+		if (r < 0)
+			return r;
+
+		l_debug("Initialized module: %s", desc->name);
+		desc->active = true;
+	}
+
+	return 0;
+}
+
+static void iwd_modules_exit()
+{
+	struct iwd_module_desc *desc;
+
+	l_debug("");
+
+	for (desc = __stop___iwd_module - 1;
+			desc >= __start___iwd_module; desc--) {
+		if (!desc->active)
+			continue;
+		l_debug("Removing module: %s", desc->name);
+		desc->exit();
+		desc->active = false;
+	}
 }
 
 static void request_name_callback(struct l_dbus *dbus, bool success,
@@ -188,23 +208,9 @@ static void request_name_callback(struct l_dbus *dbus, bool success,
 	if (!l_dbus_object_manager_enable(dbus))
 		l_warn("Unable to register the ObjectManager");
 
-	genl = l_genl_new_default();
-	if (!genl) {
-		l_error("Failed to open generic netlink socket");
-		goto fail_exit;
-	}
-
-	if (getenv("IWD_GENL_DEBUG"))
-		l_genl_set_debug(genl, do_debug, "[GENL] ", NULL);
-
-	nl80211 = l_genl_family_new(genl, NL80211_GENL_NAME);
-	if (!nl80211) {
-		l_error("Failed to open nl80211 interface");
-		goto fail_exit;
-	}
-
-	l_genl_family_set_watches(nl80211, nl80211_appeared, nl80211_vanished,
-								nl80211, NULL);
+	/* TODO: Always request nl80211 for now, ignoring auto-loading */
+	l_genl_request_family(genl, NL80211_GENL_NAME, nl80211_appeared,
+				NULL, NULL);
 	return;
 
 fail_exit:
@@ -480,6 +486,20 @@ int main(int argc, char *argv[])
 		goto fail_dbus;
 	}
 
+	if (create_dirs(DAEMON_STORAGEDIR "/hotspot/")) {
+		l_error("Failed to create " DAEMON_STORAGEDIR "/hotspot/");
+		goto fail_dbus;
+	}
+
+	genl = l_genl_new();
+	if (!genl) {
+		l_error("Failed to open generic netlink socket");
+		goto fail_genl;
+	}
+
+	if (getenv("IWD_GENL_DEBUG"))
+		l_genl_set_debug(genl, do_debug, "[GENL] ", NULL);
+
 	dbus = l_dbus_new_default(L_DBUS_SYSTEM_BUS);
 	if (!dbus) {
 		l_error("Failed to initialize D-Bus");
@@ -497,44 +517,36 @@ int main(int argc, char *argv[])
 	eapol_init();
 	rfkill_init();
 
-	if (!netdev_init(interfaces, nointerfaces))
+	if (!netdev_init())
 		goto fail_netdev;
 
-	if (!device_init())
-		goto fail_device;
+	if (iwd_modules_init() < 0)
+		goto fail_modules;
 
-	station_init();
-	wsc_init();
-	network_init();
-	known_networks_init();
-	sim_auth_init();
 	plugin_init(plugins, noplugins);
-	blacklist_init();
-	erp_init();
-
 	exit_status = l_main_run_with_signal(signal_handler, NULL);
-
-	erp_exit();
-	blacklist_exit();
 	plugin_exit();
-	sim_auth_exit();
-	known_networks_exit();
-	network_exit();
-	wsc_exit();
-	station_exit();
-	device_exit();
-fail_device:
+
+fail_modules:
+	iwd_modules_exit();
 	netdev_exit();
 fail_netdev:
 	rfkill_exit();
 	eapol_exit();
 	eap_exit();
 
-	l_genl_family_unref(nl80211);
-	l_genl_unref(genl);
+	if (nl80211) {
+		manager_exit();
+		anqp_exit();
+		wiphy_exit();
+		l_genl_family_free(nl80211);
+	}
+
 	dbus_exit();
 	l_dbus_destroy(dbus);
 fail_dbus:
+	l_genl_unref(genl);
+fail_genl:
 	l_settings_free(iwd_config);
 
 	l_timeout_remove(timeout);

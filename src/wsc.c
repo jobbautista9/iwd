@@ -535,7 +535,7 @@ static void wsc_cancel_scan(struct wsc *wsc)
 	wsc->wsc_ies = 0;
 
 	if (wsc->scan_id > 0) {
-		scan_cancel(netdev_get_ifindex(wsc->netdev), wsc->scan_id);
+		scan_cancel(netdev_get_wdev_id(wsc->netdev), wsc->scan_id);
 		wsc->scan_id = 0;
 	}
 
@@ -665,7 +665,7 @@ static bool push_button_scan_results(int err, struct l_queue *bss_list,
 		target = bss_2g;
 	else {
 		l_debug("No PBC APs found, running the scan again");
-		wsc->scan_id = scan_active(netdev_get_ifindex(wsc->netdev),
+		wsc->scan_id = scan_active(netdev_get_wdev_id(wsc->netdev),
 						wsc->wsc_ies, wsc->wsc_ies_size,
 						NULL, push_button_scan_results,
 						wsc, NULL);
@@ -811,7 +811,7 @@ static bool pin_scan_results(int err, struct l_queue *bss_list, void *userdata)
 
 	if (!target) {
 		l_debug("No PIN APs found, running the scan again");
-		wsc->scan_id = scan_active(netdev_get_ifindex(wsc->netdev),
+		wsc->scan_id = scan_active(netdev_get_wdev_id(wsc->netdev),
 						wsc->wsc_ies, wsc->wsc_ies_size,
 						NULL, pin_scan_results,
 						wsc, NULL);
@@ -879,7 +879,7 @@ static bool wsc_initiate_scan(struct wsc *wsc,
 	if (!wsc->wsc_ies)
 		return false;
 
-	wsc->scan_id = scan_active(netdev_get_ifindex(wsc->netdev),
+	wsc->scan_id = scan_active(netdev_get_wdev_id(wsc->netdev),
 					wsc->wsc_ies, wsc->wsc_ies_size,
 					NULL, callback, wsc, NULL);
 	if (!wsc->scan_id) {
@@ -1100,21 +1100,21 @@ static void wsc_netdev_watch(struct netdev *netdev,
 	}
 }
 
-bool wsc_init(void)
+static int wsc_init(void)
 {
 	l_debug("");
 	netdev_watch = netdev_watch_add(wsc_netdev_watch, NULL, NULL);
 	l_dbus_register_interface(dbus_get_bus(), IWD_WSC_INTERFACE,
 					setup_wsc_interface,
 					wsc_free, false);
-	return true;
+	return 0;
 }
 
-bool wsc_exit()
+static void wsc_exit(void)
 {
 	l_debug("");
 	l_dbus_unregister_interface(dbus_get_bus(), IWD_WSC_INTERFACE);
 	netdev_watch_remove(netdev_watch);
-
-	return true;
 }
+
+IWD_MODULE(wsc, wsc_init, wsc_exit)

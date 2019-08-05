@@ -52,10 +52,12 @@
 #include "src/mpdu.h"
 #include "src/eapol.h"
 #include "src/util.h"
-#include "src/wscutil.h"
+#include "src/p2putil.h"
+#include "src/nl80211cmd.h"
 #include "monitor/pcap.h"
 #include "monitor/display.h"
 #include "monitor/nlmon.h"
+#include "src/anqputil.h"
 
 #define COLOR_TIMESTAMP		COLOR_YELLOW
 
@@ -578,6 +580,7 @@ static const struct cipher_suites rsn_akm_selectors[] = {
 	{ 0x000fac10, "FILS FT SHA256"                                                            },
 	{ 0x000fac11, "FILS FT SHA3854"                                                           },
 	{ 0x000fac12, "OWE"                                                                       },
+	{ 0x506f9a01, "WFA OSEN"                                                                  },
 	{ }
 };
 
@@ -700,6 +703,60 @@ static void print_ie_bitfield(unsigned int level, const char *label,
 	}
 }
 
+static size_t print_ie_rsn_suites(unsigned int level, const char *label,
+				const void *data, uint16_t size)
+{
+	uint16_t count;
+	uint16_t orig_size = size;
+
+	print_ie_cipher_suites(level + 1, "Group Data Cipher Suite", data, 4,
+				rsn_cipher_selectors);
+
+	data += 4;
+	size -= 4;
+
+	if (size < 2)
+		goto end;
+
+	count = l_get_le16(data) * 4;
+	data += 2;
+	size -= 2;
+
+	if (size < count)
+		goto end;
+
+	print_ie_cipher_suites(level + 1, "Pairwise Cipher Suite", data,
+					count, rsn_cipher_selectors);
+	data += count;
+	size -= count;
+
+	if (size < 2)
+		goto end;
+
+	count = l_get_le16(data) * 4;
+	data += 2;
+	size -= 2;
+
+	if (size < count)
+		goto end;
+
+	print_ie_cipher_suites(level + 1, "AKM Suite", data, count,
+				rsn_akm_selectors);
+	data += count;
+	size -= count;
+
+	if (size < 2)
+		goto end;
+
+	return orig_size - size;
+
+end:
+	if (size)
+		print_ie_error(level, label, size, -EINVAL);
+
+	return orig_size - size;
+}
+
 static void print_ie_rsn(unsigned int level, const char *label,
 			const void *data, uint16_t size)
 {
@@ -733,39 +790,7 @@ static void print_ie_rsn(unsigned int level, const char *label,
 	if (end - data < 4)
 		goto end;
 
-	print_ie_cipher_suites(level + 1, "Group Data Cipher Suite", data, 4,
-				rsn_cipher_selectors);
-
-	data += 4;
-
-	if (end - data < 2)
-		goto end;
-
-	count = l_get_le16(data) * 4;
-	data += 2;
-
-	if (end - data < count)
-		goto end;
-
-	print_ie_cipher_suites(level + 1, "Pairwise Cipher Suite", data,
-					count, rsn_cipher_selectors);
-	data += count;
-
-	if (end - data < 2)
-		goto end;
-
-	count = l_get_le16(data) * 4;
-	data += 2;
-
-	if (end - data < count)
-		goto end;
-
-	print_ie_cipher_suites(level + 1, "AKM Suite", data, count,
-				rsn_akm_selectors);
-	data += count;
-
-	if (end - data < 2)
-		goto end;
+	data += print_ie_rsn_suites(level, label, data, size);
 
 	bytemask[0] = 0x03;
 	bytemask[1] = 0x00;
@@ -881,18 +906,62 @@ end:
 	print_ie_error(level, label, size, -EINVAL);
 }
 
-static void print_ie_vendor(unsigned int level, const char *label,
-				const void *data, uint16_t size)
+static void print_ie_wfa_hs20(unsigned int level, const char *label,
+						const void *data, uint16_t size)
 {
-	static const unsigned char wfa_oui[3] = { 0x00, 0x50, 0xf2 };
-	const uint8_t *oui = data;
+	const uint8_t *ptr = data;
+	bool pps_mo_id_present;
+	bool anpq_domain_id_present;
+
+	if (size < 1)
+		return;
+
+	pps_mo_id_present = util_is_bit_set(ptr[0], 1);
+	anpq_domain_id_present = util_is_bit_set(ptr[0], 2);
+
+	print_attr(level + 1, "HS2.0 Indication Element:");
+	print_attr(level + 2, "DGAF Disabled: %u", util_is_bit_set(ptr[0], 0));
+	print_attr(level + 2, "PPS MO ID Present: %u", pps_mo_id_present);
+	print_attr(level + 2, "ANQP Domain ID Present: %u",
+				anpq_domain_id_present);
+
+	switch (util_bit_field(ptr[0], 4, 7)) {
+	case 0:
+		print_attr(level + 2, "Version Number: 1.x");
+		break;
+	case 1:
+		print_attr(level + 2, "Version Number: 2.x");
+		break;
+	case 2:
+		print_attr(level + 2, "Version Number: 3.x");
+		break;
+	}
+
+	ptr += 1;
+	size -= 1;
+
+	if (pps_mo_id_present) {
+		if (size < 2)
+			return;
+
+		print_attr(level + 2, "PPS MO ID: %02x %02x", ptr[0], ptr[1]);
+		ptr += 2;
+		size -= 2;
+	}
+
+	if (anpq_domain_id_present) {
+		if (size < 2)
+			return;
+
+		print_attr(level + 2, "ANQP Domain ID: %02x %02x",
+				ptr[0], ptr[1]);
+	}
+}
+
+static bool print_oui(unsigned int level, const uint8_t *oui)
+{
 	const char *str = NULL;
 	unsigned int i;
-
-	print_attr(level, "%s: len %u", label, size);
-
-	if (size < 4)
-		return;
 
 	for (i = 0; oui_table[i].str; i++) {
 		if (!memcmp(oui_table[i].oui, oui, 3)) {
@@ -905,24 +974,114 @@ static void print_ie_vendor(unsigned int level, const char *label,
 		print_attr(level + 1, "OUI: %02x:%02x:%02x type:%02x",
 							oui[0], oui[1], oui[2],
 							oui[3]);
-		return;
+		return false;
 	}
 
 	print_attr(level + 1, "%s (%02x:%02x:%02x) type: %02x", str,
 							oui[0], oui[1], oui[2],
 							oui[3]);
+	return true;
+}
+
+static void print_ipv4(unsigned int level, const char *label,
+				const uint8_t *addr)
+{
+	print_attr(level, "%s: %u.%u.%u.%u", label,
+			addr[0], addr[1], addr[2], addr[3]);
+}
+
+static void print_ie_vendor(unsigned int level, const char *label,
+				const void *data, uint16_t size)
+{
+	const uint8_t *oui = data;
+
+	print_attr(level, "%s: len %u", label, size);
+
+	if (size < 4)
+		return;
+
+	if (!print_oui(level, oui))
+		return;
 
 	data += 4;
 	size -= 4;
 
-	if (!memcmp(oui, wfa_oui, 3)) {
+	if (!memcmp(oui, microsoft_oui, 3)) {
 		switch (oui[3]) {
-		case 1:		/* WFA WPA IE */
+		case 1:		/* MSoft WPA IE */
 			print_ie_wpa(level + 2, label, data, size);
 			return;
 		default:
 			return;
 		}
+	} else if (!memcmp(oui, wifi_alliance_oui, 3)) {
+		switch (oui[3]) {
+		case 0x04:
+			print_attr(level + 1, "IP Address Request KDE");
+			return;
+		case 0x05:
+			print_attr(level + 1, "IP Address Allocation KDE");
+
+			if (size < 12)
+				return;
+
+			print_ipv4(level + 2, "Client IP Address", data + 0);
+			print_ipv4(level + 2, "Subnet Mask", data + 4);
+			print_ipv4(level + 2, "GO IP Address", data + 8);
+			return;
+		case 0x10:
+			print_ie_wfa_hs20(level + 1, label, data, size);
+			return;
+		case 0x12:
+			print_ie_rsn_suites(level + 1, label, data, size);
+			return;
+		default:
+			return;
+		}
+	} else if (!memcmp(oui, ieee_oui, 3)) {
+		const char *kde;
+
+		/* EAPoL-Key KDEs */
+		switch (oui[3]) {
+		case 1:
+			kde = "GTK";
+			break;
+		case 3:
+			kde = "MAC address";
+			break;
+		case 4:
+			kde = "PMKID";
+			break;
+		case 5:
+			kde = "SMK";
+			break;
+		case 6:
+			kde = "Nonce";
+			break;
+		case 7:
+			kde = "Lifetime";
+			break;
+		case 8:
+			kde = "Error";
+			break;
+		case 9:
+			kde = "IGTK";
+			break;
+		case 10:
+			kde = "Key ID";
+			break;
+		case 11:
+			kde = "Multi-band GTK";
+			break;
+		case 12:
+			kde = "Multi-band Key ID";
+			break;
+		default:
+			return;
+		}
+
+		print_attr(level + 1, "%s KDE", kde);
+		return;
 	}
 }
 
@@ -1410,6 +1569,177 @@ static void print_ie_rm_enabled_caps(unsigned int level,
 				bytemask2, sizeof(bytemask2), capabilities);
 }
 
+static void print_ie_interworking(unsigned int level,
+					const char *label,
+					const void *data, uint16_t size)
+{
+	const uint8_t *ptr = data;
+	const char *msg;
+	uint8_t type;
+	bool venue = false;
+	bool hessid = false;
+
+	print_attr(level, "%s: len %u", label, size);
+
+	type = util_bit_field(ptr[0], 0, 3);
+
+	switch (type) {
+	case 0:
+		msg = "Private network";
+		break;
+	case 1:
+		msg = "Private network w/ guest access";
+		break;
+	case 2:
+		msg = "Chargeable public network";
+		break;
+	case 3:
+		msg = "Free public network";
+		break;
+	case 4:
+		msg = "Personal device network";
+		break;
+	case 5:
+		msg = "Emergency services only network";
+		break;
+	case 14:
+		msg = "Test/Experimental";
+		break;
+	case 15:
+		msg = "Wildcard";
+		break;
+	default:
+		return;
+	}
+
+	print_attr(level + 1, "Network Type: %s", msg);
+	print_attr(level + 1, "Internet: %u", util_is_bit_set(ptr[0], 4));
+	print_attr(level + 1, "ASRA: %u", util_is_bit_set(ptr[0], 5));
+	print_attr(level + 1, "ESR: %u", util_is_bit_set(ptr[0], 6));
+	print_attr(level + 1, "UESA: %u", util_is_bit_set(ptr[0], 7));
+
+	size--;
+	ptr++;
+
+	if (!size)
+		return;
+
+	/*
+	 * There is venue/hessid info optionally, and no way of determining if
+	 * they exist except looking at the length.
+	 */
+	if (size == 2)
+		venue = true;
+	else if (size == 6)
+		hessid = true;
+	else if (size == 8) {
+		venue = true;
+		hessid = true;
+	}
+
+	if (venue) {
+		switch (ptr[0]) {
+		case 0:
+			msg = "Unspecified";
+			break;
+		case 1:
+			msg = "Assembly";
+			break;
+		case 2:
+			msg = "Business";
+			break;
+		case 3:
+			msg = "Educational";
+			break;
+		case 5:
+			msg = "Factory and Industrial";
+			break;
+		case 6:
+			msg = "Institutional";
+			break;
+		case 7:
+			msg = "Mercantile";
+			break;
+		case 8:
+			msg = "Residential";
+			break;
+		case 9:
+			msg = "Utility and Miscellaneous";
+			break;
+		case 10:
+			msg = "Vehicular";
+			break;
+		case 11:
+			msg = "Outdoor";
+			break;
+		default:
+			return;
+		}
+
+		/*
+		 * Each of the above groups have many group types, but if
+		 * anyone really cares they can cross reference the integer
+		 * type with IEEE 802.11-2016 Table 9-62
+		 */
+		print_attr(level + 1, "Venue: %s, type: %u", msg, ptr[1]);
+
+		ptr += 2;
+		size -= 2;
+	}
+
+	if (hessid)
+		print_attr(level + 1, "HESSID: "MAC, MAC_STR(ptr));
+}
+
+static void print_ie_advertisement(unsigned int level,
+					const char *label,
+					const void *data, uint16_t size)
+{
+	const uint8_t *ptr = data;
+	const char *msg = NULL;
+
+	print_attr(level, "%s: len %u", label, size);
+
+	while (size) {
+		uint8_t qr_len = util_bit_field(ptr[0], 0, 7);
+		uint8_t id = ptr[1];
+
+		switch (id) {
+		case IE_ADVERTISEMENT_ANQP:
+			msg = "ANQP";
+			break;
+		case IE_ADVERTISEMENT_MIH_SERVICE:
+			msg = "MIH Information Service";
+			break;
+		case IE_ADVERTISEMENT_MIH_DISCOVERY:
+			msg = "MIH Command and Event Services";
+			break;
+		case IE_ADVERTISEMENT_EAS:
+			msg = "EAS";
+			break;
+		case IE_ADVERTISEMENT_RLQP:
+			msg = "RLQP";
+			break;
+		case IE_ADVERTISEMENT_VENDOR_SPECIFIC:
+			msg = "Vendor Specific";
+			break;
+		default:
+			return;
+		}
+
+		if (id == IE_ADVERTISEMENT_VENDOR_SPECIFIC) {
+			size -= ptr[3];
+			ptr += ptr[3];
+		} else {
+			size -= 2;
+			ptr += 2;
+		}
+
+		print_attr(level + 1, "Protocol: %s, Query Resp Limit: %u",
+				msg, qr_len);
+	}
+}
+
 static void print_ie_owe(unsigned int level,
 					const char *label,
 					const void *data, uint16_t size)
@@ -1500,6 +1830,10 @@ static struct attr_entry ie_entry[] = {
 		ATTR_CUSTOM,	{ .function = print_ie_ht_capabilities } },
 	{ IE_TYPE_RM_ENABLED_CAPABILITIES,	"RM Enabled Capabilities",
 		ATTR_CUSTOM,	{ .function = print_ie_rm_enabled_caps } },
+	{ IE_TYPE_INTERWORKING,			"Interworking",
+		ATTR_CUSTOM,	{ .function = print_ie_interworking } },
+	{ IE_TYPE_ADVERTISEMENT_PROTOCOL,	"Advertisement Protocol",
+		ATTR_CUSTOM,	{ .function = print_ie_advertisement } },
 	{ IE_TYPE_OWE_DH_PARAM,			"OWE Diffie-Hellman Parameter",
 		ATTR_CUSTOM,	{ .function = print_ie_owe } },
 	{ IE_TYPE_FILS_INDICATION,		"FILS Indication",
@@ -2384,20 +2718,699 @@ static void print_wsc_attributes(unsigned int level, const char *label,
 	}
 }
 
+static void print_p2p_status(unsigned int level, const char *label,
+				const void *data, uint16_t size)
+{
+	const uint8_t *bytes = data;
+	static const struct p2p_status_desc {
+		uint8_t code;
+		const char *desc;
+	} descs[] = {
+		{ P2P_STATUS_SUCCESS, "Success" },
+		{ P2P_STATUS_FAIL_INFO_NOT_AVAIL, "Fail; information is "
+			"currently unavailable" },
+		{ P2P_STATUS_FAIL_INCOMPATIBLE_PARAMS, "Fail; incompatible "
+			"parameters" },
+		{ P2P_STATUS_FAIL_LIMIT_REACHED, "Fail; limit reached" },
+		{ P2P_STATUS_FAIL_INVALID_PARAMS, "Fail; invalid parameters" },
+		{ P2P_STATUS_FAIL_UNABLE_TO_ACCOMMODATE_REQUEST, "Fail; unable "
+			"to accomodate request" },
+		{ P2P_STATUS_FAIL_PREV_PROTOCOL_ERROR, "Fail; previous protocol"
+			" error, or distruptive behavior" },
+		{ P2P_STATUS_FAIL_NO_COMMON_CHANNELS, "Fail; no common "
+			"channels" },
+		{ P2P_STATUS_FAIL_UNKNOWN_P2P_GROUP, "Fail; unknown P2P "
+			"Group" },
+		{ P2P_STATUS_FAIL_INTENT_15_IN_GO_NEGOTIATION, "Fail; both P2P "
+			"Devices indicated an Intent of 15 in Group Owner "
+			"Negotiation" },
+		{ P2P_STATUS_FAIL_INCOMPATIBLE_PROVISIONING, "Fail; "
+			"incompatible provisioning method" },
+		{ P2P_STATUS_FAIL_REJECTED_BY_USER, "Fail; rejected by user" },
+		{ P2P_STATUS_SUCCESS_ACCEPTED_BY_USER, "Success; accepted by "
+			"user" },
+		{}
+	};
+	int i;
+
+	if (size != 1) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	for (i = 0; descs[i].desc; i++)
+		if (descs[i].code == bytes[0])
+			break;
+
+	if (descs[i].desc)
+		print_attr(level, "%s: %s", label, descs[i].desc);
+	else
+		print_attr(level, "%s: 0x%02x", label, bytes[0]);
+}
+
+#define CHECK_CAPS_BIT(v, str)	\
+	if (caps & (v)) {	\
+		print_attr(level + 1, "%s", (str));	\
+		caps &= ~(v);	\
+	}
+static void print_p2p_device_capability(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	uint8_t caps;
+
+	if (size != 1) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	caps = *(const uint8_t *) data;
+
+	print_attr(level, "%s:%s", label, !caps ? " None" : "");
+
+	CHECK_CAPS_BIT(P2P_DEVICE_CAP_SVC_DISCOVERY,
+			"Service Discovery");
+	CHECK_CAPS_BIT(P2P_DEVICE_CAP_CLIENT_DISCOVERABILITY,
+			"P2P Client Discoverability");
+	CHECK_CAPS_BIT(P2P_DEVICE_CAP_CONCURRENT_OP,
+			"Concurrent Operation");
+	CHECK_CAPS_BIT(P2P_DEVICE_CAP_INFRASTRUCTURE_MANAGED,
+			"P2P Infrastructure Managed");
+	CHECK_CAPS_BIT(P2P_DEVICE_CAP_DEVICE_LIMIT,
+			"P2P Device Limit");
+	CHECK_CAPS_BIT(P2P_DEVICE_CAP_INVITATION_PROCEDURE,
+			"P2P Invitation Procedure");
+
+	if (caps)
+		print_attr(level + 1, "Reserved: 0x%02x", caps);
+}
+
+static void print_p2p_capability(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	uint8_t caps;
+
+	if (size != 2) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_p2p_device_capability(level, "P2P Device Capability", data++, 1);
+
+	caps = *(const uint8_t *) data++;
+
+	print_attr(level, "P2P Group Capability:%s", !caps ? " None" : "");
+
+	CHECK_CAPS_BIT(P2P_GROUP_CAP_GO,
+			"P2P Group Owner");
+	CHECK_CAPS_BIT(P2P_GROUP_CAP_PERSISTENT_GROUP,
+			"Persistent P2P Group");
+	CHECK_CAPS_BIT(P2P_GROUP_CAP_GROUP_LIMIT,
+			"P2P Group Limit");
+	CHECK_CAPS_BIT(P2P_GROUP_CAP_INTRA_BSS_DISTRIBUTION,
+			"Intra-BSS Distribution");
+	CHECK_CAPS_BIT(P2P_GROUP_CAP_CROSS_CONNECT,
+			"Cross Connection");
+	CHECK_CAPS_BIT(P2P_GROUP_CAP_PERSISTENT_RECONNECT,
+			"Persistent Reconnect");
+	CHECK_CAPS_BIT(P2P_GROUP_CAP_GROUP_FORMATION,
+			"Group Formation");
+	CHECK_CAPS_BIT(P2P_GROUP_CAP_IP_ALLOCATION,
+			"IP Address Allocation");
+}
+#undef CHECK_CAPS_BIT
+
+static void print_p2p_go_intent(unsigned int level, const char *label,
+				const void *data, uint16_t size)
+{
+	const uint8_t *bytes = data;
+
+	if (size != 1) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_attr(level, "%s: Intent %u out of 15, tie breaker %u", label,
+			bytes[0] >> 1, bytes[0] & 1);
+}
+
+static void print_p2p_config_timeout(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	const uint8_t *bytes = data;
+
+	if (size != 2) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_attr(level, "%s: GO Timeout %ums, Client Timeout %ums", label,
+			bytes[0] * 10, bytes[1] * 10);
+}
+
+static void print_p2p_oper_channel(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	const uint8_t *bytes = data;
+
+	if (size != 5) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_attr(level, "%s:", label);
+	print_attr(level + 1, "Country %c%c table %u", bytes[0], bytes[1],
+			bytes[2]);
+	print_attr(level + 1, "Operating Class %u", bytes[3]);
+	print_attr(level + 1, "Channel Number %u", bytes[4]);
+}
+
+static void print_p2p_extended_timing(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	if (size != 4) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_attr(level, "%s: Availability period: %ums, interval: %ums", label,
+			l_get_le16(data + 0), l_get_le16(data + 2));
+}
+
+static void print_p2p_manageability(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	uint8_t val;
+
+	if (size != 1) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+#define CHECK_BIT(v, str)	\
+	if (val & (v)) {	\
+		print_attr(level + 1, "%s", (str));	\
+		val &= ~(v);	\
+	}
+
+	val = *(const uint8_t *) data;
+
+	print_attr(level, "%s:%s", label, !val ? " None" : "");
+
+	CHECK_BIT(P2P_MANAGEABILITY_DEVICE_MGMT, "P2P Device Management");
+	CHECK_BIT(P2P_MANAGEABILITY_CROSS_CONNECT,
+			"Cross Connection Permitted");
+	CHECK_BIT(P2P_MANAGEABILITY_COEXIST_OPTIONAL, "Coexistence Optional");
+
+	if (val)
+		print_attr(level + 1, "Reserved: 0x%02x", val);
+#undef CHECK_BIT
+}
+
+static void print_p2p_channel_list(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	const uint8_t *bytes = data;
+
+	if (size < 3) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_attr(level, "%s:", label);
+	print_attr(level + 1, "Country %c%c table %u", bytes[0], bytes[1],
+			bytes[2]);
+	bytes += 3;
+	size -= 3;
+
+	while (size) {
+		uint8_t channels;
+		char str[128];
+		int pos = 0;
+
+		if (size < 2 || size < 2 + bytes[1]) {
+			printf("malformed P2P %s\n", label);
+			return;
+		}
+
+		print_attr(level + 1, "Operating Class %u channels:", *bytes++);
+		channels = *bytes++;
+		size -= 2 + channels;
+
+		while (channels--)
+			snprintf(str + pos, sizeof(str) - pos, "%s%u",
+					pos ? ", " : "", (int) *bytes++);
+
+		print_attr(level + 2, "%s", str);
+	}
+}
+
+static void print_p2p_notice_of_absence(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	const uint8_t *bytes = data;
+
+	if (size < 2) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_attr(level, "%s %u:", label, bytes[0]);
+	print_attr(level + 1, "GO uses Opportunistic Power Save: %s",
+			(bytes[1] & 0x80) ? "true" : "false");
+	print_attr(level + 1, "Client Traffic window len: %u TUs",
+			bytes[1] & 0x7f);
+	bytes += 2;
+	size -= 2;
+
+	while (size) {
+		if (size < 13) {
+			printf("malformed P2P Channel List\n");
+			return;
+		}
+
+		print_attr(level + 1, "Notice:");
+		print_attr(level + 2, "Count/Type: %u", bytes[0]);
+		print_attr(level + 2, "Duration: %uus", l_get_le32(bytes + 1));
+		print_attr(level + 2, "Interval: %uus", l_get_le32(bytes + 5));
+		print_attr(level + 2, "Start Time: %u", l_get_le32(bytes + 8));
+		bytes += 13;
+		size -= 13;
+	}
+}
+
+static void print_p2p_device_info(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	const uint8_t *bytes = data;
+	int secondary_types;
+
+	if (size < 17 || size < 17 + bytes[16] * 8 + 4) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_attr(level, "%s:", label);
+	print_wsc_mac_address(level + 1, "P2P Device address", bytes, 6);
+	print_wsc_config_methods(level + 1, "Config Methods", bytes + 6, 2);
+	print_wsc_primary_device_type(level + 1, "Primary Device Type",
+					bytes + 8, 8);
+	secondary_types = bytes[16];
+	bytes += 17;
+	size -= 17;
+
+	while (secondary_types--) {
+		print_wsc_primary_device_type(level + 1,
+						"Secondary Device Type",
+						bytes, 8);
+		bytes += 8;
+		size -= 8;
+	}
+
+	if (l_get_be16(bytes) != WSC_ATTR_DEVICE_NAME ||
+			4 + l_get_be16(bytes + 2) > size) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_wsc_device_name(level + 1, "Device Name", bytes + 4,
+				l_get_be16(bytes + 2));
+}
+
+static void print_p2p_group_info(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	const uint8_t *bytes = data;
+
+	print_attr(level, "%s:", label);
+
+	while (size) {
+		size_t desc_size = bytes[0];
+		int secondary_types;
+
+		if (1 + desc_size > size || desc_size < 24 ||
+				desc_size < (size_t) 24 + bytes[24] * 8 + 4) {
+			printf("malformed P2P Client Info Descriptor\n");
+			return;
+		}
+
+		size -= 1 + desc_size;
+
+		print_attr(level + 1, "P2P Client Info Descriptor:");
+		print_wsc_mac_address(level + 2, "P2P Device address",
+					bytes + 1, 6);
+		print_wsc_mac_address(level + 2, "P2P Interface address",
+					bytes + 7, 6);
+		print_p2p_device_capability(level + 2, "P2P Device Capability",
+						bytes + 13, 1);
+		print_wsc_config_methods(level + 2, "Config Methods",
+						bytes + 14, 2);
+		print_wsc_primary_device_type(level + 2, "Primary Device Type",
+						bytes + 16, 8);
+		secondary_types = bytes[24];
+		bytes += 25;
+		desc_size -= 24;
+
+		while (secondary_types--) {
+			print_wsc_primary_device_type(level + 2,
+							"Secondary Device Type",
+							bytes, 8);
+			bytes += 8;
+			desc_size -= 8;
+		}
+
+		if (l_get_be16(bytes) != WSC_ATTR_DEVICE_NAME ||
+				(size_t) 4 + l_get_be16(bytes + 2) >
+				desc_size) {
+			printf("malformed P2P Client Info Descriptor\n");
+			return;
+		}
+
+		print_wsc_device_name(level + 1, "Device Name", bytes + 4,
+					l_get_be16(bytes + 2));
+		bytes += 4 + l_get_be16(bytes + 2);
+	}
+}
+
+static void print_p2p_group_id(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	const uint8_t *bytes = data;
+
+	if (size < 6 || size > 38) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_attr(level, "%s:", label);
+
+	print_wsc_mac_address(level + 1, "P2P Device address",
+				bytes, 6);
+	print_ie_ssid(level + 1, "SSID", bytes + 6, size - 6);
+}
+
+static void print_p2p_interface(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	const uint8_t *bytes = data;
+	int addr_count;
+
+	if (size < 7 || size < 7 + bytes[6] * 6) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_attr(level, "%s:", label);
+
+	print_wsc_mac_address(level + 1, "P2P Device Address",
+				bytes, 6);
+	addr_count = bytes[6];
+	print_attr(level + 1, "P2P Interface Address Count: %u", addr_count);
+	bytes += 7;
+	size -= 7;
+
+	while (addr_count--) {
+		print_wsc_mac_address(level + 2, "Interface Address", bytes, 6);
+		bytes += 6;
+	}
+}
+
+static void print_p2p_invite_flags(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	uint8_t flags;
+
+	if (size != 1) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	flags = *(const uint8_t *) data;
+	print_attr(level, "Invitation Type: %s",
+			(flags & 1) ? "re-invoke a Persistent Group" :
+			"join active group");
+	flags &= ~1;
+
+	if (flags)
+		print_attr(level, "Invitation Flags: reserved 0x%02x", flags);
+}
+
+static void print_p2p_oob_neg_channel(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	const uint8_t *bytes = data;
+	const char *role;
+
+	if (size != 6) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_p2p_oper_channel(level, label, bytes + 0, 5);
+
+	switch (bytes[5]) {
+	case 0x00:
+		role = "not in a group";
+		break;
+	case 0x01:
+		role = "client";
+		break;
+	case 0x02:
+		role = "Group Owner";
+		break;
+	default:
+		role = "reserved";
+		break;
+	}
+
+	print_attr(level + 1, "Current group role indication: %s", role);
+}
+
+static void print_p2p_service_hash(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	if (size % 6 != 0) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	while (size) {
+		print_wsc_bytes(level, "Service Hash", data, 6);
+		data += 6;
+		size -= 6;
+	}
+}
+
+static void print_p2p_connection_caps(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	uint8_t caps;
+	const char *first;
+
+	if (size != 1) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	caps = *(const uint8_t *) data;
+
+	if (caps & 1)
+		first = "New";
+	else if (caps & 2)
+		first = "Cli";
+	else if (caps & ~4)
+		first = "Unknown";
+	else
+		first = "GO";
+
+	print_attr(level, "%s: %s%s", label, first,
+			(caps & ~4) && (caps & 4) ? ", GO" : "");
+}
+
+static void print_p2p_advertisement_id(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	if (size != 10) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_attr(level, "%s: 0x%08x", label, l_get_le32(data + 0));
+	print_wsc_mac_address(level + 1, "Service MAC Address", data + 4, 6);
+}
+
+static void print_p2p_advertised_svc_info(unsigned int level, const char *label,
+						const void *data, uint16_t size)
+{
+	const uint8_t *bytes = data;
+
+	while (size) {
+		if (size < 7 || size < 7 + bytes[6]) {
+			printf("malformed P2P %s\n", label);
+			return;
+		}
+
+		print_attr(level, "%s:", label);
+
+		print_attr(level, "Servce advertisement: ID 0x%08x",
+				l_get_le32(bytes + 0));
+		print_wsc_utf8_string(level + 1, "Service Name",
+					bytes + 6, bytes[6], 255);
+		print_wsc_config_methods(level + 1, "Service Config Methods",
+						bytes + 4, 2);
+		size -= 7 + bytes[6];
+		bytes += 7 + bytes[6];
+	}
+}
+
+static void print_p2p_session_id(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	if (size != 10) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_attr(level, "%s: 0x%08x", label, l_get_le32(data + 0));
+	print_wsc_mac_address(level + 1, "Session MAC Address", data + 4, 6);
+}
+
+static void print_p2p_feature_caps(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	const uint8_t *bytes = data;
+
+	if (size != 2) {
+		printf("malformed P2P %s\n", label);
+		return;
+	}
+
+	print_attr(level, "%s:", label);
+
+	if (bytes[0] == 0x01)
+		print_attr(level + 1, "Coordination Protocol Transport: UDP");
+	else
+		print_attr(level + 1, "Coordination Protocol Transport: "
+				"reserved 0x%02x", bytes[1]);
+}
+
+static struct attr_entry p2p_attr_entry[] = {
+	{ P2P_ATTR_STATUS,			"Status",
+		ATTR_CUSTOM,	{ .function = print_p2p_status } },
+	{ P2P_ATTR_MINOR_REASON_CODE,		"Minor Reason Code",
+		ATTR_CUSTOM,	{ .function = print_wsc_byte } },
+	{ P2P_ATTR_P2P_CAPABILITY,		"P2P Capability",
+		ATTR_CUSTOM,	{ .function = print_p2p_capability } },
+	{ P2P_ATTR_P2P_DEVICE_ID,		"P2P Device ID",
+		ATTR_CUSTOM,	{ .function = print_wsc_mac_address } },
+	{ P2P_ATTR_GO_INTENT,			"Group Owner Intent",
+		ATTR_CUSTOM,	{ .function = print_p2p_go_intent } },
+	{ P2P_ATTR_CONFIGURATION_TIMEOUT,	"Configuration Timeout",
+		ATTR_CUSTOM,	{ .function = print_p2p_config_timeout } },
+	{ P2P_ATTR_LISTEN_CHANNEL,		"Listen Channel",
+		ATTR_CUSTOM,	{ .function = print_p2p_oper_channel } },
+	{ P2P_ATTR_P2P_GROUP_BSSID,		"P2P Group BSSID",
+		ATTR_CUSTOM,	{ .function = print_wsc_mac_address } },
+	{ P2P_ATTR_EXTENDED_LISTEN_TIMING,	"Extended Listen Timing",
+		ATTR_CUSTOM,	{ .function = print_p2p_extended_timing } },
+	{ P2P_ATTR_INTENDED_P2P_INTERFACE_ADDR,	"Intended P2P Interface "
+		"Address",
+		ATTR_CUSTOM,	{ .function = print_wsc_mac_address } },
+	{ P2P_ATTR_P2P_MANAGEABILITY,		"P2P Manageability",
+		ATTR_CUSTOM,	{ .function = print_p2p_manageability } },
+	{ P2P_ATTR_CHANNEL_LIST,		"Channel List",
+		ATTR_CUSTOM,	{ .function = print_p2p_channel_list } },
+	{ P2P_ATTR_NOTICE_OF_ABSENCE,		"Notice of Absence",
+		ATTR_CUSTOM,	{ .function = print_p2p_notice_of_absence } },
+	{ P2P_ATTR_P2P_DEVICE_INFO,		"P2P Device Info",
+		ATTR_CUSTOM,	{ .function = print_p2p_device_info } },
+	{ P2P_ATTR_P2P_GROUP_INFO,		"P2P Group Info",
+		ATTR_CUSTOM,	{ .function = print_p2p_group_info } },
+	{ P2P_ATTR_P2P_GROUP_ID,		"P2P Group ID",
+		ATTR_CUSTOM,	{ .function = print_p2p_group_id } },
+	{ P2P_ATTR_P2P_INTERFACE,		"P2P Interface",
+		ATTR_CUSTOM,	{ .function = print_p2p_interface } },
+	{ P2P_ATTR_OPERATING_CHANNEL,		"Operating Channel",
+		ATTR_CUSTOM,	{ .function = print_p2p_oper_channel } },
+	{ P2P_ATTR_INVITATION_FLAGS,		"Invitation Flags",
+		ATTR_CUSTOM,	{ .function = print_p2p_invite_flags } },
+	{ P2P_ATTR_OOB_GO_NEGOTIATION_CHANNEL,	"Out-of-Band Group Owner "
+		"Negotiation Channel",
+		ATTR_CUSTOM,	{ .function = print_p2p_oob_neg_channel } },
+	{ P2P_ATTR_SVC_HASH,			"Service Hash",
+		ATTR_CUSTOM,	{ .function = print_p2p_service_hash } },
+	{ P2P_ATTR_SESSION_INFO_DATA_INFO,	"Session Information Data Info",
+		ATTR_CUSTOM,	{ .function = print_wsc_bytes } },
+	{ P2P_ATTR_CONNECTION_CAPABILITY_INFO,	"Connection Capability Info",
+		ATTR_CUSTOM,	{ .function = print_p2p_connection_caps } },
+	{ P2P_ATTR_ADVERTISEMENT_ID_INFO,	"Advertisement_ID Info",
+		ATTR_CUSTOM,	{ .function = print_p2p_advertisement_id } },
+	{ P2P_ATTR_ADVERTISED_SVC_INFO,		"Advertised Service Info",
+		ATTR_CUSTOM,	{ .function = print_p2p_advertised_svc_info } },
+	{ P2P_ATTR_SESSION_ID_INFO,		"Session ID Info",
+		ATTR_CUSTOM,	{ .function = print_p2p_session_id } },
+	{ P2P_ATTR_FEATURE_CAPABILITY,		"Feature Capability",
+		ATTR_CUSTOM,	{ .function = print_p2p_feature_caps } },
+	{ P2P_ATTR_PERSISTENT_GROUP_INFO,	"Persistent Group Info",
+		ATTR_CUSTOM,	{ .function = print_p2p_group_id } },
+	{ P2P_ATTR_VENDOR_SPECIFIC_ATTR,	"Vendor specific attribute",
+		ATTR_CUSTOM,	{ .function = print_wsc_bytes } },
+	{ },
+};
+
+static void print_p2p_attributes(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	struct p2p_attr_iter iter;
+	int i;
+
+	print_attr(level, "%s: len %u", label, size);
+
+	p2p_attr_iter_init(&iter, data, size);
+
+	while (p2p_attr_iter_next(&iter)) {
+		uint16_t type = p2p_attr_iter_get_type(&iter);
+		uint16_t len = p2p_attr_iter_get_length(&iter);
+		const void *attr = p2p_attr_iter_get_data(&iter);
+		struct attr_entry *entry = NULL;
+
+		for (i = 0; p2p_attr_entry[i].str; i++) {
+			if (p2p_attr_entry[i].attr == type) {
+				entry = &p2p_attr_entry[i];
+				break;
+			}
+		}
+
+		if (entry && entry->function)
+			entry->function(level + 1, entry->str, attr, len);
+		else {
+			print_attr(level + 1, "Type: 0x%02x: len %u",
+								type, len);
+			print_hexdump(level + 2, attr, len);
+		}
+	}
+}
+
 static void print_management_ies(unsigned int level, const char *label,
 					const void *data, uint16_t size)
 {
-	void *wsc_data;
-	ssize_t wsc_len;
+	void *wsc_data, *p2p_data;
+	ssize_t wsc_len, p2p_len;
 
 	print_ie(level, label, data, size);
 
 	wsc_data = ie_tlv_extract_wsc_payload(data, size, &wsc_len);
-	if (!wsc_data)
-		return;
+	if (wsc_data) {
+		print_wsc_attributes(level + 1, "WSC Payload",
+					wsc_data, wsc_len);
+		l_free(wsc_data);
+	}
 
-	print_wsc_attributes(level + 1, "WSC Payload", wsc_data, wsc_len);
-	l_free(wsc_data);
+	p2p_data = ie_tlv_extract_p2p_payload(data, size, &p2p_len);
+	if (p2p_data) {
+		print_p2p_attributes(level + 1, "P2P Attributes",
+					p2p_data, p2p_len);
+		l_free(p2p_data);
+	}
 }
 
 static void print_address(unsigned int level, const char *label,
@@ -2636,6 +3649,335 @@ static void print_deauthentication_mgmt_frame(unsigned int level,
 				L_LE16_TO_CPU(body->reason_code));
 }
 
+static void print_p2p_public_action_frame(unsigned int level,
+						const uint8_t *body,
+						size_t body_len)
+{
+	const char *subtype;
+
+	/* P2P v1.7 Table 60 */
+	static const char *p2p_public_table[] = {
+		[0] = "GO Negotiation Request",
+		[1] = "GO Negotiation Response",
+		[2] = "GO Negotiation Confirmation",
+		[3] = "P2P Invitation Request",
+		[4] = "P2P Invitation Response",
+		[5] = "Device Discoverability Request",
+		[6] = "Device Discoverability Response",
+		[7] = "Provision Discovery Request",
+		[8] = "Provision Discovery Response",
+	};
+
+	if (body_len < 2)
+		return;
+
+	if (body[1] < L_ARRAY_SIZE(p2p_public_table) &&
+			p2p_public_table[body[0]])
+		subtype = p2p_public_table[body[0]];
+	else
+		subtype = "Unknown";
+
+	print_attr(level, "OUI Type: P2P public action frame");
+	print_attr(level, "OUI Subtype: %s (%u)", subtype, body[0]);
+	print_attr(level + 1, "Dialog Token: %u", body[1]);
+
+	print_management_ies(level, "IEs", body + 2, body_len - 2);
+}
+
+static void print_p2p_action_frame(unsigned int level, const uint8_t *body,
+					size_t body_len)
+{
+	const char *subtype;
+
+	/* P2P v1.7 Table 74 */
+	static const char *p2p_action_table[] = {
+		[0] = "Notice of Absence",
+		[1] = "P2P Presence Request",
+		[2] = "P2P Presence Response",
+		[3] = "GO Discoverability Request",
+	};
+
+	if (body_len < 2)
+		return;
+
+	if (body[1] < L_ARRAY_SIZE(p2p_action_table) &&
+			p2p_action_table[body[0]])
+		subtype = p2p_action_table[body[0]];
+	else
+		subtype = "Unknown";
+
+	print_attr(level, "OUI Type: P2P action frame");
+	print_attr(level, "OUI Subtype: %s (%u)", subtype, body[0]);
+	print_attr(level + 1, "Dialog Token: %u", body[1]);
+
+	print_management_ies(level, "IEs", body + 2, body_len - 2);
+}
+
+static void print_anqp_frame(unsigned int level, const uint8_t *anqp,
+				size_t anqp_len)
+{
+	struct anqp_iter iter;
+	uint16_t id, len;
+	const void *data;
+
+	static const char *anqp_elements[] = {
+		[ANQP_QUERY_LIST] = "Query List",
+		[ANQP_CAPABILITY_LIST] = "Capability List",
+		[ANQP_VENUE_NAME] = "Venue Name",
+		[ANQP_EMERGENCY_CALL_NUMBER] = "Emergency Call Number",
+		[ANQP_NETWORK_AUTH_TYPE] = "Network Authentication Type",
+		[ANQP_ROAMING_CONSORTIUM] = "Roaming Consortium",
+		[ANQP_IP_ADDRESS_TYPE_AVAILABILITY] = "IP Address type avail",
+		[ANQP_NAI_REALM] = "NAI Realm",
+		[ANQP_3GPP_CELLULAR_NETWORK] = "3GPP Cellular Network",
+		[ANQP_AP_GEOSPATIAL_LOCATION] = "AP Geospatial location",
+		[ANQP_AP_CIVIC_LOCATION] = "AP Civic Location",
+		[ANQP_AP_LOCATION_PUBLIC_ID] = "AP Location Public ID",
+		[ANQP_DOMAIN_NAME] = "Domain Name",
+		[ANQP_EMERGENCY_ALERT_ID_URI] = "Emergency Alery ID URI",
+		[ANQP_TDLS_CAPABILITY] = "TDLS Capability",
+		[ANQP_EMERGENCY_NAI] = "Emergency NAI",
+		[ANQP_NEIGHBOR_REPORT] = "Neighbor Report",
+		[ANQP_VENUE_URI] = "Venue URI",
+		[ANQP_ADVICE_OF_CHARGE] = "Advice of Charge",
+		[ANQP_LOCAL_CONTENT] = "Local Content",
+		[ANQP_NETWORK_AUTH_TYPE_WITH_TIMESTAMP] =
+					"Network Auth Type with Timestamp",
+		[ANQP_VENDOR_SPECIFIC] = "Vendor Specific"
+	};
+
+	anqp_iter_init(&iter, anqp, anqp_len);
+
+	while (anqp_iter_next(&iter, &id, &len, &data)) {
+		const char *str;
+		char **nai_realms;
+		int i;
+
+		if (id >= L_ARRAY_SIZE(anqp_elements) || id < ANQP_QUERY_LIST)
+			str = "Unknown";
+		else
+			str = anqp_elements[id];
+
+		print_attr(level, "ANQP ID: %s, Len: %u", str, len);
+
+		switch (id) {
+		case ANQP_NAI_REALM:
+			nai_realms = anqp_parse_nai_realms(data, len);
+			if (!nai_realms) {
+				print_attr(level + 1, "bad NAI Realm data");
+				break;
+			}
+
+			for (i = 0; nai_realms[i]; i++)
+				print_attr(level + 2, "Realm[%u] %s", i,
+						nai_realms[i]);
+
+			l_strv_free(nai_realms);
+
+			break;
+		default:
+			print_hexdump(level + 1, anqp + 4, len);
+		}
+	}
+}
+
+static void print_public_action_frame(unsigned int level, const uint8_t *body,
+					size_t body_len)
+{
+	const char *category;
+	const uint8_t *oui = body + 1;
+
+	/* 802.11-2016, Table 9-307 */
+	static const char *public_action_table[] = {
+		[0] = "20/40 BSS Coexistence Management",
+		[1] = "DSE enablement",
+		[2] = "DSE deenablement",
+		[3] = "DSE Registered Location Announcement",
+		[4] = "Extended Channel Switch Announcement",
+		[5] = "DSE measurement request",
+		[6] = "DSE measurement report",
+		[7] = "Measurement Pilot",
+		[8] = "DSE power constraint",
+		[9] = "Vendor-specific",
+		[10] = "GAS Initial Request",
+		[11] = "GAS Initial Response",
+		[12] = "GAS Comeback Request",
+		[13] = "GAS Comeback Response",
+		[14] = "TDLS Discovery Response",
+		[15] = "Location Track Notification",
+		[16] = "QAB Request frame",
+		[17] = "QAB Response frame",
+		[18] = "QMF Policy",
+		[19] = "QMF Policy Change",
+		[20] = "QLoad Request",
+		[21] = "QLoad Report",
+		[22] = "HCCA TXOP Advertisement",
+		[23] = "HCCA TXOP Response",
+		[24] = "Public Key",
+		[25] = "Channel Availabilty Query",
+		[26] = "Channel Schedule Management",
+		[27] = "Contact Verification Signal",
+		[28] = "GDD Enablement Request",
+		[29] = "GDD Enablement Response",
+		[30] = "Network Channel Control",
+		[31] = "White Space Map Announcement",
+		[32] = "Fine Timing Measurement Request",
+		[33] = "Fine Timing Measurement",
+	};
+
+	if (body_len < 1)
+		return;
+
+	if (body[0] < L_ARRAY_SIZE(public_action_table) &&
+			public_action_table[body[0]])
+		category = public_action_table[body[0]];
+	else
+		category = "Unknown";
+
+	print_attr(level, "Public Action: %s (%u)", category, body[0]);
+
+	if (body_len < 5)
+		return;
+
+	if (!memcmp(oui, wsc_wfa_oui, 3) && oui[3] == 0x09) {
+		if (body[0] != 9)
+			return;
+
+		if (!print_oui(level, oui))
+			return;
+
+		print_p2p_public_action_frame(level + 1, body + 5,
+						body_len - 5);
+	} else if (body[0] == 0x0a) {
+		if (body_len < 9)
+			return;
+
+		if (body[2] != IE_TYPE_ADVERTISEMENT_PROTOCOL)
+			return;
+
+		if (body[5] != IE_ADVERTISEMENT_ANQP)
+			return;
+
+		if (body_len < l_get_le16(body + 6) + 8u)
+			return;
+
+		print_anqp_frame(level + 1, body + 8, l_get_le16(body + 6));
+	} else if (body[0] == 0x0b) {
+		if (body_len < 10)
+			return;
+
+		print_attr(level + 1, "Dialog Token: %u", body[1]);
+		print_attr(level + 1, "Status: %u", l_get_le16(body + 2));
+		print_attr(level + 1, "Delay: %u", l_get_le16(body + 4));
+
+		if (body[6] != IE_TYPE_ADVERTISEMENT_PROTOCOL)
+			return;
+
+		if (body_len < body[7] + 7u)
+			return;
+
+		if (body_len < l_get_le16(body + 8 + body[7]) + 10u)
+			return;
+
+		print_anqp_frame(level + 1, body + 10 + body[7],
+					l_get_le16(body + 8 + body[7]));
+	}
+}
+
+static void print_rm_action_frame(unsigned int level, const uint8_t *body,
+					size_t body_len)
+{
+	const char *category;
+
+	/* 802.11-2016, Table 9-306 */
+	static const char *rm_action_table[] = {
+		[0] = "Radio Measurement Request",
+		[1] = "Radio Measurement Report",
+		[2] = "Link Measurement Request",
+		[3] = "Link Measurement Report",
+		[4] = "Neighbor Report Request",
+		[5] = "Neighbor Report Response",
+	};
+
+	if (body_len < 1)
+		return;
+
+	if (body[0] < L_ARRAY_SIZE(rm_action_table) && rm_action_table[body[0]])
+		category = rm_action_table[body[0]];
+	else
+		category = "Unknown";
+
+	print_attr(level, "Radio Measurement Action: %s (%u)", category, body[0]);
+}
+
+static void print_action_mgmt_frame(unsigned int level,
+					const struct mmpdu_header *mmpdu,
+					size_t total_len, bool no_ack)
+{
+	const uint8_t *body;
+	size_t body_len;
+	const char *category;
+
+	/* 802.11-2016, Table 9-47 */
+	static const char *category_table[] = {
+		[0] = "Sepctrum Management",
+		[1] = "QoS",
+		[2] = "DLS",
+		[3] = "Block Ack",
+		[4] = "Public",
+		[5] = "Radio Measurement",
+		[6] = "Fast BSS Transition",
+		[7] = "HT",
+		[8] = "SA Query",
+		[9] = "Protected Dual of Public Action",
+		[10] = "WNM",
+		[11] = "Unprotected WNM",
+		[12] = "TDLS",
+		[13] = "Mesh",
+		[14] = "Multihop",
+		[15] = "Self-protected",
+		[16] = "DMG",
+		[18] = "Fast Session Transfer",
+		[19] = "Robust AV Streaming",
+		[20] = "Unprotected DMG",
+		[21] = "VHT",
+		[126] = "Vendor-specific Protected",
+		[127] = "Vendor-specific",
+		[128 ... 255] = "Error",
+	};
+
+	body = mmpdu_body(mmpdu);
+	body_len = total_len - (body - (uint8_t *) mmpdu);
+
+	if (category_table[body[0]])
+		category = category_table[body[0]];
+	else
+		category = "Unknown";
+
+	print_attr(level, "Subtype: Action%s", no_ack ? " No Ack" : "");
+	print_attr(level, "Action Category: %s (%u)", category, body[0]);
+
+	if (body[0] == 4) {
+		print_public_action_frame(level, body + 1, body_len - 1);
+		return;
+	} else if (body[0] == 5) {
+		print_rm_action_frame(level, body + 1, body_len - 1);
+		return;
+	} else if ((body[0] == 126 || body[0] == 127) && body_len >= 5) {
+		const uint8_t *oui = body + 1;
+
+		if (!print_oui(level, oui))
+			return;
+
+		if (!memcmp(oui, wsc_wfa_oui, 3) && oui[3] == 0x09)
+			print_p2p_action_frame(level + 1, body + 5,
+						body_len - 5);
+	}
+
+	print_mpdu_frame_control(level + 1, &mmpdu->fc);
+	print_mmpdu_header(level + 1, mmpdu);
+}
+
 static void print_frame_type(unsigned int level, const char *label,
 					const void *data, uint16_t size)
 {
@@ -2705,10 +4047,14 @@ static void print_frame_type(unsigned int level, const char *label,
 			str = "Deauthentication";
 		break;
 	case 0x0d:
-		str = "Action";
-		break;
 	case 0x0e:
-		str = "Action No Ack";
+		if (mpdu)
+			print_action_mgmt_frame(level + 1, mpdu, size,
+						subtype == 0x0e);
+		else if (subtype == 0x0d)
+			str = "Action";
+		else
+			str = "Action No Ack";
 		break;
 	default:
 		str = "Reserved";
@@ -3030,127 +4376,6 @@ static const struct attr_entry rekey_table[] = {
 #define NLA_DATA(nla)		((void*)(((char*)(nla)) + NLA_LENGTH(0)))
 #define NLA_PAYLOAD(nla)	((int)((nla)->nla_len - NLA_LENGTH(0)))
 
-static const struct {
-	uint8_t cmd;
-	const char *str;
-} cmd_table[] = {
-	{ NL80211_CMD_GET_WIPHY,		"Get Wiphy"		},
-	{ NL80211_CMD_SET_WIPHY,		"Set Wiphy"		},
-	{ NL80211_CMD_NEW_WIPHY,		"New Wiphy"		},
-	{ NL80211_CMD_DEL_WIPHY,		"Del Wiphy"		},
-	{ NL80211_CMD_GET_INTERFACE,		"Get Interface"		},
-	{ NL80211_CMD_SET_INTERFACE,		"Set Interface"		},
-	{ NL80211_CMD_NEW_INTERFACE,		"New Interface"		},
-	{ NL80211_CMD_DEL_INTERFACE,		"Del Interface"		},
-	{ NL80211_CMD_GET_KEY,			"Get Key"		},
-	{ NL80211_CMD_SET_KEY,			"Set Key"		},
-	{ NL80211_CMD_NEW_KEY,			"New Key"		},
-	{ NL80211_CMD_DEL_KEY,			"Del Key"		},
-	{ NL80211_CMD_GET_BEACON,		"Get Beacon"		},
-	{ NL80211_CMD_SET_BEACON,		"Set Beacon"		},
-	{ NL80211_CMD_START_AP,			"Start AP"		},
-	{ NL80211_CMD_STOP_AP,			"Stop AP"		},
-	{ NL80211_CMD_GET_STATION,		"Get Station"		},
-	{ NL80211_CMD_SET_STATION,		"Set Station"		},
-	{ NL80211_CMD_NEW_STATION,		"New Station"		},
-	{ NL80211_CMD_DEL_STATION,		"Del Station"		},
-	{ NL80211_CMD_GET_MPATH,		"Get Mesh Path"		},
-	{ NL80211_CMD_SET_MPATH,		"Set Mesh Path"		},
-	{ NL80211_CMD_NEW_MPATH,		"New Mesh Path"		},
-	{ NL80211_CMD_DEL_MPATH,		"Del Mesh Path"		},
-	{ NL80211_CMD_SET_BSS,			"Set BSS"		},
-	{ NL80211_CMD_SET_REG,			"Set Reg"		},
-	{ NL80211_CMD_REQ_SET_REG,		"Req Set Reg"		},
-	{ NL80211_CMD_GET_MESH_CONFIG,		"Get Mesh Config"	},
-	{ NL80211_CMD_SET_MESH_CONFIG,		"Set Mesh Config"	},
-	{ NL80211_CMD_SET_MGMT_EXTRA_IE,	"Mgmt Extra IE"		},
-	{ NL80211_CMD_GET_REG,			"Get Reg"		},
-	{ NL80211_CMD_GET_SCAN,			"Get Scan"		},
-	{ NL80211_CMD_TRIGGER_SCAN,		"Trigger Scan"		},
-	{ NL80211_CMD_NEW_SCAN_RESULTS,		"New Scan Results"	},
-	{ NL80211_CMD_SCAN_ABORTED,		"Scan Aborted"		},
-	{ NL80211_CMD_REG_CHANGE,		"Reg Change"		},
-	{ NL80211_CMD_AUTHENTICATE,		"Authenticate"		},
-	{ NL80211_CMD_ASSOCIATE,		"Associate"		},
-	{ NL80211_CMD_DEAUTHENTICATE,		"Deauthenticate"	},
-	{ NL80211_CMD_DISASSOCIATE,		"Disassociate"		},
-	{ NL80211_CMD_MICHAEL_MIC_FAILURE,	"Michael MIC Failure"	},
-	{ NL80211_CMD_REG_BEACON_HINT,		"Reg Beacon Hint"	},
-	{ NL80211_CMD_JOIN_IBSS,		"Join IBSS"		},
-	{ NL80211_CMD_LEAVE_IBSS,		"Leave IBSS"		},
-	{ NL80211_CMD_TESTMODE,			"Test Mode"		},
-	{ NL80211_CMD_CONNECT,			"Connect"		},
-	{ NL80211_CMD_ROAM,			"Roam"			},
-	{ NL80211_CMD_DISCONNECT,		"Disconnect"		},
-	{ NL80211_CMD_SET_WIPHY_NETNS,		"Set Wiphy Netns"	},
-	{ NL80211_CMD_GET_SURVEY,		"Get Survey"		},
-	{ NL80211_CMD_NEW_SURVEY_RESULTS,	"New Survey Results"	},
-	{ NL80211_CMD_SET_PMKSA,		"Set PMKSA"		},
-	{ NL80211_CMD_DEL_PMKSA,		"Del PMKSA"		},
-	{ NL80211_CMD_FLUSH_PMKSA,		"Flush PMKSA"		},
-	{ NL80211_CMD_REMAIN_ON_CHANNEL,	"Remain on Channel"	},
-	{ NL80211_CMD_CANCEL_REMAIN_ON_CHANNEL,	"Cancel Remain on Channel"},
-	{ NL80211_CMD_SET_TX_BITRATE_MASK,	"Set TX Bitrate Mask"	},
-	{ NL80211_CMD_REGISTER_FRAME,		"Register Frame"	},
-	{ NL80211_CMD_FRAME,			"Frame"			},
-	{ NL80211_CMD_FRAME_TX_STATUS,		"Frame TX Status"	},
-	{ NL80211_CMD_SET_POWER_SAVE,		"Set Power Save"	},
-	{ NL80211_CMD_GET_POWER_SAVE,		"Get Power Save"	},
-	{ NL80211_CMD_SET_CQM,			"Set CQM"		},
-	{ NL80211_CMD_NOTIFY_CQM,		"Notify CQM"		},
-	{ NL80211_CMD_SET_CHANNEL,		"Set Channel"		},
-	{ NL80211_CMD_SET_WDS_PEER,		"Set WDS Peer"		},
-	{ NL80211_CMD_FRAME_WAIT_CANCEL,	"Frame Wait Cancel"	},
-	{ NL80211_CMD_JOIN_MESH,		"Join Mesh"		},
-	{ NL80211_CMD_LEAVE_MESH,		"Leave Mesh"		},
-	{ NL80211_CMD_UNPROT_DEAUTHENTICATE,	"Unprot Deauthenticate"	},
-	{ NL80211_CMD_UNPROT_DISASSOCIATE,	"Unprot Disassociate"	},
-	{ NL80211_CMD_NEW_PEER_CANDIDATE,	"New Peer Candidate"	},
-	{ NL80211_CMD_GET_WOWLAN,		"Get WoWLAN"		},
-	{ NL80211_CMD_SET_WOWLAN,		"Set WoWLAN"		},
-	{ NL80211_CMD_START_SCHED_SCAN,		"Start Sched Scan"	},
-	{ NL80211_CMD_STOP_SCHED_SCAN,		"Stop Sched Scan"	},
-	{ NL80211_CMD_SCHED_SCAN_RESULTS,	"Sched Scan Results"	},
-	{ NL80211_CMD_SCHED_SCAN_STOPPED,	"Sched Scan Stopped"	},
-	{ NL80211_CMD_SET_REKEY_OFFLOAD,	"Set Rekey Offload"	},
-	{ NL80211_CMD_PMKSA_CANDIDATE,		"PMKSA Candidate"	},
-	{ NL80211_CMD_TDLS_OPER,		"TDLS Oper"		},
-	{ NL80211_CMD_TDLS_MGMT,		"TDLS Mgmt"		},
-	{ NL80211_CMD_UNEXPECTED_FRAME,		"Unexpected Frame"	},
-	{ NL80211_CMD_PROBE_CLIENT,		"Probe Client"		},
-	{ NL80211_CMD_REGISTER_BEACONS,		"Register Beacons"	},
-	{ NL80211_CMD_UNEXPECTED_4ADDR_FRAME,	"Unexpected 4addr Frame"},
-	{ NL80211_CMD_SET_NOACK_MAP,		"Set NoAck Map"		},
-	{ NL80211_CMD_CH_SWITCH_NOTIFY,		"Channel Switch Notify"	},
-	{ NL80211_CMD_START_P2P_DEVICE,		"Start P2P Device"	},
-	{ NL80211_CMD_STOP_P2P_DEVICE,		"Stop P2P Device"	},
-	{ NL80211_CMD_CONN_FAILED,		"Conn Failed"		},
-	{ NL80211_CMD_SET_MCAST_RATE,		"Set Mcast Rate"	},
-	{ NL80211_CMD_SET_MAC_ACL,		"Set MAC ACL"		},
-	{ NL80211_CMD_RADAR_DETECT,		"Radar Detect"		},
-	{ NL80211_CMD_GET_PROTOCOL_FEATURES,	"Get Protocol Features"	},
-	{ NL80211_CMD_UPDATE_FT_IES,		"Update FT IEs"		},
-	{ NL80211_CMD_FT_EVENT,			"FT Event"		},
-	{ NL80211_CMD_CRIT_PROTOCOL_START,	"Crit Protocol Start"	},
-	{ NL80211_CMD_CRIT_PROTOCOL_STOP,	"Crit Protocol Stop"	},
-	{ NL80211_CMD_GET_COALESCE,		"Get Coalesce"		},
-	{ NL80211_CMD_SET_COALESCE,		"Set Coalesce"		},
-	{ NL80211_CMD_CHANNEL_SWITCH,		"Channel Switch"	},
-	{ NL80211_CMD_VENDOR,			"Vendor"		},
-	{ NL80211_CMD_SET_QOS_MAP,		"Set QoS Map"		},
-	{ NL80211_CMD_ADD_TX_TS,		"Add Traffic Stream"	},
-	{ NL80211_CMD_DEL_TX_TS,		"Delete Traffic Stream" },
-	{ NL80211_CMD_GET_MPP,			"Get Mesh Proxy Path"	},
-	{ NL80211_CMD_JOIN_OCB,			"Join OCB Network"	},
-	{ NL80211_CMD_LEAVE_OCB,		"Leave OCB Network"	},
-	{ NL80211_CMD_CH_SWITCH_STARTED_NOTIFY, "Channel Switch Notify"	},
-	{ NL80211_CMD_TDLS_CHANNEL_SWITCH,	"TDLS Channel Switch"	},
-	{ NL80211_CMD_TDLS_CANCEL_CHANNEL_SWITCH,
-						"Cancel TLDS Channel Switch" },
-	{ NL80211_CMD_WIPHY_REG_CHANGE,		"Wiphy Reg Change"	},
-	{ }
-};
-
 static void print_supported_commands(unsigned int level, const char *label,
 					const void *data, uint16_t size)
 {
@@ -3159,18 +4384,10 @@ static void print_supported_commands(unsigned int level, const char *label,
 	print_attr(level, "%s:", label);
 
 	for (nla = data; NLA_OK(nla, size); nla = NLA_NEXT(nla, size)) {
-		const char *cmd_str = "Reserved";
 		uint32_t cmd = *((uint32_t *) NLA_DATA(nla));
-		unsigned int i;
 
-		for (i = 0; cmd_table[i].str; i++) {
-			if (cmd_table[i].cmd == cmd) {
-				cmd_str = cmd_table[i].str;
-				break;
-			}
-		}
-
-		print_attr(level + 1, "%s [%d]", cmd_str, cmd);
+		print_attr(level + 1, "%s [%d]",
+					nl80211cmd_to_string(cmd), cmd);
 	}
 }
 
@@ -3598,7 +4815,8 @@ static const struct attr_entry attr_table[] = {
 	{ NL80211_ATTR_ACL_POLICY,
 			"ACL Policy", ATTR_U32 },
 	{ NL80211_ATTR_MAC_ADDRS,
-			"MAC Addresses" },
+			"MAC Addresses", ATTR_ARRAY,
+					{ .array_type = ATTR_ADDRESS } },
 	{ NL80211_ATTR_MAC_ACL_MAX,
 			"MAC ACL Max" },
 	{ NL80211_ATTR_RADAR_EVENT,
@@ -3680,10 +4898,72 @@ static const struct attr_entry attr_table[] = {
 			"CSA C Offsets TX" },
 	{ NL80211_ATTR_MAX_CSA_COUNTERS,
 			"Max CSA Counters" },
+	{ NL80211_ATTR_TDLS_INITIATOR,
+			"TDLS Initiator" },
+	{ NL80211_ATTR_USE_RRM,
+			"Use RRM", ATTR_FLAG },
+	{ NL80211_ATTR_EXT_FEATURES,
+			"Extended Features" },
 	{ NL80211_ATTR_FILS_KEK,
 			"FILS KEK" },
 	{ NL80211_ATTR_FILS_NONCES,
 			"FILS Nonces" },
+	{ NL80211_ATTR_MULTICAST_TO_UNICAST_ENABLED,
+			"Multicast to Unicast Enabled", ATTR_FLAG },
+	{ NL80211_ATTR_BSSID,
+			"BSSID", ATTR_ADDRESS },
+	{ NL80211_ATTR_SCHED_SCAN_RELATIVE_RSSI,
+			"Scheduled Scan Relative RSSI" },
+	{ NL80211_ATTR_SCHED_SCAN_RSSI_ADJUST,
+			"Scheduled Scan RSSI Adjust" },
+	{ NL80211_ATTR_TIMEOUT_REASON,
+			"Timeout Reason" },
+	{ NL80211_ATTR_FILS_ERP_USERNAME,
+			"FILS ERP Username" },
+	{ NL80211_ATTR_FILS_ERP_REALM,
+			"FILS ERP Realm" },
+	{ NL80211_ATTR_FILS_ERP_NEXT_SEQ_NUM,
+			"FILS ERP Next Sequence Number" },
+	{ NL80211_ATTR_FILS_ERP_RRK,
+			"FILS ERP RRK" },
+	{ NL80211_ATTR_FILS_CACHE_ID,
+			"FILS Cache ID" },
+	{ NL80211_ATTR_PMK,
+			"PMK" },
+	{ NL80211_ATTR_SCHED_SCAN_MULTI,
+			"Scheduled Scan Multi" },
+	{ NL80211_ATTR_SCHED_SCAN_MAX_REQS,
+			"Scheduled Scan Maximum Requests" },
+	{ NL80211_ATTR_WANT_1X_4WAY_HS,
+			"Want 1X 4Way Handshake" },
+	{ NL80211_ATTR_PMKR0_NAME,
+			"PMKR0 Name" },
+	{ NL80211_ATTR_PORT_AUTHORIZED,
+			"Port Authorized" },
+	{ NL80211_ATTR_EXTERNAL_AUTH_ACTION,
+			"External Auth Action" },
+	{ NL80211_ATTR_EXTERNAL_AUTH_SUPPORT,
+			"External Auth Support" },
+	{ NL80211_ATTR_NSS,
+			"NSS" },
+	{ NL80211_ATTR_ACK_SIGNAL,
+			"Ack Signal" },
+	{ NL80211_ATTR_CONTROL_PORT_OVER_NL80211,
+			"Control Port over NL80211", ATTR_FLAG },
+	{ NL80211_ATTR_TXQ_STATS,
+			"TXQ Stats" },
+	{ NL80211_ATTR_TXQ_LIMIT,
+			"TXQ Limit" },
+	{ NL80211_ATTR_TXQ_MEMORY_LIMIT,
+			"TXQ Memory Limit" },
+	{ NL80211_ATTR_TXQ_QUANTUM,
+			"TXQ Quantum" },
+	{ NL80211_ATTR_HE_CAPABILITY,
+			"HE Capability" },
+	{ NL80211_ATTR_FTM_RESPONDER,
+			"FTM Responder" },
+	{ NL80211_ATTR_FTM_RESPONDER_STATS,
+			"FTM Responder Stats" },
 	{ }
 };
 
@@ -3706,6 +4986,9 @@ static void print_value(int indent, const char *label, enum attr_type type,
 		if (len != 4)
 			printf("malformed packet\n");
 		break;
+	case ATTR_ADDRESS:
+		print_address(indent, label, buf);
+		break;
 	case ATTR_UNSPEC:
 	case ATTR_FLAG:
 	case ATTR_U8:
@@ -3714,7 +4997,6 @@ static void print_value(int indent, const char *label, enum attr_type type,
 	case ATTR_S32:
 	case ATTR_S64:
 	case ATTR_STRING:
-	case ATTR_ADDRESS:
 	case ATTR_BINARY:
 	case ATTR_NESTED:
 	case ATTR_ARRAY:
@@ -4078,7 +5360,6 @@ static void print_message(struct nlmon *nlmon, const struct timeval *tv,
 	const char *color = COLOR_OFF;
 	const char *cmd_str;
 	bool out = false;
-	int i;
 
 	if (nlmon->nowiphy && (cmd == NL80211_CMD_NEW_WIPHY))
 		return;
@@ -4111,14 +5392,7 @@ static void print_message(struct nlmon *nlmon, const struct timeval *tv,
 		break;
 	}
 
-	cmd_str = "Reserved";
-
-	for (i = 0; cmd_table[i].str; i++) {
-		if (cmd_table[i].cmd == cmd) {
-			cmd_str = cmd_table[i].str;
-			break;
-		}
-	}
+	cmd_str = nl80211cmd_to_string(cmd);
 
 	netlink_str(extra_str, sizeof(extra_str), cmd, flags, len);
 
@@ -4414,6 +5688,11 @@ static void print_link_mode(unsigned int indent, const char *str,
 		link_mode_to_ascii(link_mode), link_mode);
 }
 
+static struct attr_entry link_info_entry[] = {
+	{ IFLA_INFO_KIND,	"Kind",		ATTR_STRING },
+	{ },
+};
+
 static struct attr_entry info_entry[] = {
 	{ IFLA_ADDRESS,		"Interface Address", ATTR_CUSTOM,
 					{ .function = print_ifi_addr } },
@@ -4438,6 +5717,8 @@ static struct attr_entry info_entry[] = {
 	{ IFLA_WEIGHT,		"Weight",	ATTR_BINARY },
 	{ IFLA_NET_NS_PID,	"NetNSPid",	ATTR_BINARY },
 	{ IFLA_IFALIAS,		"IFAlias",	ATTR_BINARY },
+	{ IFLA_LINKINFO,	"LinkInfo",
+					ATTR_NESTED, { link_info_entry } },
 	{ },
 };
 
@@ -4467,6 +5748,23 @@ static struct attr_entry addr_entry[] = {
 	{ },
 };
 
+static struct attr_entry route_entry[] = {
+	{ RTA_DST,		"Destination Address", ATTR_CUSTOM,
+					{ .function = print_inet_addr } },
+	{ RTA_SRC,		"Source Address", ATTR_CUSTOM,
+					{ .function = print_inet_addr } },
+	{ RTA_IIF,		"Input Interface Index", ATTR_S32 },
+	{ RTA_OIF,		"Output Interface Index", ATTR_S32 },
+	{ RTA_GATEWAY,		"Gateway", ATTR_CUSTOM,
+					{ .function = print_inet_addr } },
+	{ RTA_PRIORITY,		"Priority of the route", ATTR_S32 },
+	{ RTA_METRICS,		"Metric of the route", ATTR_S32 },
+	{ RTA_TABLE,		"Routing Table", ATTR_U32 },
+	{ RTA_PREFSRC,		"Preferred Source", ATTR_CUSTOM,
+					{ .function = print_inet_addr } },
+	{ },
+};
+
 static void print_rtnl_attributes(int indent, const struct attr_entry *table,
 						struct rtattr *rt_attr, int len)
 {
@@ -4479,6 +5777,7 @@ static void print_rtnl_attributes(int indent, const struct attr_entry *table,
 		uint16_t rta_type = attr->rta_type;
 		enum attr_type type = ATTR_UNSPEC;
 		attr_func_t function;
+		const struct attr_entry *nested;
 		uint64_t val64;
 		uint32_t val32;
 		uint16_t val16;
@@ -4496,6 +5795,7 @@ static void print_rtnl_attributes(int indent, const struct attr_entry *table,
 				str = table[i].str;
 				type = table[i].type;
 				function = table[i].function;
+				nested = table[i].nested;
 				break;
 			}
 		}
@@ -4510,7 +5810,7 @@ static void print_rtnl_attributes(int indent, const struct attr_entry *table,
 				printf("missing function\n");
 			break;
 		case ATTR_STRING:
-			print_attr(indent, "%s: %s", str,
+			print_attr(indent, "%s (len:%d): %s", str, payload,
 						(char *) RTA_DATA(attr));
 			break;
 		case ATTR_U8:
@@ -4575,12 +5875,18 @@ static void print_rtnl_attributes(int indent, const struct attr_entry *table,
 			} else
 				printf("malformed packet\n");
 			break;
+		case ATTR_NESTED:
+			print_attr(indent, "%s: len %u", str, payload);
+			if (!nested)
+				printf("missing table\n");
+			print_rtnl_attributes(indent + 1, nested,
+						RTA_DATA(attr), payload);
+			break;
 		case ATTR_BINARY:
 			print_attr(indent, "%s: len %d", str, payload);
 			print_hexdump(indent + 1, RTA_DATA(attr), payload);
 			break;
 		case ATTR_ADDRESS:
-		case ATTR_NESTED:
 		case ATTR_ARRAY:
 		case ATTR_UNSPEC:
 			print_attr(indent, "%s: len %d", str, payload);
@@ -4589,27 +5895,8 @@ static void print_rtnl_attributes(int indent, const struct attr_entry *table,
 	}
 }
 
-static struct flag_names rtnl_flags[] = {
-	{ IFF_UP, "up" },
-	{ IFF_BROADCAST, "broadcast" },
-	{ IFF_DEBUG, "debug" },
-	{ IFF_LOOPBACK, "loopback" },
-	{ IFF_POINTOPOINT, "pointopoint"},
-	{ IFF_NOTRAILERS, "notrailers" },
-	{ IFF_RUNNING, "running" },
-	{ IFF_NOARP, "noarp" },
-	{ IFF_PROMISC, "promisc" },
-	{ IFF_ALLMULTI, "allmulti" },
-	{ IFF_MASTER, "master" },
-	{ IFF_SLAVE, "slave" },
-	{ IFF_MULTICAST, "multicast" },
-	{ IFF_PORTSEL, "portsel" },
-	{ IFF_AUTOMEDIA, "automedia" },
-	{ IFF_DYNAMIC, "dynamic" },
-	{ },
-};
-
-static void ififlags_str(char *str, size_t size, uint16_t flags)
+static void flags_str(const struct flag_names *table,
+				char *str, size_t size, uint16_t flags)
 {
 	int pos, i;
 
@@ -4619,10 +5906,10 @@ static void ififlags_str(char *str, size_t size, uint16_t flags)
 
 	pos += sprintf(str + pos, " [");
 
-	for (i = 0; rtnl_flags[i].name; i++) {
-		if (flags & rtnl_flags[i].flag) {
-			flags &= ~rtnl_flags[i].flag;
-			pos += sprintf(str + pos, "%s%s", rtnl_flags[i].name,
+	for (i = 0; table[i].name; i++) {
+		if (flags & table[i].flag) {
+			flags &= ~table[i].flag;
+			pos += sprintf(str + pos, "%s%s", table[i].name,
 							flags ? "," : "");
 		}
 	}
@@ -4632,6 +5919,26 @@ static void ififlags_str(char *str, size_t size, uint16_t flags)
 
 static void print_ifinfomsg(const struct ifinfomsg *info)
 {
+	static struct flag_names iff_flags[] = {
+		{ IFF_UP, "up" },
+		{ IFF_BROADCAST, "broadcast" },
+		{ IFF_DEBUG, "debug" },
+		{ IFF_LOOPBACK, "loopback" },
+		{ IFF_POINTOPOINT, "pointopoint"},
+		{ IFF_NOTRAILERS, "notrailers" },
+		{ IFF_RUNNING, "running" },
+		{ IFF_NOARP, "noarp" },
+		{ IFF_PROMISC, "promisc" },
+		{ IFF_ALLMULTI, "allmulti" },
+		{ IFF_MASTER, "master" },
+		{ IFF_SLAVE, "slave" },
+		{ IFF_MULTICAST, "multicast" },
+		{ IFF_PORTSEL, "portsel" },
+		{ IFF_AUTOMEDIA, "automedia" },
+		{ IFF_DYNAMIC, "dynamic" },
+		{ },
+	};
+
 	char str[256];
 
 	if (!info)
@@ -4641,7 +5948,7 @@ static void print_ifinfomsg(const struct ifinfomsg *info)
 	print_field("IFLA Type: %u", info->ifi_type);
 	print_field("IFLA Index: %d", info->ifi_index);
 	print_field("IFLA ChangeMask: %u", info->ifi_change);
-	ififlags_str(str, sizeof(str), info->ifi_flags);
+	flags_str(iff_flags, str, sizeof(str), info->ifi_flags);
 	print_field("IFLA Flags: %s", str);
 }
 
@@ -4655,6 +5962,28 @@ static void print_ifaddrmsg(const struct ifaddrmsg *addr)
 	print_field("IFA Index: %d", addr->ifa_index);
 	print_field("IFA Scope: %u", addr->ifa_scope);
 	print_field("IFA Flags: %u", addr->ifa_flags);
+}
+
+static void print_rtmsg(const struct rtmsg *msg)
+{
+	static struct flag_names rtm_flags[] = {
+		{ RTM_F_NOTIFY, "notify" },
+		{ RTM_F_CLONED, "cloned" },
+		{ RTM_F_EQUALIZE, "multipath-equalizer" },
+		{ },
+	};
+	char str[256];
+
+	print_field("RTM Family: %hhu", msg->rtm_family);
+	print_field("RTM Destination Len: %hhu", msg->rtm_dst_len);
+	print_field("RTM Source Len: %hhu", msg->rtm_src_len);
+	print_field("RTM TOS Field: %hhu", msg->rtm_tos);
+	print_field("RTM Table: %hhu", msg->rtm_table);
+	print_field("RTM Protocol: %hhu", msg->rtm_protocol);
+	print_field("RTM Scope: %hhu", msg->rtm_scope);
+	print_field("RTM Type: %hhu", msg->rtm_type);
+	flags_str(rtm_flags, str, sizeof(str), msg->rtm_flags);
+	print_field("RTM Flags: %s", str);
 }
 
 static void read_uevent(const char *ifname, int index)
@@ -4746,6 +6075,15 @@ static void print_rtm_link(uint16_t type, const struct ifinfomsg *info, int len)
 	}
 }
 
+static void print_rtm_route(uint16_t type, const struct rtmsg *msg, size_t len)
+{
+	if (!msg || len < sizeof(struct rtmsg))
+		return;
+
+	print_rtmsg(msg);
+	print_rtnl_attributes(1, route_entry, RTM_RTA(msg), len);
+}
+
 static const char *nlmsg_type_to_str(uint32_t msg_type)
 {
 	const char *str = NULL;
@@ -4816,11 +6154,11 @@ static void print_nlmsghdr(const struct timeval *tv,
 
 	print_packet(tv, out ? '<' : '>', COLOR_YELLOW, "RTNL", str, extra_str);
 
-	print_field("Flags: %d (0x%03x)", nlmsg->nlmsg_flags,
+	print_field("Flags: %hu (0x%03x)", nlmsg->nlmsg_flags,
 							nlmsg->nlmsg_flags);
-	print_field("Sequence number: %d (0x%08x)",
+	print_field("Sequence number: %u (0x%08x)",
 					nlmsg->nlmsg_seq, nlmsg->nlmsg_seq);
-	print_field("Port ID: %d", nlmsg->nlmsg_pid);
+	print_field("Port ID: %u", nlmsg->nlmsg_pid);
 }
 
 static void print_nlmsg(const struct timeval *tv, const struct nlmsghdr *nlmsg)
@@ -4833,9 +6171,10 @@ static void print_nlmsg(const struct timeval *tv, const struct nlmsghdr *nlmsg)
 	switch (nlmsg->nlmsg_type) {
 	case NLMSG_ERROR:
 		err = NLMSG_DATA(nlmsg);
-		status = -err->error;
+		status = err->error;
 		if (status < 0)
-			print_field("Error: %d (%s)", status, strerror(status));
+			print_field("Error: %d (%s)",
+						status, strerror(-status));
 		else
 			print_field("ACK: %d", status);
 		break;
@@ -4856,6 +6195,7 @@ static void print_rtnl_msg(const struct timeval *tv,
 {
 	struct ifinfomsg *info;
 	struct ifaddrmsg *addr;
+	struct rtmsg *rtm;
 	struct wlan_iface *iface;
 	int len;
 
@@ -4868,6 +6208,24 @@ static void print_rtnl_msg(const struct timeval *tv,
 		len = IFLA_PAYLOAD(nlmsg);
 		print_nlmsghdr(tv, nlmsg);
 		print_rtm_link(nlmsg->nlmsg_type, info, len);
+		break;
+
+	case RTM_NEWROUTE:
+	case RTM_GETROUTE:
+	case RTM_DELROUTE:
+		rtm = (struct rtmsg *) NLMSG_DATA(nlmsg);
+		len = RTM_PAYLOAD(nlmsg);
+
+		if (!rtm || len <= (int) sizeof(struct rtmsg))
+			return;
+
+		/* Skip 'kernel' and 'default' tables */
+		if (rtm->rtm_table == RT_TABLE_LOCAL ||
+				rtm->rtm_table == RT_TABLE_DEFAULT)
+			return;
+
+		print_nlmsghdr(tv, nlmsg);
+		print_rtm_route(nlmsg->nlmsg_type, rtm, len);
 		break;
 
 	case RTM_NEWADDR:
@@ -4915,6 +6273,9 @@ void nlmon_print_rtnl(struct nlmon *nlmon, const struct timeval *tv,
 		case RTM_NEWADDR:
 		case RTM_DELADDR:
 		case RTM_GETADDR:
+		case RTM_NEWROUTE:
+		case RTM_GETROUTE:
+		case RTM_DELROUTE:
 			print_rtnl_msg(tv, nlmsg);
 			break;
 		}

@@ -36,7 +36,6 @@
 #include <linux/filter.h>
 #include <sys/socket.h>
 #include <errno.h>
-#include <fnmatch.h>
 
 #include <ell/ell.h>
 
@@ -58,6 +57,7 @@
 #include "src/watchlist.h"
 #include "src/sae.h"
 #include "src/nl80211util.h"
+#include "src/nl80211cmd.h"
 #include "src/owe.h"
 #include "src/fils.h"
 #include "src/auth-proto.h"
@@ -66,6 +66,8 @@
 #ifndef ENOTSUPP
 #define ENOTSUPP 524
 #endif
+
+static uint32_t unicast_watch;
 
 struct netdev_handshake_state {
 	struct handshake_state super;
@@ -82,6 +84,7 @@ struct netdev_handshake_state {
 
 struct netdev {
 	uint32_t index;
+	uint64_t wdev_id;
 	char name[IFNAMSIZ];
 	uint32_t type;
 	uint8_t addr[ETH_ALEN];
@@ -112,6 +115,7 @@ struct netdev {
 	struct l_timeout *neighbor_report_timeout;
 	struct l_timeout *sa_query_timeout;
 	struct l_timeout *group_handshake_timeout;
+	struct l_timeout *gas_timeout;
 	uint16_t sa_query_id;
 	uint8_t prev_bssid[ETH_ALEN];
 	uint8_t prev_snonce[32];
@@ -143,6 +147,7 @@ struct netdev {
 	bool ignore_connect_event : 1;
 	bool expect_connect_failure : 1;
 	bool aborting : 1;
+	bool mac_randomize_once : 1;
 };
 
 struct netdev_preauth_state {
@@ -167,8 +172,6 @@ struct netdev_frame_watch {
 static struct l_netlink *rtnl = NULL;
 static struct l_genl_family *nl80211;
 static struct l_queue *netdev_list;
-static char **whitelist_filter;
-static char **blacklist_filter;
 static struct watchlist netdev_watches;
 
 static void do_debug(const char *str, void *user_data)
@@ -256,6 +259,11 @@ const uint8_t *netdev_get_address(struct netdev *netdev)
 uint32_t netdev_get_ifindex(struct netdev *netdev)
 {
 	return netdev->index;
+}
+
+uint64_t netdev_get_wdev_id(struct netdev *netdev)
+{
+	return netdev->wdev_id;
 }
 
 enum netdev_iftype netdev_get_iftype(struct netdev *netdev)
@@ -1617,14 +1625,14 @@ static void netdev_connect_event(struct l_genl_msg *msg, struct netdev *netdev)
 
 		switch (ie_tlv_iter_get_tag(&iter)) {
 		case IE_TYPE_RSN:
-			handshake_state_set_supplicant_rsn(netdev->handshake,
+			handshake_state_set_supplicant_ie(netdev->handshake,
 								data - 2);
 			break;
 		case IE_TYPE_VENDOR_SPECIFIC:
 			if (!is_ie_wpa_ie(data, ie_tlv_iter_get_length(&iter)))
 				break;
 
-			handshake_state_set_supplicant_wpa(netdev->handshake,
+			handshake_state_set_supplicant_ie(netdev->handshake,
 								data - 2);
 			break;
 		case IE_TYPE_MOBILITY_DOMAIN:
@@ -1633,7 +1641,10 @@ static void netdev_connect_event(struct l_genl_msg *msg, struct netdev *netdev)
 		}
 	}
 
-	if (resp_ies) {
+	/* FILS handles its own FT key derivation */
+	if (resp_ies && !(netdev->handshake->akm_suite &
+			(IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256 |
+			IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384))) {
 		const uint8_t *fte = NULL;
 		struct ie_ft_info ft_info;
 
@@ -1650,6 +1661,8 @@ static void netdev_connect_event(struct l_genl_msg *msg, struct netdev *netdev)
 		}
 
 		if (fte) {
+			uint32_t kck_len =
+				handshake_state_get_kck_len(netdev->handshake);
 			/*
 			 * If we are here, then most likely we have a FullMac
 			 * hw performing initial mobility association.  We need
@@ -1658,7 +1671,7 @@ static void netdev_connect_event(struct l_genl_msg *msg, struct netdev *netdev)
 			 * sanitize the contents and just assume they're okay.
 			 */
 			if (ie_parse_fast_bss_transition_from_data(fte,
-						fte[1] + 2, &ft_info) >= 0) {
+					fte[1] + 2, kck_len, &ft_info) >= 0) {
 				handshake_state_set_fte(netdev->handshake, fte);
 				handshake_state_set_kh_ids(netdev->handshake,
 							ft_info.r0khid,
@@ -1740,6 +1753,8 @@ static unsigned int ie_rsn_akm_suite_to_nl80211(enum ie_rsn_akm_suite akm)
 		return CRYPTO_AKM_FT_OVER_FILS_SHA384;
 	case IE_RSN_AKM_SUITE_OWE:
 		return CRYPTO_AKM_OWE;
+	case IE_RSN_AKM_SUITE_OSEN:
+		return CRYPTO_AKM_OSEN;
 	}
 
 	return 0;
@@ -2207,13 +2222,16 @@ static void netdev_fils_tx_associate(struct iovec *iov, size_t iov_len,
 static struct l_genl_msg *netdev_build_cmd_connect(struct netdev *netdev,
 						struct scan_bss *bss,
 						struct handshake_state *hs,
-						const uint8_t *prev_bssid)
+						const uint8_t *prev_bssid,
+						struct iovec *vendor_ies,
+						size_t num_vendor_ies)
 {
 	uint32_t auth_type = NL80211_AUTHTYPE_OPEN_SYSTEM;
 	struct l_genl_msg *msg;
-	struct iovec iov[2];
+	struct iovec iov[4 + num_vendor_ies];
 	int iov_elems = 0;
 	bool is_rsn = hs->supplicant_ie != NULL;
+	const uint8_t *extended_capabilities;
 
 	msg = l_genl_msg_new_sized(NL80211_CMD_CONNECT, 512);
 	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &netdev->index);
@@ -2285,10 +2303,39 @@ static struct l_genl_msg *netdev_build_cmd_connect(struct netdev *netdev,
 				NL80211_ATTR_CONTROL_PORT_OVER_NL80211,
 				0, NULL);
 
+	if (wiphy_rrm_capable(netdev->wiphy) &&
+			bss->capability & IE_BSS_CAP_RM) {
+		uint8_t rm_cap_ie[7] = { IE_TYPE_RM_ENABLED_CAPABILITIES, 5,
+					0x00, 0x00, 0x00, 0x00, 0x00 };
+
+		/* TODO: Send an empty IE for now */
+		iov[iov_elems].iov_base = rm_cap_ie;
+		iov[iov_elems].iov_len = rm_cap_ie[1] + 2;
+		iov_elems += 1;
+
+		l_genl_msg_append_attr(msg, NL80211_ATTR_USE_RRM, 0, NULL);
+	}
+
 	if (hs->mde) {
 		iov[iov_elems].iov_base = (void *) hs->mde;
 		iov[iov_elems].iov_len = hs->mde[1] + 2;
 		iov_elems += 1;
+	}
+
+	/*
+	 * This element should be added after MDE
+	 * See 802.11-2016, Section 9.3.3.6
+	 */
+	extended_capabilities = wiphy_get_extended_capabilities(netdev->wiphy,
+								netdev->type);
+	iov[iov_elems].iov_base = (void *) extended_capabilities;
+	iov[iov_elems].iov_len = extended_capabilities[1] + 2;
+	iov_elems += 1;
+
+	if (vendor_ies) {
+		memcpy(iov + iov_elems, vendor_ies,
+					sizeof(*vendor_ies) * num_vendor_ies);
+		iov_elems += num_vendor_ies;
 	}
 
 	if (iov_elems)
@@ -2341,6 +2388,8 @@ static int netdev_connect_common(struct netdev *netdev,
 
 int netdev_connect(struct netdev *netdev, struct scan_bss *bss,
 				struct handshake_state *hs,
+				struct iovec *vendor_ies,
+				size_t num_vendor_ies,
 				netdev_event_func_t event_filter,
 				netdev_connect_cb_t cb, void *user_data)
 {
@@ -2368,12 +2417,15 @@ int netdev_connect(struct netdev *netdev, struct scan_bss *bss,
 		break;
 	case IE_RSN_AKM_SUITE_FILS_SHA256:
 	case IE_RSN_AKM_SUITE_FILS_SHA384:
+	case IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256:
+	case IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384:
 		netdev->ap = fils_sm_new(hs, netdev_fils_tx_authenticate,
 						netdev_fils_tx_associate,
 						netdev);
 		break;
 	default:
-		cmd_connect = netdev_build_cmd_connect(netdev, bss, hs, NULL);
+		cmd_connect = netdev_build_cmd_connect(netdev, bss, hs,
+					NULL, vendor_ies, num_vendor_ies);
 
 		if (!cmd_connect)
 			return -EINVAL;
@@ -2407,7 +2459,7 @@ int netdev_connect_wsc(struct netdev *netdev, struct scan_bss *bss,
 	if (netdev->connected)
 		return -EISCONN;
 
-	cmd_connect = netdev_build_cmd_connect(netdev, bss, hs, NULL);
+	cmd_connect = netdev_build_cmd_connect(netdev, bss, hs, NULL, NULL, 0);
 	if (!cmd_connect)
 		return -EINVAL;
 
@@ -2496,7 +2548,7 @@ int netdev_reassociate(struct netdev *netdev, struct scan_bss *target_bss,
 	int err;
 
 	cmd_connect = netdev_build_cmd_connect(netdev, target_bss, hs,
-						orig_bss->addr);
+						orig_bss->addr, NULL, 0);
 	if (!cmd_connect)
 		return -EINVAL;
 
@@ -2640,28 +2692,11 @@ static uint32_t netdev_send_action_framev(struct netdev *netdev,
 					uint32_t freq,
 					l_genl_msg_func_t callback)
 {
-	struct l_genl_msg *msg;
-	struct iovec iovs[iov_len + 1];
-	const uint16_t frame_type = 0x00d0;
-	uint8_t action_frame[24];
 	uint32_t id;
-
-	memset(action_frame, 0, 24);
-
-	l_put_le16(frame_type, action_frame + 0);
-	memcpy(action_frame + 4, to, 6);
-	memcpy(action_frame + 10, netdev->addr, 6);
-	memcpy(action_frame + 16, to, 6);
-
-	iovs[0].iov_base = action_frame;
-	iovs[0].iov_len = sizeof(action_frame);
-	memcpy(iovs + 1, iov, sizeof(*iov) * iov_len);
-
-	msg = l_genl_msg_new_sized(NL80211_CMD_FRAME, 128 + 512);
-
-	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &netdev->index);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_WIPHY_FREQ, 4, &freq);
-	l_genl_msg_append_attrv(msg, NL80211_ATTR_FRAME, iovs, iov_len + 1);
+	struct l_genl_msg *msg = nl80211_build_cmd_frame(netdev->index,
+								netdev->addr,
+								to, freq,
+								iov, iov_len);
 
 	id = l_genl_family_send(nl80211, msg, callback, netdev, NULL);
 
@@ -2870,7 +2905,7 @@ static int fast_transition(struct netdev *netdev, struct scan_bss *target_bss,
 	handshake_state_set_authenticator_address(netdev->handshake,
 							target_bss->addr);
 
-	handshake_state_set_authenticator_rsn(netdev->handshake,
+	handshake_state_set_authenticator_ie(netdev->handshake,
 							target_bss->rsne);
 	memcpy(netdev->handshake->mde + 2, target_bss->mde, 3);
 
@@ -3298,7 +3333,7 @@ static void netdev_mlme_notify(struct l_genl_msg *msg, void *user_data)
 
 	cmd = l_genl_msg_get_command(msg);
 
-	l_debug("MLME notification %u", cmd);
+	l_debug("MLME notification %s(%u)", nl80211cmd_to_string(cmd), cmd);
 
 	if (!l_genl_attr_init(&attr, msg))
 		return;
@@ -3640,10 +3675,8 @@ static void netdev_unicast_notify(struct l_genl_msg *msg, void *user_data)
 		}
 	}
 
-	if (!netdev) {
-		l_warn("Unicast notification is missing ifindex attribute");
+	if (!netdev)
 		return;
-	}
 
 	switch (cmd) {
 	case NL80211_CMD_FRAME:
@@ -4164,6 +4197,20 @@ static void netdev_initial_up_cb(int error, uint16_t type, const void *data,
 				netdev, NETDEV_WATCH_EVENT_NEW);
 }
 
+static void netdev_set_mac_cb(int error, uint16_t type, const void *data,
+					uint32_t len, void *user_data)
+{
+	struct netdev *netdev = user_data;
+
+	if (error)
+		l_error("Error setting mac address on %d: %s", netdev->index,
+			strerror(-error));
+
+	netdev->set_powered_cmd_id =
+		rtnl_set_powered(netdev->index, true, netdev_initial_up_cb,
+					netdev, NULL);
+}
+
 static void netdev_initial_down_cb(int error, uint16_t type, const void *data,
 					uint32_t len, void *user_data)
 {
@@ -4176,6 +4223,18 @@ static void netdev_initial_down_cb(int error, uint16_t type, const void *data,
 			strerror(-error));
 
 		netdev->set_powered_cmd_id = 0;
+		return;
+	}
+
+	if (netdev->mac_randomize_once) {
+		uint8_t addr[ETH_ALEN];
+
+		wiphy_generate_random_address(netdev->wiphy, addr);
+		l_debug("Setting initial random address on "
+			"ifindex: %d to: "MAC, netdev->index, MAC_STR(addr));
+		netdev->set_powered_cmd_id =
+			rtnl_set_mac(rtnl, netdev->index, addr,
+					netdev_set_mac_cb, netdev, NULL);
 		return;
 	}
 
@@ -4213,46 +4272,28 @@ static void netdev_getlink_cb(int error, uint16_t type, const void *data,
 	netdev_newlink_notify(ifi, bytes);
 
 	/*
-	 * If the interface is UP, reset it to ensure a clean state,
-	 * otherwise just bring it UP.
+	 * If the interface is UP, reset it to ensure a clean state.
+	 * Otherwise, if we need to set a random mac, do so.  If not, just
+	 * bring the interface UP.
 	 */
 	powered = netdev_get_is_up(netdev);
+
+	if (!powered && netdev->mac_randomize_once) {
+		uint8_t addr[ETH_ALEN];
+
+		wiphy_generate_random_address(netdev->wiphy, addr);
+		l_debug("Setting initial random address on "
+			"ifindex: %d to: "MAC, netdev->index, MAC_STR(addr));
+		netdev->set_powered_cmd_id =
+			rtnl_set_mac(rtnl, netdev->index, addr,
+					netdev_set_mac_cb, netdev, NULL);
+		return;
+	}
+
 	cb = powered ? netdev_initial_down_cb : netdev_initial_up_cb;
 
 	netdev->set_powered_cmd_id =
 		rtnl_set_powered(ifi->ifi_index, !powered, cb, netdev, NULL);
-}
-
-static bool netdev_is_managed(const char *ifname)
-{
-	char *pattern;
-	unsigned int i;
-
-	if (!whitelist_filter)
-		goto check_blacklist;
-
-	for (i = 0; (pattern = whitelist_filter[i]); i++) {
-		if (fnmatch(pattern, ifname, 0) != 0)
-			continue;
-
-		goto check_blacklist;
-	}
-
-	l_debug("whitelist filtered ifname: %s", ifname);
-	return false;
-
-check_blacklist:
-	if (!blacklist_filter)
-		return true;
-
-	for (i = 0; (pattern = blacklist_filter[i]); i++) {
-		if (fnmatch(pattern, ifname, 0) == 0) {
-			l_debug("blacklist filtered ifname: %s", ifname);
-			return false;
-		}
-	}
-
-	return true;
 }
 
 static void netdev_frame_watch_free(struct watchlist_item *item)
@@ -4377,15 +4418,16 @@ error:
 	return NULL;
 }
 
-struct netdev *netdev_create_from_genl(struct l_genl_msg *msg)
+struct netdev *netdev_create_from_genl(struct l_genl_msg *msg, bool random_mac)
 {
 	struct l_genl_attr attr;
 	uint16_t type, len;
 	const void *data;
 	const char *ifname = NULL;
 	uint16_t ifname_len = 0;
-	const uint8_t *ifaddr;
+	const uint8_t *ifaddr = NULL;
 	const uint32_t *ifindex = NULL, *iftype = NULL;
+	const uint64_t *wdev = NULL;
 	struct netdev *netdev;
 	struct wiphy *wiphy = NULL;
 	struct ifinfomsg *rtmmsg;
@@ -4410,6 +4452,15 @@ struct netdev *netdev_create_from_genl(struct l_genl_msg *msg)
 			}
 
 			ifindex = data;
+			break;
+
+		case NL80211_ATTR_WDEV:
+			if (len != sizeof(uint64_t)) {
+				l_warn("Invalid wdev attribute");
+				return NULL;
+			}
+
+			wdev = data;
 			break;
 
 		case NL80211_ATTR_IFNAME:
@@ -4451,15 +4502,12 @@ struct netdev *netdev_create_from_genl(struct l_genl_msg *msg)
 		}
 	}
 
-	if (!wiphy)
-		return NULL;
-
 	if (!iftype) {
 		l_warn("Missing iftype attribute");
 		return NULL;
 	}
 
-	if (!ifindex || !ifaddr | !ifname) {
+	if (!wiphy || !ifindex || !wdev || !ifaddr || !ifname) {
 		l_warn("Unable to parse interface information");
 		return NULL;
 	}
@@ -4469,16 +4517,18 @@ struct netdev *netdev_create_from_genl(struct l_genl_msg *msg)
 		return NULL;
 	}
 
-	if (!netdev_is_managed(ifname)) {
-		l_debug("interface %s filtered out", ifname);
-		return NULL;
-	}
-
 	if (!l_settings_get_bool(settings, "General",
-				"ControlPortOverNL80211", &pae_over_nl80211)) {
-		pae_over_nl80211 = true;
-		l_info("No ControlPortOverNL80211 setting, defaulting to %s",
-			pae_over_nl80211 ? "True" : "False");
+				"control_port_over_nl80211",
+				&pae_over_nl80211)) {
+		if (!l_settings_get_bool(settings, "General",
+					"ControlPortOverNL80211", &pae_over_nl80211)) {
+			pae_over_nl80211 = true;
+			l_info("No control_port_over_nl80211 setting, "
+				"defaulting to %s",
+				pae_over_nl80211 ? "True" : "False");
+		} else
+			l_warn("ControlPortOverNL80211 is deprecated, use "
+				"'control_port_over_nl80211'");
 	}
 
 	if (!wiphy_has_ext_feature(wiphy,
@@ -4498,12 +4548,14 @@ struct netdev *netdev_create_from_genl(struct l_genl_msg *msg)
 
 	netdev = l_new(struct netdev, 1);
 	netdev->index = *ifindex;
+	netdev->wdev_id = *wdev;
 	netdev->type = *iftype;
 	netdev->rekey_offload_support = true;
 	memcpy(netdev->addr, ifaddr, sizeof(netdev->addr));
 	memcpy(netdev->name, ifname, ifname_len);
 	netdev->wiphy = wiphy;
 	netdev->pae_over_nl80211 = pae_over_nl80211;
+	netdev->mac_randomize_once = random_mac;
 
 	if (pae_io) {
 		netdev->pae_io = pae_io;
@@ -4516,7 +4568,8 @@ struct netdev *netdev_create_from_genl(struct l_genl_msg *msg)
 
 	l_queue_push_tail(netdev_list, netdev);
 
-	l_debug("Created interface %s[%d]", netdev->name, netdev->index);
+	l_debug("Created interface %s[%d %" PRIx64 "]", netdev->name,
+		netdev->index, netdev->wdev_id);
 
 	/* Query interface flags */
 	bufsize = NLMSG_ALIGN(sizeof(struct ifinfomsg));
@@ -4607,8 +4660,9 @@ bool netdev_watch_remove(uint32_t id)
 	return watchlist_remove(&netdev_watches, id);
 }
 
-bool netdev_init(const char *whitelist, const char *blacklist)
+bool netdev_init(void)
 {
+	struct l_genl *genl = iwd_get_genl();
 	const struct l_settings *settings = iwd_get_config();
 
 	if (rtnl)
@@ -4646,11 +4700,11 @@ bool netdev_init(const char *whitelist, const char *blacklist)
 	__eapol_set_rekey_offload_func(netdev_set_rekey_offload);
 	__eapol_set_tx_packet_func(netdev_control_port_frame);
 
-	if (whitelist)
-		whitelist_filter = l_strsplit(whitelist, ',');
-
-	if (blacklist)
-		blacklist_filter = l_strsplit(blacklist, ',');
+	unicast_watch = l_genl_add_unicast_watch(genl, NL80211_GENL_NAME,
+						netdev_unicast_notify,
+						NULL, NULL);
+	if (!unicast_watch)
+		l_error("Registering for unicast notification failed");
 
 	return true;
 }
@@ -4662,19 +4716,16 @@ void netdev_set_nl80211(struct l_genl_family *in)
 	if (!l_genl_family_register(nl80211, "mlme", netdev_mlme_notify,
 								NULL, NULL))
 		l_error("Registering for MLME notification failed");
-
-	if (!l_genl_family_set_unicast_handler(nl80211, netdev_unicast_notify,
-								NULL, NULL))
-		l_error("Registering for unicast notification failed");
 }
 
 void netdev_exit(void)
 {
+	struct l_genl *genl = iwd_get_genl();
+
 	if (!rtnl)
 		return;
 
-	l_strfreev(whitelist_filter);
-	l_strfreev(blacklist_filter);
+	l_genl_remove_unicast_watch(genl, unicast_watch);
 
 	watchlist_destroy(&netdev_watches);
 	nl80211 = NULL;

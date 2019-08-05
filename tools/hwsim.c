@@ -41,6 +41,7 @@
 #include "src/util.h"
 #include "src/storage.h"
 #include "src/mpdu.h"
+#include "src/crypto.h"
 
 #define HWSIM_SERVICE "net.connman.hwsim"
 
@@ -86,9 +87,24 @@ enum {
 	HWSIM_ATTR_PAD,
 	HWSIM_ATTR_TX_INFO_FLAGS,
 	HWSIM_ATTR_PERM_ADDR,
+	HWSIM_ATTR_IFTYPE_SUPPORT,
+	HWSIM_ATTR_CIPHER_SUPPORT,
 	__HWSIM_ATTR_MAX,
 };
 #define HWSIM_ATTR_MAX (__HWSIM_ATTR_MAX - 1)
+
+/*
+ * Should be kept in sync with HWSIM_IFTYPE_SUPPORT_MASK in mac80211_hwsim
+ */
+#define HWSIM_DEFAULT_IFTYPES \
+	( \
+		(1 << NL80211_IFTYPE_STATION) | \
+		(1 << NL80211_IFTYPE_AP) | \
+		(1 << NL80211_IFTYPE_P2P_CLIENT) | \
+		(1 << NL80211_IFTYPE_P2P_GO) | \
+		(1 << NL80211_IFTYPE_ADHOC) | \
+		(1 << NL80211_IFTYPE_MESH_POINT) \
+	)
 
 enum hwsim_tx_control_flags {
 	HWSIM_TX_CTL_REQ_TX_STATUS		= 1 << 0,
@@ -109,6 +125,11 @@ struct hwsim_rule {
 	uint32_t frequency;
 	int priority;
 	int signal;
+};
+
+struct hwsim_support {
+	const char *name;
+	uint32_t value;
 };
 
 static struct l_genl *genl;
@@ -132,6 +153,37 @@ static const char *radio_name_attr;
 static struct l_dbus *dbus;
 static struct l_queue *rules;
 static unsigned int next_rule_id;
+
+static uint32_t hwsim_iftypes = HWSIM_DEFAULT_IFTYPES;
+static const uint32_t hwsim_supported_ciphers[] = {
+	CRYPTO_CIPHER_WEP40,
+	CRYPTO_CIPHER_WEP104,
+	CRYPTO_CIPHER_TKIP,
+	CRYPTO_CIPHER_CCMP,
+	CRYPTO_CIPHER_BIP,
+};
+static uint32_t hwsim_ciphers[L_ARRAY_SIZE(hwsim_supported_ciphers)];
+static int hwsim_num_ciphers = 0;
+
+/* list of disableable iftypes */
+static const struct hwsim_support iftype_map[] = {
+	{ "station", 1 << NL80211_IFTYPE_STATION },
+	{ "ap", 1 << NL80211_IFTYPE_AP },
+	{ "adhoc", 1 << NL80211_IFTYPE_ADHOC },
+	{ "p2p_client", 1 << NL80211_IFTYPE_P2P_CLIENT },
+	{ "p2p_go", 1 << NL80211_IFTYPE_P2P_GO },
+	{ "mesh_point", 1 << NL80211_IFTYPE_MESH_POINT },
+	{ }
+};
+
+static const struct hwsim_support cipher_map[] = {
+	{ "wep40", CRYPTO_CIPHER_WEP40 },
+	{ "wep104", CRYPTO_CIPHER_WEP104 },
+	{ "tkip", CRYPTO_CIPHER_TKIP },
+	{ "ccmp", CRYPTO_CIPHER_CCMP },
+	{ "bip", CRYPTO_CIPHER_BIP },
+	{ }
+};
 
 static void do_debug(const char *str, void *user_data)
 {
@@ -2277,25 +2329,7 @@ error:
 	l_main_quit();
 }
 
-static void nl80211_ready(void *user_data)
-{
-	struct l_genl_msg *msg;
-
-	msg = l_genl_msg_new(HWSIM_CMD_GET_RADIO);
-	if (!l_genl_family_dump(hwsim, msg, get_radio_callback,
-				NULL, get_radio_done_initial)) {
-		l_error("Getting hwsim radio information failed");
-		goto error;
-	}
-
-	return;
-
-error:
-	exit_status = EXIT_FAILURE;
-	l_main_quit();
-}
-
-static void hwsim_ready(void *user_data)
+static void hwsim_ready(void)
 {
 	struct l_genl_msg *msg;
 	size_t msg_size;
@@ -2347,6 +2381,15 @@ static void hwsim_ready(void *user_data)
 						HWSIM_ATTR_SUPPORT_P2P_DEVICE,
 						0, NULL);
 
+		if (hwsim_iftypes != HWSIM_DEFAULT_IFTYPES)
+			l_genl_msg_append_attr(msg, HWSIM_ATTR_IFTYPE_SUPPORT,
+						4, &hwsim_iftypes);
+
+		if (hwsim_num_ciphers)
+			l_genl_msg_append_attr(msg, HWSIM_ATTR_CIPHER_SUPPORT,
+					sizeof(uint32_t) * hwsim_num_ciphers,
+					hwsim_ciphers);
+
 		l_genl_family_send(hwsim, msg, create_callback, NULL, NULL);
 
 		break;
@@ -2370,11 +2413,15 @@ static void hwsim_ready(void *user_data)
 			goto error;
 		}
 
-		l_genl_family_set_watches(nl80211, nl80211_ready, NULL,
-						NULL, NULL);
+		msg = l_genl_msg_new(HWSIM_CMD_GET_RADIO);
+		if (!l_genl_family_dump(hwsim, msg, get_radio_callback,
+					NULL, get_radio_done_initial)) {
+			l_error("Getting hwsim radio information failed");
+			goto error;
+		}
 
-		if (!l_genl_family_set_unicast_handler(hwsim, unicast_handler,
-						NULL, NULL)) {
+		if (!l_genl_add_unicast_watch(genl, "MAC80211_HWSIM",
+						unicast_handler, NULL, NULL)) {
 			l_error("Failed to set unicast handler");
 			goto error;
 		}
@@ -2389,8 +2436,91 @@ error:
 	l_main_quit();
 }
 
-static void hwsim_disappeared(void *user_data)
+static void hwsim_disable_support(char *disable,
+		const struct hwsim_support *map, uint32_t *mask)
 {
+	char **list = l_strsplit(disable, ',');
+	char **iter = list;
+	int i;
+
+	while (*iter) {
+		for (i = 0; map[i].name; i++) {
+			if (!strcmp(map[i].name, *iter))
+				*mask &= ~(map[i].value);
+		}
+
+		iter++;
+	}
+
+	l_strfreev(list);
+}
+
+static bool is_cipher_disabled(char *args, enum crypto_cipher cipher)
+{
+	char **list = l_strsplit(args, ',');
+	char **iter = list;
+	int i;
+
+	while (*iter) {
+		for (i = 0; cipher_map[i].name; i++) {
+			if (!strcmp(*iter, cipher_map[i].name) &&
+					cipher == cipher_map[i].value) {
+				printf("disable cipher: %s\n", cipher_map[i].name);
+				l_strfreev(list);
+				return true;
+			}
+		}
+
+		iter++;
+	}
+
+	l_strfreev(list);
+
+	return false;
+}
+
+static void hwsim_disable_ciphers(char *disable)
+{
+	uint8_t i;
+
+	for (i = 0; i < L_ARRAY_SIZE(hwsim_supported_ciphers); i++) {
+		if (is_cipher_disabled(disable, hwsim_supported_ciphers[i]))
+			continue;
+
+		hwsim_ciphers[hwsim_num_ciphers] = hwsim_supported_ciphers[i];
+		hwsim_num_ciphers++;
+	}
+}
+
+static void family_discovered(const struct l_genl_family_info *info,
+							void *user_data)
+{
+	if (!strcmp(l_genl_family_info_get_name(info), "MAC80211_HWSIM"))
+		hwsim = l_genl_family_new(genl, "MAC80211_HWSIM");
+	else if (!strcmp(l_genl_family_info_get_name(info), NL80211_GENL_NAME))
+		nl80211 = l_genl_family_new(genl, NL80211_GENL_NAME);
+}
+
+static void discovery_done(void *user_data)
+{
+	if (!hwsim) {
+		fprintf(stderr, "MAC80211_HWSIM doesn't exist.\n"
+			"Load it manually using modprobe mac80211_hwsim\n");
+		goto quit;
+	}
+
+	if (!nl80211) {
+		fprintf(stderr, "nl80211 doesn't exist.\n"
+			"Load it manually using modprobe cfg80211\n");
+		goto quit;
+	}
+
+	hwsim_ready();
+
+	return;
+
+quit:
+	exit_status = EXIT_FAILURE;
 	l_main_quit();
 }
 
@@ -2416,6 +2546,8 @@ static void usage(void)
 		"\t-n, --name <name>      Name of a radio to be created\n"
 		"\t-i, --nointerface      Do not create VIF\n"
 		"\t-p, --p2p              Support P2P\n"
+		"\t-t, --iftype-disable   List of disabled iftypes\n"
+		"\t-c, --cipher-disable   List of disabled ciphers\n"
 		"\t-h, --help             Show help options\n");
 }
 
@@ -2427,6 +2559,8 @@ static const struct option main_options[] = {
 	{ "nointerface", no_argument,		NULL, 'i' },
 	{ "p2p",	 no_argument,		NULL, 'p' },
 	{ "version",	 no_argument,		NULL, 'v' },
+	{ "iftype-disable", required_argument,	NULL, 't' },
+	{ "cipher-disable", required_argument,	NULL, 'c' },
 	{ "help",	 no_argument,		NULL, 'h' },
 	{ }
 };
@@ -2438,7 +2572,7 @@ int main(int argc, char *argv[])
 	for (;;) {
 		int opt;
 
-		opt = getopt_long(argc, argv, ":L:CD:kn:ipvh", main_options,
+		opt = getopt_long(argc, argv, ":L:CD:kndetc:ipvh", main_options,
 									NULL);
 		if (opt < 0)
 			break;
@@ -2477,6 +2611,13 @@ int main(int argc, char *argv[])
 		case 'p':
 			p2p_attr = true;
 			break;
+		case 't':
+			hwsim_disable_support(optarg, iftype_map,
+						&hwsim_iftypes);
+			break;
+		case 'c':
+			hwsim_disable_ciphers(optarg);
+			break;
 		case 'v':
 			printf("%s\n", VERSION);
 			return EXIT_SUCCESS;
@@ -2504,43 +2645,30 @@ int main(int argc, char *argv[])
 		return EXIT_FAILURE;
 
 	l_log_set_stderr();
+	exit_status = EXIT_FAILURE;
 
 	printf("Wireless simulator ver %s\n", VERSION);
 
-	genl = l_genl_new_default();
+	genl = l_genl_new();
 	if (!genl) {
 		fprintf(stderr, "Failed to initialize generic netlink\n");
-		exit_status = EXIT_FAILURE;
 		goto done;
 	}
 
 	if (getenv("HWSIM_DEBUG"))
 		l_genl_set_debug(genl, do_debug, "[GENL] ", NULL);
 
-	hwsim = l_genl_family_new(genl, "MAC80211_HWSIM");
-	if (!hwsim) {
-		fprintf(stderr, "Failed to create generic netlink family\n");
+	if (!l_genl_discover_families(genl, family_discovered, NULL,
+						discovery_done)) {
+		fprintf(stderr, "Unable to start family discovery\n");
 		l_genl_unref(genl);
-		exit_status = EXIT_FAILURE;
 		goto done;
 	}
-
-	nl80211 = l_genl_family_new(genl, NL80211_GENL_NAME);
-	if (!nl80211) {
-		fprintf(stderr, "Failed to create nl80211 genl family\n");
-		l_genl_family_unref(hwsim);
-		l_genl_unref(genl);
-		exit_status = EXIT_FAILURE;
-		goto done;
-	}
-
-	l_genl_family_set_watches(hwsim, hwsim_ready, hwsim_disappeared,
-					NULL, NULL);
 
 	exit_status = l_main_run_with_signal(signal_handler, NULL);
 
-	l_genl_family_unref(hwsim);
-	l_genl_family_unref(nl80211);
+	l_genl_family_free(hwsim);
+	l_genl_family_free(nl80211);
 	l_genl_unref(genl);
 
 	if (pending_create_msg)

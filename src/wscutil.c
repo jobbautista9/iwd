@@ -125,12 +125,6 @@ bool wsc_attr_iter_recurse_wfa_ext(struct wsc_attr_iter *iter,
 	return true;
 }
 
-enum attr_flag {
-	ATTR_FLAG_REQUIRED  = 0x1,  /* Always required */
-	ATTR_FLAG_VERSION2  = 0x2,  /* Included if Version2 is present */
-	ATTR_FLAG_REGISTRAR = 0x4,  /* Included if Selected Registrar is true */
-};
-
 typedef bool (*attr_handler)(struct wsc_attr_iter *, void *);
 
 static bool extract_uint8(struct wsc_attr_iter *iter, void *data)
@@ -423,26 +417,30 @@ static bool extract_public_key(struct wsc_attr_iter *iter, void *data)
 	return true;
 }
 
-static bool extract_primary_device_type(struct wsc_attr_iter *iter, void *data)
+int wsc_parse_primary_device_type(const uint8_t *pdu, size_t len,
+					struct wsc_primary_device_type *out)
 {
-	struct wsc_primary_device_type *out = data;
-	const uint8_t *p;
 	uint16_t category;
 
-	if (wsc_attr_iter_get_length(iter) != 8)
-		return false;
+	if (len != 8)
+		return -EINVAL;
 
-	p = wsc_attr_iter_get_data(iter);
-	category = l_get_be16(p);
-
+	category = l_get_be16(pdu);
 	if (category > 12 && category != 255)
-		return false;
+		return -EINVAL;
 
 	out->category = category;
-	memcpy(out->oui, p + 2, 3);
-	out->oui_type = p[5];
-	out->subcategory = l_get_be16(p + 6);
-	return true;
+	memcpy(out->oui, pdu + 2, 3);
+	out->oui_type = pdu[5];
+	out->subcategory = l_get_be16(pdu + 6);
+	return 0;
+}
+
+static bool extract_primary_device_type(struct wsc_attr_iter *iter, void *data)
+{
+	return wsc_parse_primary_device_type(wsc_attr_iter_get_data(iter),
+						wsc_attr_iter_get_length(iter),
+						data) == 0;
 }
 
 static bool extract_request_type(struct wsc_attr_iter *iter, void *data)
@@ -652,12 +650,10 @@ static bool verify_version2(struct wsc_wfa_ext_iter *ext_iter)
 	return true;
 }
 
-static int wsc_parse_attrs(const unsigned char *pdu, unsigned int len,
-				bool *out_version2,
-				struct wsc_wfa_ext_iter *ext_iter,
-				enum wsc_attr authenticator_type,
-				uint8_t *authenticator,
-				int type, ...)
+int wsc_parse_attrs(const unsigned char *pdu, unsigned int len,
+			bool *out_version2, struct wsc_wfa_ext_iter *ext_iter,
+			enum wsc_attr authenticator_type,
+			uint8_t *authenticator, int type, ...)
 {
 	struct wsc_attr_iter iter;
 	struct l_queue *entries;
@@ -706,7 +702,7 @@ static int wsc_parse_attrs(const unsigned char *pdu, unsigned int len,
 				break;
 			}
 
-			if (entry->flags & ATTR_FLAG_REQUIRED) {
+			if (entry->flags & WSC_ATTR_FLAG_REQUIRED) {
 				have_required = false;
 				goto done;
 			}
@@ -748,7 +744,7 @@ static int wsc_parse_attrs(const unsigned char *pdu, unsigned int len,
 	for (; e; e = e->next) {
 		struct attr_handler_entry *entry = e->data;
 
-		if (entry->flags & ATTR_FLAG_REQUIRED) {
+		if (entry->flags & WSC_ATTR_FLAG_REQUIRED) {
 			parse_error = true;
 			goto done;
 		}
@@ -791,7 +787,7 @@ static int wsc_parse_attrs(const unsigned char *pdu, unsigned int len,
 		for (e = l_queue_get_entries(entries); e; e = e->next) {
 			entry = e->data;
 
-			if (!(entry->flags & ATTR_FLAG_VERSION2))
+			if (!(entry->flags & WSC_ATTR_FLAG_VERSION2))
 				continue;
 
 			if (entry->present)
@@ -812,7 +808,7 @@ static int wsc_parse_attrs(const unsigned char *pdu, unsigned int len,
 		for (e = l_queue_get_entries(entries); e; e = e->next) {
 			entry = e->data;
 
-			if (!(entry->flags & ATTR_FLAG_REGISTRAR))
+			if (!(entry->flags & WSC_ATTR_FLAG_REGISTRAR))
 				continue;
 
 			if (entry->present)
@@ -880,16 +876,16 @@ static bool wfa_extract_registrar_configuration_methods(
 }
 
 #define REQUIRED(attr, out) \
-	WSC_ATTR_ ## attr, ATTR_FLAG_REQUIRED, out
+	WSC_ATTR_ ## attr, WSC_ATTR_FLAG_REQUIRED, out
 
 #define OPTIONAL(attr, out) \
 	WSC_ATTR_ ## attr, 0, out
 
 #define REGISTRAR(attr, out) \
-	WSC_ATTR_ ## attr, ATTR_FLAG_REGISTRAR, out
+	WSC_ATTR_ ## attr, WSC_ATTR_FLAG_REGISTRAR, out
 
 #define VERSION2(attr, out) \
-	WSC_ATTR_ ## attr, ATTR_FLAG_VERSION2, out
+	WSC_ATTR_ ## attr, WSC_ATTR_FLAG_VERSION2, out
 
 int wsc_parse_credential(const uint8_t *pdu, uint32_t len,
 						struct wsc_credential *out)
@@ -2452,6 +2448,32 @@ uint8_t *wsc_build_wsc_done(const struct wsc_done *done, size_t *out_len)
 	build_registrar_nonce(builder, done->registrar_nonce);
 
 	if (!done->version2)
+		goto done;
+
+	START_WFA_VENDOR_EXTENSION();
+
+done:
+	ret = wsc_attr_builder_free(builder, false, out_len);
+	return ret;
+}
+
+uint8_t *wsc_build_p2p_attrs(const struct wsc_p2p_attrs *attrs, size_t *out_len)
+{
+	struct wsc_attr_builder *builder;
+	uint8_t *ret;
+
+	builder = wsc_attr_builder_new(512);
+
+	if (attrs->version)
+		build_version(builder, 0x10);
+
+	if (attrs->device_password_id)
+		build_device_password_id(builder, attrs->device_password_id);
+
+	if (attrs->config_methods)
+		build_configuration_methods(builder, attrs->config_methods);
+
+	if (!attrs->version2)
 		goto done;
 
 	START_WFA_VENDOR_EXTENSION();

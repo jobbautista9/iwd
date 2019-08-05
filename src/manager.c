@@ -39,10 +39,12 @@
 #include "src/wiphy.h"
 #include "src/util.h"
 #include "src/common.h"
+#include "src/nl80211cmd.h"
 
 static struct l_genl_family *nl80211 = NULL;
 static char **whitelist_filter;
 static char **blacklist_filter;
+static bool randomize;
 
 struct wiphy_setup_state {
 	uint32_t id;
@@ -63,7 +65,7 @@ struct wiphy_setup_state {
 static struct l_queue *pending_wiphys;
 
 /* With these drivers don't even try creating our interfaces */
-const char *default_if_driver_list[] = {
+static const char *default_if_driver_list[] = {
 	/*
 	 * The out-of-tree rtl88x2bu crashes the kernel hard.  Seemingly
 	 * many other drivers are built from the same source code so
@@ -109,7 +111,7 @@ static bool manager_use_default(struct wiphy_setup_state *state)
 		return false;
 	}
 
-	netdev_create_from_genl(state->default_if_msg);
+	netdev_create_from_genl(state->default_if_msg, randomize);
 	return true;
 }
 
@@ -133,7 +135,9 @@ static void manager_new_interface_cb(struct l_genl_msg *msg, void *user_data)
 		return;
 	}
 
-	netdev_create_from_genl(msg);
+	netdev_create_from_genl(msg, randomize &&
+					!wiphy_has_feature(state->wiphy,
+						NL80211_FEATURE_MAC_ON_CREATE));
 }
 
 static void manager_new_interface_done(void *user_data)
@@ -177,12 +181,24 @@ static void manager_create_interfaces(struct wiphy_setup_state *state)
 				strlen(ifname) + 1, ifname);
 	l_genl_msg_append_attr(msg, NL80211_ATTR_4ADDR, 1, "\0");
 	l_genl_msg_append_attr(msg, NL80211_ATTR_SOCKET_OWNER, 0, "");
+
+	if (randomize && wiphy_has_feature(state->wiphy,
+					NL80211_FEATURE_MAC_ON_CREATE)) {
+		uint8_t random_addr[6];
+
+		wiphy_generate_random_address(state->wiphy, random_addr);
+		l_debug("Creating interface on phy: %s with random addr: "MAC,
+						wiphy_get_name(state->wiphy),
+						MAC_STR(random_addr));
+		l_genl_msg_append_attr(msg, NL80211_ATTR_MAC, 6, random_addr);
+	}
+
 	cmd_id = l_genl_family_send(nl80211, msg,
 					manager_new_interface_cb, state,
 					manager_new_interface_done);
 
 	if (!cmd_id) {
-		l_error("Sending NEW_INTERFACE for %s", ifname);
+		l_error("Error sending NEW_INTERFACE for %s", ifname);
 		return;
 	}
 
@@ -263,7 +279,6 @@ static void manager_get_interface_cb(struct l_genl_msg *msg, void *user_data)
 			wdev_idx = data;
 			break;
 
-
 		case NL80211_ATTR_WIPHY:
 			if (len != sizeof(uint32_t) ||
 					*((uint32_t *) data) != state->id) {
@@ -293,26 +308,31 @@ static void manager_get_interface_cb(struct l_genl_msg *msg, void *user_data)
 		}
 	}
 
-	if (!ifindex || !wdev_idx || !iftype || !ifname)
+	if (!wdev_idx || !iftype)
 		return;
 
-	if (whitelist_filter) {
-		for (i = 0; (pattern = whitelist_filter[i]); i++) {
-			if (fnmatch(pattern, ifname, 0) != 0)
-				continue;
+	if (ifindex) {
+		if (!ifname)
+			return;
 
-			whitelisted = true;
-			break;
+		if (whitelist_filter) {
+			for (i = 0; (pattern = whitelist_filter[i]); i++) {
+				if (fnmatch(pattern, ifname, 0) != 0)
+					continue;
+
+				whitelisted = true;
+				break;
+			}
 		}
-	}
 
-	if (blacklist_filter) {
-		for (i = 0; (pattern = blacklist_filter[i]); i++) {
-			if (fnmatch(pattern, ifname, 0) != 0)
-				continue;
+		if (blacklist_filter) {
+			for (i = 0; (pattern = blacklist_filter[i]); i++) {
+				if (fnmatch(pattern, ifname, 0) != 0)
+					continue;
 
-			blacklisted = true;
-			break;
+				blacklisted = true;
+				break;
+			}
 		}
 	}
 
@@ -334,7 +354,10 @@ static void manager_get_interface_cb(struct l_genl_msg *msg, void *user_data)
 		return;
 
 	del_msg = l_genl_msg_new(NL80211_CMD_DEL_INTERFACE);
-	l_genl_msg_append_attr(del_msg, NL80211_ATTR_IFINDEX, 4, ifindex);
+
+	if (ifindex)
+		l_genl_msg_append_attr(del_msg, NL80211_ATTR_IFINDEX, 4, ifindex);
+
 	l_genl_msg_append_attr(del_msg, NL80211_ATTR_WDEV, 8, wdev_idx);
 	l_genl_msg_append_attr(del_msg, NL80211_ATTR_WIPHY, 4, &state->id);
 	cmd_id = l_genl_family_send(nl80211, del_msg,
@@ -342,7 +365,8 @@ static void manager_get_interface_cb(struct l_genl_msg *msg, void *user_data)
 					manager_setup_cmd_done);
 
 	if (!cmd_id) {
-		l_error("Sending DEL_INTERFACE for %s failed", ifname);
+		l_error("Sending DEL_INTERFACE for %s failed",
+			ifname ?: "unnamed interface");
 		state->use_default = true;
 		return;
 	}
@@ -578,7 +602,8 @@ static void manager_config_notify(struct l_genl_msg *msg, void *user_data)
 
 	cmd = l_genl_msg_get_command(msg);
 
-	l_debug("Notification of command %u", cmd);
+	l_debug("Notification of command %s(%u)",
+					nl80211cmd_to_string(cmd), cmd);
 
 	switch (cmd) {
 	case NL80211_CMD_NEW_WIPHY:
@@ -675,9 +700,11 @@ static void manager_wiphy_dump_callback(struct l_genl_msg *msg, void *user_data)
 bool manager_init(struct l_genl_family *in,
 			const char *if_whitelist, const char *if_blacklist)
 {
+	const struct l_settings *config = iwd_get_config();
 	struct l_genl_msg *msg;
 	unsigned int wiphy_dump;
 	unsigned int interface_dump;
+	const char *randomize_str;
 
 	nl80211 = in;
 
@@ -717,6 +744,11 @@ bool manager_init(struct l_genl_family *in,
 		return false;
 	}
 
+	randomize_str =
+		l_settings_get_value(config, "General", "mac_randomize");
+	if (randomize_str && !strcmp(randomize_str, "once"))
+		randomize = true;
+
 	return true;
 }
 
@@ -725,8 +757,9 @@ void manager_exit(void)
 	l_strfreev(whitelist_filter);
 	l_strfreev(blacklist_filter);
 
-	l_queue_destroy(pending_wiphys, NULL);
+	l_queue_destroy(pending_wiphys, wiphy_setup_state_free);
 	pending_wiphys = NULL;
 
 	nl80211 = NULL;
+	randomize = false;
 }

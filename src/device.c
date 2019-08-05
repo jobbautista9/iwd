@@ -422,7 +422,7 @@ struct device *device_create(struct wiphy *wiphy, struct netdev *netdev)
 		l_info("Unable to register %s interface",
 				L_DBUS_INTERFACE_PROPERTIES);
 
-	scan_ifindex_add(device->index);
+	scan_wdev_add(netdev_get_wdev_id(device->netdev));
 
 	/*
 	 * register for AP roam transition watch
@@ -449,7 +449,7 @@ void device_remove(struct device *device)
 
 	l_dbus_unregister_object(dbus, netdev_get_path(device->netdev));
 
-	scan_ifindex_remove(device->index);
+	scan_wdev_remove(netdev_get_wdev_id(device->netdev));
 
 	netdev_frame_watch_remove(device->netdev, device->ap_roam_watch);
 	wiphy_state_watch_remove(device->wiphy, device->wiphy_rfkill_watch);
@@ -457,7 +457,7 @@ void device_remove(struct device *device)
 	l_free(device);
 }
 
-bool device_init(void)
+static int device_init(void)
 {
 	if (!l_dbus_register_interface(dbus_get_bus(),
 					IWD_DEVICE_INTERFACE,
@@ -467,12 +467,14 @@ bool device_init(void)
 
 	netdev_watch = netdev_watch_add(device_netdev_notify, NULL, NULL);
 
-	return true;
+	return 0;
 }
 
-void device_exit(void)
+static void device_exit(void)
 {
 	netdev_watch_remove(netdev_watch);
 
 	l_dbus_unregister_interface(dbus_get_bus(), IWD_DEVICE_INTERFACE);
 }
+
+IWD_MODULE(device, device_init, device_exit)
