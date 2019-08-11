@@ -1,3 +1,9 @@
+iwd (0.19-2) unstable; urgency=medium
+
+  * Cherry-pick patch from upstream to create storage dirs (Closes: #934194)
+
+ -- Andreas Henriksson <andreas@fatal.se>  Sun, 11 Aug 2019 14:09:00 +0200
+
 iwd (0.19-1) unstable; urgency=medium
 
   * New upstream release.
