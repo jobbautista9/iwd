@@ -25,7 +25,6 @@
 #endif
 
 #include <sys/types.h>
-#include <sys/stat.h>
 #include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
@@ -41,21 +40,36 @@
 #include "src/knownnetworks.h"
 #include "src/scan.h"
 #include "src/util.h"
+#include "src/watchlist.h"
 
 static struct l_queue *known_networks;
 static size_t num_known_hidden_networks;
 static struct l_dir_watch *storage_dir_watch;
+static struct watchlist known_network_watches;
+
+static void network_info_free(void *data)
+{
+	struct network_info *network = data;
+
+	l_queue_destroy(network->known_frequencies, l_free);
+
+	network->ops->free(network);
+}
 
 static int connected_time_compare(const void *a, const void *b, void *user_data)
 {
 	const struct network_info *ni_a = a;
 	const struct network_info *ni_b = b;
 
-	return util_timespec_compare(&ni_a->connected_time,
-					&ni_b->connected_time);
+	if (l_time_after(ni_a->connected_time, ni_b->connected_time))
+		return -1;
+	else if (l_time_before(ni_a->connected_time, ni_b->connected_time))
+		return 1;
+
+	return 0;
 }
 
-const char *known_network_get_path(const struct network_info *network)
+static const char *known_network_get_path(const struct network_info *network)
 {
 	static char path[256];
 	unsigned int pos = 0, i;
@@ -70,6 +84,33 @@ const char *known_network_get_path(const struct network_info *network)
 			security_to_str(network->type));
 
 	return path;
+}
+
+/*
+ * Finds the position n of this network_info in the list of known networks
+ * sorted by connected_time.  E.g. an offset of 0 means the most recently
+ * used network.  Only networks with seen_count > 0 are considered.  E.g.
+ * only networks that appear in scan results on at least one wifi card.
+ *
+ * Returns -ENOENT if the entry couldn't be found.
+ */
+int known_network_offset(const struct network_info *target)
+{
+	const struct l_queue_entry *entry;
+	const struct network_info *info;
+	int n = 0;
+
+	for (entry = l_queue_get_entries(known_networks); entry;
+						entry = entry->next) {
+		info = entry->data;
+		if (target == info)
+			return n;
+
+		if (info->seen_count)
+			n += 1;
+	}
+
+	return -ENOENT;
 }
 
 static void known_network_register_dbus(struct network_info *network)
@@ -99,23 +140,114 @@ static void known_network_set_autoconnect(struct network_info *network,
 				IWD_KNOWN_NETWORK_INTERFACE, "Autoconnect");
 }
 
-static void known_network_update(struct network_info *orig_network,
-					const char *ssid,
-					enum security security,
-					struct l_settings *settings,
-					struct timespec *connected_time)
+static int known_network_touch(struct network_info *info)
 {
-	struct network_info *network;
+	return storage_network_touch(info->type, info->ssid);
+}
+
+static struct l_settings *known_network_open(struct network_info *info)
+{
+	return storage_network_open(info->type, info->ssid);
+}
+
+static void known_network_sync(struct network_info *info,
+					struct l_settings *settings)
+{
+	storage_network_sync(info->type, info->ssid, settings);
+}
+
+static void known_network_remove(struct network_info *info)
+{
+	storage_network_remove(info->type, info->ssid);
+}
+
+static void known_network_free(struct network_info *info)
+{
+	l_free(info);
+}
+
+static const char *known_network_get_name(const struct network_info *info)
+{
+	return info->ssid;
+}
+
+static const char *known_network_get_type(const struct network_info *info)
+{
+	return security_to_str(info->type);
+}
+
+static struct network_info_ops known_network_ops = {
+	.open = known_network_open,
+	.touch = known_network_touch,
+	.sync = known_network_sync,
+	.remove = known_network_remove,
+	.free = known_network_free,
+	.get_path = known_network_get_path,
+	.get_name = known_network_get_name,
+	.get_type = known_network_get_type,
+};
+
+struct l_settings *network_info_open_settings(struct network_info *info)
+{
+	return info->ops->open(info);
+}
+
+int network_info_touch(struct network_info *info)
+{
+	return info->ops->touch(info);
+}
+
+const char *network_info_get_path(const struct network_info *info)
+{
+	return info->ops->get_path(info);
+}
+
+const char *network_info_get_name(const struct network_info *info)
+{
+	return info->ops->get_name(info);
+}
+
+const char *network_info_get_type(const struct network_info *info)
+{
+	return info->ops->get_type(info);
+}
+
+bool network_info_match_hessid(const struct network_info *info,
+				const uint8_t *hessid)
+{
+	if (!info->ops->match_hessid)
+		return false;
+
+	return info->ops->match_hessid(info, hessid);
+}
+
+bool network_info_match_roaming_consortium(const struct network_info *info,
+						const uint8_t *rc,
+						size_t rc_len)
+{
+	if (!info->ops->match_roaming_consortium)
+		return false;
+
+	return info->ops->match_roaming_consortium(info, rc, rc_len);
+}
+
+bool network_info_match_nai_realm(const struct network_info *info,
+						const char **nai_realms)
+{
+	if (!info->ops->match_nai_realms)
+		return false;
+
+	return info->ops->match_nai_realms(info, nai_realms);
+}
+
+void known_network_update(struct network_info *network,
+					struct l_settings *settings,
+					uint64_t connected_time)
+{
 	bool is_hidden = false;
 	bool is_autoconnectable;
 
-	if (orig_network)
-		network = orig_network;
-	else
-		network = network_info_add_known(ssid, security);
-
-	if (util_timespec_compare(&network->connected_time, connected_time) &&
-			orig_network) {
+	if (network->connected_time != connected_time) {
 		l_dbus_property_changed(dbus_get_bus(),
 					known_network_get_path(network),
 					IWD_KNOWN_NETWORK_INTERFACE,
@@ -126,24 +258,23 @@ static void known_network_update(struct network_info *orig_network,
 				NULL);
 	}
 
-	memcpy(&network->connected_time, connected_time,
-		sizeof(struct timespec));
+	network->connected_time = connected_time;
 
 	l_settings_get_bool(settings, "Settings", "Hidden", &is_hidden);
 
-	if (network->is_hidden && orig_network)
-		num_known_hidden_networks--;
+	if (network->is_hidden != is_hidden) {
+		if (network->is_hidden && !is_hidden)
+			num_known_hidden_networks--;
+		else if (!network->is_hidden && is_hidden)
+			num_known_hidden_networks++;
 
-	if (network->is_hidden != is_hidden && orig_network)
 		l_dbus_property_changed(dbus_get_bus(),
 					known_network_get_path(network),
 					IWD_KNOWN_NETWORK_INTERFACE,
 					"Hidden");
+	}
 
 	network->is_hidden = is_hidden;
-
-	if (network->is_hidden)
-		num_known_hidden_networks++;
 
 	if (!l_settings_get_bool(settings, "Settings", "Autoconnect",
 							&is_autoconnectable))
@@ -151,13 +282,6 @@ static void known_network_update(struct network_info *orig_network,
 		is_autoconnectable = true;
 
 	known_network_set_autoconnect(network, is_autoconnectable);
-
-	if (orig_network)
-		return;
-
-	l_queue_insert(known_networks, network, connected_time_compare, NULL);
-
-	known_network_register_dbus(network);
 }
 
 bool known_networks_foreach(known_networks_foreach_func_t function,
@@ -176,6 +300,20 @@ bool known_networks_foreach(known_networks_foreach_func_t function,
 bool known_networks_has_hidden(void)
 {
 	return num_known_hidden_networks ? true : false;
+}
+
+static bool network_info_match(const void *a, const void *b)
+{
+	const struct network_info *ni_a = a;
+	const struct network_info *ni_b = b;
+
+	if (ni_a->type != ni_b->type)
+		return false;
+
+	if (strcmp(ni_a->ssid, ni_b->ssid))
+		return false;
+
+	return true;
 }
 
 struct network_info *known_networks_find(const char *ssid,
@@ -226,6 +364,37 @@ struct scan_freq_set *known_networks_get_recent_frequencies(
 	return set;
 }
 
+static bool known_frequency_match(const void *a, const void *b)
+{
+	const struct known_frequency *known_freq = a;
+	const uint32_t *frequency = b;
+
+	return known_freq->frequency == *frequency;
+}
+
+/*
+ * Adds a frequency to the 'known' set of frequencies that this network
+ * operates on.  The list is sorted according to most-recently seen
+ */
+int known_network_add_frequency(struct network_info *info, uint32_t frequency)
+{
+	struct known_frequency *known_freq;
+
+	if (!info->known_frequencies)
+		info->known_frequencies = l_queue_new();
+
+	known_freq = l_queue_remove_if(info->known_frequencies,
+					known_frequency_match, &frequency);
+	if (!known_freq) {
+		known_freq = l_new(struct known_frequency, 1);
+		known_freq->frequency = frequency;
+	}
+
+	l_queue_push_head(info->known_frequencies, known_freq);
+
+	return 0;
+}
+
 static struct l_dbus_message *known_network_forget(struct l_dbus *dbus,
 						struct l_dbus_message *message,
 						void *user_data)
@@ -234,7 +403,7 @@ static struct l_dbus_message *known_network_forget(struct l_dbus *dbus,
 	struct l_dbus_message *reply;
 
 	/* Other actions taken care of by the filesystem watch callback */
-	storage_network_remove(network->type, network->ssid);
+	network->ops->remove(network);
 
 	reply = l_dbus_message_new_method_return(message);
 	l_dbus_message_set_arguments(reply, "");
@@ -249,7 +418,8 @@ static bool known_network_property_get_name(struct l_dbus *dbus,
 {
 	struct network_info *network = user_data;
 
-	l_dbus_message_builder_append_basic(builder, 's', network->ssid);
+	l_dbus_message_builder_append_basic(builder, 's',
+						network_info_get_name(network));
 
 	return true;
 }
@@ -262,7 +432,7 @@ static bool known_network_property_get_type(struct l_dbus *dbus,
 	struct network_info *network = user_data;
 
 	l_dbus_message_builder_append_basic(builder, 's',
-						security_to_str(network->type));
+						network_info_get_type(network));
 
 	return true;
 }
@@ -310,13 +480,13 @@ static struct l_dbus_message *known_network_property_set_autoconnect(
 	if (network->is_autoconnectable == autoconnect)
 		return l_dbus_message_new_method_return(message);
 
-	settings = storage_network_open(network->type, network->ssid);
+	settings = network->ops->open(network);
 	if (!settings)
 		return dbus_error_failed(message);
 
 	l_settings_set_bool(settings, "Settings", "Autoconnect", autoconnect);
 
-	storage_network_sync(network->type, network->ssid, settings);
+	network->ops->sync(network, settings);
 	l_settings_free(settings);
 
 	return l_dbus_message_new_method_return(message);
@@ -330,11 +500,12 @@ static bool known_network_property_get_last_connected(struct l_dbus *dbus,
 	struct network_info *network = user_data;
 	char datestr[64];
 	struct tm tm;
+	time_t seconds = l_time_to_secs(network->connected_time);
 
-	if (network->connected_time.tv_sec == 0)
+	if (network->connected_time == 0)
 		return false;
 
-	gmtime_r(&network->connected_time.tv_sec, &tm);
+	gmtime_r(&seconds, &tm);
 
 	if (!strftime(datestr, sizeof(datestr), "%FT%TZ", &tm))
 		return false;
@@ -364,7 +535,7 @@ static void setup_known_network_interface(struct l_dbus_interface *interface)
 				NULL);
 }
 
-static void known_network_removed(struct network_info *network)
+void known_networks_remove(struct network_info *network)
 {
 	if (network->is_hidden)
 		num_known_hidden_networks--;
@@ -373,23 +544,64 @@ static void known_network_removed(struct network_info *network)
 	l_dbus_unregister_object(dbus_get_bus(),
 					known_network_get_path(network));
 
-	/*
-	 * network_info_forget_known will either re-add the network_info to
-	 * its seen networks lists or call network_info_free.
-	 */
-	network_info_forget_known(network);
+	WATCHLIST_NOTIFY(&known_network_watches,
+				known_networks_watch_func_t,
+				KNOWN_NETWORKS_EVENT_REMOVED, network);
+
+	network_info_free(network);
+}
+
+void known_networks_add(struct network_info *network)
+{
+	l_queue_insert(known_networks, network, connected_time_compare, NULL);
+	known_network_register_dbus(network);
+
+	WATCHLIST_NOTIFY(&known_network_watches,
+				known_networks_watch_func_t,
+				KNOWN_NETWORKS_EVENT_ADDED, network);
+}
+
+static void known_network_new(const char *ssid, enum security security,
+					struct l_settings *settings,
+					uint64_t connected_time)
+{
+	bool is_hidden;
+	bool is_autoconnectable;
+	struct network_info *network;
+
+	network = l_new(struct network_info, 1);
+	strcpy(network->ssid, ssid);
+	network->type = security;
+	network->connected_time = connected_time;
+	network->ops = &known_network_ops;
+
+	if (!l_settings_get_bool(settings, "Settings", "Hidden",
+					&is_hidden))
+		is_hidden = false;
+
+	if (!l_settings_get_bool(settings, "Settings", "Autoconnect",
+						&is_autoconnectable))
+		is_autoconnectable = true;
+
+	if (is_hidden)
+		num_known_hidden_networks++;
+
+	network->is_hidden = is_hidden;
+	network->is_autoconnectable = is_autoconnectable;
+
+	known_networks_add(network);
 }
 
 static void known_networks_watch_cb(const char *filename,
-                                                enum l_dir_watch_event event,
-                                                void *user_data)
+					enum l_dir_watch_event event,
+					void *user_data)
 {
 	const char *ssid;
 	L_AUTO_FREE_VAR(char *, full_path) = NULL;
 	enum security security;
 	struct network_info *network_before;
 	struct l_settings *settings;
-	struct timespec connected_time;
+	uint64_t connected_time;
 
 	/*
 	 * Ignore notifications for the actual directory, we can't do
@@ -420,16 +632,20 @@ static void known_networks_watch_cb(const char *filename,
 		 */
 		settings = storage_network_open(security, ssid);
 
-		if (settings && storage_network_get_mtime(security, ssid,
-						&connected_time) == 0)
-			known_network_update(network_before, ssid, security,
-						settings, &connected_time);
-		else {
+		if (settings) {
+			connected_time = l_path_get_mtime(full_path);
+
 			if (network_before)
-				known_network_removed(network_before);
-		}
+				known_network_update(network_before, settings,
+							connected_time);
+			else
+				known_network_new(ssid, security, settings,
+							connected_time);
+		} else if (network_before)
+			known_networks_remove(network_before);
 
 		l_settings_free(settings);
+
 		break;
 	case L_DIR_WATCH_EVENT_ACCESSED:
 		break;
@@ -588,6 +804,18 @@ static void known_network_frequencies_sync(void)
 	l_settings_free(known_freqs);
 }
 
+uint32_t known_networks_watch_add(known_networks_watch_func_t func,
+					void *user_data,
+					known_networks_destroy_func_t destroy)
+{
+	return watchlist_add(&known_network_watches, func, user_data, destroy);
+}
+
+void known_networks_watch_remove(uint32_t id)
+{
+	watchlist_remove(&known_network_watches, id);
+}
+
 static int known_networks_init(void)
 {
 	struct l_dbus *dbus = dbus_get_bus();
@@ -616,7 +844,8 @@ static int known_networks_init(void)
 		const char *ssid;
 		enum security security;
 		struct l_settings *settings;
-		struct timespec connected_time;
+		uint64_t connected_time;
+		L_AUTO_FREE_VAR(char *, full_path) = NULL;
 
 		if (dirent->d_type != DT_REG && dirent->d_type != DT_LNK)
 			continue;
@@ -628,10 +857,14 @@ static int known_networks_init(void)
 
 		settings = storage_network_open(security, ssid);
 
-		if (settings && storage_network_get_mtime(security, ssid,
-							&connected_time) == 0)
-			known_network_update(NULL, ssid, security, settings,
-						&connected_time);
+		full_path = storage_get_network_file_path(security, ssid);
+
+		if (settings) {
+			connected_time = l_path_get_mtime(full_path);
+
+			known_network_new(ssid, security, settings,
+						connected_time);
+		}
 
 		l_settings_free(settings);
 	}
@@ -643,6 +876,7 @@ static int known_networks_init(void)
 	storage_dir_watch = l_dir_watch_new(DAEMON_STORAGEDIR,
 						known_networks_watch_cb, NULL,
 						known_networks_watch_destroy);
+	watchlist_init(&known_network_watches, NULL);
 
 	return 0;
 }
@@ -659,6 +893,8 @@ static void known_networks_exit(void)
 	known_networks = NULL;
 
 	l_dbus_unregister_interface(dbus, IWD_KNOWN_NETWORK_INTERFACE);
+
+	watchlist_destroy(&known_network_watches);
 }
 
 IWD_MODULE(known_networks, known_networks_init, known_networks_exit)

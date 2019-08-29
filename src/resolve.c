@@ -28,6 +28,7 @@
 #include <arpa/inet.h>
 #include <sys/stat.h>
 #include <stdio.h>
+#include <unistd.h>
 
 #include <ell/ell.h>
 
@@ -49,6 +50,7 @@ struct resolve_method {
 };
 
 static struct resolve_method method;
+static char *resolvconf_path;
 
 #define SYSTEMD_RESOLVED_SERVICE           "org.freedesktop.resolve1"
 #define SYSTEMD_RESOLVED_MANAGER_PATH      "/org/freedesktop/resolve1"
@@ -242,8 +244,6 @@ static const struct resolve_method_ops resolve_method_systemd = {
 	.remove = resolve_systemd_remove,
 };
 
-#define RESOLVCONF_PATH "/sbin/resolvconf"
-
 static void resolve_resolvconf_add_dns(uint32_t ifindex, uint8_t type,
 						char **dns_list, void *data)
 {
@@ -257,10 +257,10 @@ static void resolve_resolvconf_add_dns(uint32_t ifindex, uint8_t type,
 	if (!*ready)
 		return;
 
-	cmd = l_strdup_printf(RESOLVCONF_PATH " -a %u", ifindex);
+	cmd = l_strdup_printf("%s -a %u", resolvconf_path, ifindex);
 
 	if (!(resolvconf = popen(cmd, "w"))) {
-		l_error("resolve: Failed to start %s (%s).", RESOLVCONF_PATH,
+		l_error("resolve: Failed to start %s (%s).", resolvconf_path,
 							strerror(errno));
 		return;
 	}
@@ -274,14 +274,14 @@ static void resolve_resolvconf_add_dns(uint32_t ifindex, uint8_t type,
 
 	if (fprintf(resolvconf, "%s", str) < 0)
 		l_error("resolve: Failed to print into %s stdin.",
-							RESOLVCONF_PATH);
+							resolvconf_path);
 
 	error = pclose(resolvconf);
 	if (error < 0)
 		l_error("resolve: Failed to close pipe to %s (%s).",
-					RESOLVCONF_PATH, strerror(errno));
+					resolvconf_path, strerror(errno));
 	else if (error > 0)
-		l_info("resolve: %s exited with status (%d).", RESOLVCONF_PATH,
+		l_info("resolve: %s exited with status (%d).", resolvconf_path,
 									error);
 }
 
@@ -295,10 +295,10 @@ static void resolve_resolvconf_remove(uint32_t ifindex, void *data)
 	if (!*ready)
 		return;
 
-	cmd = l_strdup_printf(RESOLVCONF_PATH " -d %u", ifindex);
+	cmd = l_strdup_printf("%s -d %u", resolvconf_path, ifindex);
 
 	if (!(resolvconf = popen(cmd, "r"))) {
-		l_error("resolve: Failed to start %s (%s).", RESOLVCONF_PATH,
+		l_error("resolve: Failed to start %s (%s).", resolvconf_path,
 							strerror(errno));
 		return;
 	}
@@ -306,35 +306,38 @@ static void resolve_resolvconf_remove(uint32_t ifindex, void *data)
 	error = pclose(resolvconf);
 	if (error < 0)
 		l_error("resolve: Failed to close pipe to %s (%s).",
-					RESOLVCONF_PATH, strerror(errno));
+					resolvconf_path, strerror(errno));
 	else if (error > 0)
-		l_info("resolve: %s exited with status (%d).", RESOLVCONF_PATH,
+		l_info("resolve: %s exited with status (%d).", resolvconf_path,
 									error);
 }
 
 static void *resolve_resolvconf_init(void)
 {
-	struct stat st;
+	static const char *default_path = "/sbin:/usr/sbin";
 	bool *ready;
+	const char *path;
 
 	ready = l_new(bool, 1);
-
-	if (stat(RESOLVCONF_PATH, &st)) {
-		l_error("resolve: Could not stat %s (%s).", RESOLVCONF_PATH,
-							strerror(errno));
-		goto error;
-	}
-
-	if (!(st.st_mode & S_IXUSR)) {
-		l_error("resolve: %s is not executable.", RESOLVCONF_PATH);
-		goto error;
-	}
-
-	*ready = true;
-	return ready;
-
-error:
 	*ready = false;
+
+	l_debug("Trying to find resolvconf in $PATH");
+	path = getenv("PATH");
+	if (path)
+		resolvconf_path = l_path_find("resolvconf", path, X_OK);
+
+	if (!resolvconf_path) {
+		l_debug("Trying to find resolvconf in default paths");
+		resolvconf_path = l_path_find("resolvconf", default_path, X_OK);
+	}
+
+	if (!resolvconf_path) {
+		l_error("No usable resolvconf found on system");
+		return ready;
+	}
+
+	l_debug("resolvconf found as: %s", resolvconf_path);
+	*ready = true;
 	return ready;
 }
 
@@ -342,6 +345,8 @@ static void resolve_resolvconf_exit(void *data)
 {
 	bool *ready = data;
 
+	l_free(resolvconf_path);
+	resolvconf_path = NULL;
 	l_free(ready);
 }
 

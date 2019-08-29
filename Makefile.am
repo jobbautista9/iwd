@@ -58,7 +58,8 @@ ell_headers = ell/util.h \
 			ell/cert.h \
 			ell/ecc.h \
 			ell/ecdh.h \
-			ell/time.h
+			ell/time.h \
+			ell/path.h
 
 ell_sources = ell/private.h \
 			ell/missing.h \
@@ -124,7 +125,8 @@ ell_sources = ell/private.h \
 			ell/ecc-private.h \
 			ell/ecc.c \
 			ell/ecdh.c \
-			ell/time.c
+			ell/time.c \
+			ell/path.c
 
 ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources)
 endif
@@ -212,6 +214,7 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h src/missing.h \
 					src/resolve.h src/resolve.c\
 					src/hotspot.h src/hotspot.c \
 					src/p2putil.h src/p2putil.c \
+					src/module.c \
 					$(eap_sources) \
 					$(builtin_sources)
 
@@ -409,7 +412,8 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 				src/erp.h src/erp.c \
 				src/mschaputil.h src/mschaputil.c
 unit_test_eapol_LDADD = $(ell_ldadd)
-unit_test_eapol_DEPENDENCIES = unit/cert-server.pem \
+unit_test_eapol_DEPENDENCIES = $(ell_dependencies) \
+				unit/cert-server.pem \
 				unit/cert-server-key-pkcs8.pem \
 				unit/cert-client.pem \
 				unit/cert-client-key-pkcs8.pem
@@ -525,7 +529,7 @@ unit/cert-server.csr: unit/cert-server-key.pem unit/gencerts.cnf
 			-key $< -out $@
 
 unit/cert-server.pem: unit/cert-server.csr unit/cert-ca.pem unit/gencerts.cnf
-	$(AM_V_GEN)openssl x509 -req -extensions cert_ext \
+	$(AM_V_GEN)openssl x509 -req -extensions server_ext \
 			-extfile $(srcdir)/unit/gencerts.cnf \
 			-in $< -CA $(builddir)/unit/cert-ca.pem \
 			-CAkey $(builddir)/unit/cert-ca-key.pem \
@@ -579,6 +583,14 @@ SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && $(SED) \
 
 %.1: %.txt
 	$(AM_V_GEN)$(A2X) --doctype manpage --format manpage $(srcdir)/$<
+
+install-data-local:
+if DAEMON
+	$(MKDIR_P) -m 700 $(DESTDIR)$(daemon_storagedir)
+endif
+if WIRED
+	$(MKDIR_P) -m 700 $(DESTDIR)$(wired_storagedir)
+endif
 
 clean-local:
 	-rm -f unit/cert-*.pem unit/cert-*.csr unit/cert-*.srl

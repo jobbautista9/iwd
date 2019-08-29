@@ -74,6 +74,7 @@ struct wiphy {
 	struct watchlist state_watches;
 	uint8_t extended_capabilities[EXT_CAP_LEN + 2]; /* max bitmap size + IE header */
 	uint8_t *iftype_extended_capabilities[NUM_NL80211_IFTYPES];
+	uint8_t rm_enabled_capabilities[7]; /* 5 size max + header */
 
 	bool support_scheduled_scan:1;
 	bool support_rekey_offload:1;
@@ -384,6 +385,14 @@ const uint8_t *wiphy_get_extended_capabilities(struct wiphy *wiphy,
 		return wiphy->iftype_extended_capabilities[iftype];
 
 	return wiphy->extended_capabilities;
+}
+
+const uint8_t *wiphy_get_rm_enabled_capabilities(struct wiphy *wiphy)
+{
+	if (!wiphy_rrm_capable(wiphy))
+		return NULL;
+
+	return wiphy->rm_enabled_capabilities;
 }
 
 void wiphy_generate_random_address(struct wiphy *wiphy, uint8_t addr[static 6])
@@ -951,6 +960,54 @@ void wiphy_update_from_genl(struct wiphy *wiphy, struct l_genl_msg *msg)
 	wiphy_parse_attributes(wiphy, &attr);
 }
 
+static void wiphy_set_station_capability_bits(struct wiphy *wiphy)
+{
+	uint8_t *ext_capa;
+	bool anqp_disabled;
+
+	/* No per-type capabilities exist for station, just copy the global */
+	if (!wiphy->iftype_extended_capabilities[NL80211_IFTYPE_STATION]) {
+		wiphy->iftype_extended_capabilities[NL80211_IFTYPE_STATION] =
+					l_new(uint8_t, EXT_CAP_LEN + 2);
+
+		memcpy(wiphy->iftype_extended_capabilities[
+						NL80211_IFTYPE_STATION],
+						wiphy->extended_capabilities,
+						EXT_CAP_LEN + 2);
+	}
+
+	ext_capa = wiphy->iftype_extended_capabilities[NL80211_IFTYPE_STATION];
+
+	if (!l_settings_get_bool(iwd_get_config(), "General", "disable_anqp",
+				&anqp_disabled))
+		anqp_disabled = true;
+
+	/* Set BSS Transition Management */
+	util_set_bit(ext_capa, 19);
+
+	/* Set Interworking */
+	if (!anqp_disabled)
+		util_set_bit(ext_capa, 31);
+
+	/* Set FILS */
+	util_set_bit(ext_capa, 72);
+}
+
+static void wiphy_setup_rm_enabled_capabilities(struct wiphy *wiphy)
+{
+	/* Nothing to do */
+	if (!wiphy_rrm_capable(wiphy))
+		return;
+
+	wiphy->rm_enabled_capabilities[0] = IE_TYPE_RM_ENABLED_CAPABILITIES;
+	wiphy->rm_enabled_capabilities[1] = 5;
+
+	/*
+	 * TODO: Support at least Link Measurement if TX_POWER_INSERTION is
+	 * available
+	 */
+}
+
 void wiphy_create_complete(struct wiphy *wiphy)
 {
 	if (util_mem_is_zero(wiphy->permanent_addr, 6)) {
@@ -960,6 +1017,9 @@ void wiphy_create_complete(struct wiphy *wiphy)
 			l_error("Can't read sysfs maccaddr for %s: %s",
 					wiphy->name, strerror(-err));
 	}
+
+	wiphy_set_station_capability_bits(wiphy);
+	wiphy_setup_rm_enabled_capabilities(wiphy);
 
 	wiphy_print_basic_info(wiphy);
 }

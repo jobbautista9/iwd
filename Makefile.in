@@ -146,9 +146,9 @@ am__ell_libell_internal_la_SOURCES_DIST = ell/util.h ell/test.h \
 	ell/random.h ell/uintset.h ell/base64.h ell/pem.h ell/tls.h \
 	ell/uuid.h ell/key.h ell/pkcs5.h ell/file.h ell/dir.h \
 	ell/net.h ell/dhcp.h ell/cert.h ell/ecc.h ell/ecdh.h \
-	ell/time.h ell/private.h ell/missing.h ell/util.c ell/test.c \
-	ell/strv.c ell/utf8.c ell/queue.c ell/hashmap.c ell/string.c \
-	ell/settings.c ell/main.c ell/idle.c ell/signal.c \
+	ell/time.h ell/path.h ell/private.h ell/missing.h ell/util.c \
+	ell/test.c ell/strv.c ell/utf8.c ell/queue.c ell/hashmap.c \
+	ell/string.c ell/settings.c ell/main.c ell/idle.c ell/signal.c \
 	ell/timeout.c ell/io.c ell/ringbuf.c ell/log.c ell/plugin.c \
 	ell/checksum.c ell/netlink-private.h ell/netlink.c \
 	ell/genl-private.h ell/genl.c ell/dbus-private.h ell/dbus.c \
@@ -163,7 +163,7 @@ am__ell_libell_internal_la_SOURCES_DIST = ell/util.h ell/test.h \
 	ell/dhcp-private.h ell/dhcp.c ell/dhcp-transport.c \
 	ell/dhcp-lease.c ell/cert-private.h ell/cert.c \
 	ell/ecc-external.c ell/ecc-private.h ell/ecc.c ell/ecdh.c \
-	ell/time.c
+	ell/time.c ell/path.c
 am__objects_1 =
 am__dirstamp = $(am__leading_dot)dirstamp
 @EXTERNAL_ELL_FALSE@am__objects_2 = ell/util.lo ell/test.lo \
@@ -186,7 +186,7 @@ am__dirstamp = $(am__leading_dot)dirstamp
 @EXTERNAL_ELL_FALSE@	ell/dhcp.lo ell/dhcp-transport.lo \
 @EXTERNAL_ELL_FALSE@	ell/dhcp-lease.lo ell/cert.lo \
 @EXTERNAL_ELL_FALSE@	ell/ecc-external.lo ell/ecc.lo ell/ecdh.lo \
-@EXTERNAL_ELL_FALSE@	ell/time.lo
+@EXTERNAL_ELL_FALSE@	ell/time.lo ell/path.lo
 @EXTERNAL_ELL_FALSE@am_ell_libell_internal_la_OBJECTS =  \
 @EXTERNAL_ELL_FALSE@	$(am__objects_1) $(am__objects_2)
 ell_libell_internal_la_OBJECTS = $(am_ell_libell_internal_la_OBJECTS)
@@ -277,13 +277,13 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/anqp.h src/anqp.c src/anqputil.h src/anqputil.c \
 	src/netconfig.h src/netconfig.c src/resolve.h src/resolve.c \
 	src/hotspot.h src/hotspot.c src/p2putil.h src/p2putil.c \
-	src/eap.c src/eap.h src/eap-private.h src/eap-wsc.c \
-	src/eap-wsc.h src/eap-md5.c src/eap-tls.c src/eap-ttls.c \
-	src/eap-mschapv2.c src/eap-mschapv2.h src/eap-sim.c \
-	src/eap-aka.c src/eap-peap.c src/eap-gtc.c src/eap-pwd.c \
-	src/util.h src/util.c src/crypto.h src/crypto.c src/wscutil.h \
-	src/wscutil.c src/simutil.h src/simutil.c src/simauth.h \
-	src/simauth.c src/watchlist.h src/watchlist.c \
+	src/module.c src/eap.c src/eap.h src/eap-private.h \
+	src/eap-wsc.c src/eap-wsc.h src/eap-md5.c src/eap-tls.c \
+	src/eap-ttls.c src/eap-mschapv2.c src/eap-mschapv2.h \
+	src/eap-sim.c src/eap-aka.c src/eap-peap.c src/eap-gtc.c \
+	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
+	src/wscutil.h src/wscutil.c src/simutil.h src/simutil.c \
+	src/simauth.h src/simauth.c src/watchlist.h src/watchlist.c \
 	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
 	src/mschaputil.c plugins/sim_hardcoded.c plugins/ofono.c
 am__objects_3 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
@@ -318,8 +318,8 @@ am__objects_6 = $(am__objects_4) $(am__objects_5)
 @DAEMON_TRUE@	src/rtnlutil.$(OBJEXT) src/anqp.$(OBJEXT) \
 @DAEMON_TRUE@	src/anqputil.$(OBJEXT) src/netconfig.$(OBJEXT) \
 @DAEMON_TRUE@	src/resolve.$(OBJEXT) src/hotspot.$(OBJEXT) \
-@DAEMON_TRUE@	src/p2putil.$(OBJEXT) $(am__objects_3) \
-@DAEMON_TRUE@	$(am__objects_6)
+@DAEMON_TRUE@	src/p2putil.$(OBJEXT) src/module.$(OBJEXT) \
+@DAEMON_TRUE@	$(am__objects_3) $(am__objects_6)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am__tools_hwsim_SOURCES_DIST = tools/hwsim.c src/mpdu.h src/util.h \
 	src/util.c src/storage.h src/storage.c src/common.h \
@@ -950,7 +950,8 @@ builtin_sources = $(am__append_3) $(am__append_5)
 @EXTERNAL_ELL_FALSE@			ell/cert.h \
 @EXTERNAL_ELL_FALSE@			ell/ecc.h \
 @EXTERNAL_ELL_FALSE@			ell/ecdh.h \
-@EXTERNAL_ELL_FALSE@			ell/time.h
+@EXTERNAL_ELL_FALSE@			ell/time.h \
+@EXTERNAL_ELL_FALSE@			ell/path.h
 
 @EXTERNAL_ELL_FALSE@ell_sources = ell/private.h \
 @EXTERNAL_ELL_FALSE@			ell/missing.h \
@@ -1016,7 +1017,8 @@ builtin_sources = $(am__append_3) $(am__append_5)
 @EXTERNAL_ELL_FALSE@			ell/ecc-private.h \
 @EXTERNAL_ELL_FALSE@			ell/ecc.c \
 @EXTERNAL_ELL_FALSE@			ell/ecdh.c \
-@EXTERNAL_ELL_FALSE@			ell/time.c
+@EXTERNAL_ELL_FALSE@			ell/time.c \
+@EXTERNAL_ELL_FALSE@			ell/path.c
 
 @EXTERNAL_ELL_FALSE@ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources)
 @DBUS_POLICY_TRUE@dbus_datadir = @DBUS_DATADIR@/dbus-1/system.d
@@ -1089,6 +1091,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/resolve.h src/resolve.c\
 @DAEMON_TRUE@					src/hotspot.h src/hotspot.c \
 @DAEMON_TRUE@					src/p2putil.h src/p2putil.c \
+@DAEMON_TRUE@					src/module.c \
 @DAEMON_TRUE@					$(eap_sources) \
 @DAEMON_TRUE@					$(builtin_sources)
 
@@ -1217,7 +1220,8 @@ unit_test_eapol_SOURCES = unit/test-eapol.c \
 				src/mschaputil.h src/mschaputil.c
 
 unit_test_eapol_LDADD = $(ell_ldadd)
-unit_test_eapol_DEPENDENCIES = unit/cert-server.pem \
+unit_test_eapol_DEPENDENCIES = $(ell_dependencies) \
+				unit/cert-server.pem \
 				unit/cert-server-key-pkcs8.pem \
 				unit/cert-client.pem \
 				unit/cert-client-key-pkcs8.pem
@@ -1433,6 +1437,7 @@ ell/ecc-external.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/ecc.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/ecdh.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/time.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/path.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 
 ell/libell-internal.la: $(ell_libell_internal_la_OBJECTS) $(ell_libell_internal_la_DEPENDENCIES) $(EXTRA_ell_libell_internal_la_DEPENDENCIES) ell/$(am__dirstamp)
 	$(AM_V_CCLD)$(LINK) $(am_ell_libell_internal_la_rpath) $(ell_libell_internal_la_OBJECTS) $(ell_libell_internal_la_LIBADD) $(LIBS)
@@ -1674,6 +1679,8 @@ src/netconfig.$(OBJEXT): src/$(am__dirstamp) \
 src/resolve.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/hotspot.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/module.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/eap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/eap-wsc.$(OBJEXT): src/$(am__dirstamp) \
@@ -1935,6 +1942,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/main.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/net.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/netlink.Plo@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/path.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/pem.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/pkcs5.Plo@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/plugin.Plo@am__quote@
@@ -1997,6 +2005,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/knownnetworks.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/main.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/manager.Po@am__quote@
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/module.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/mpdu.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/mschaputil.Po@am__quote@
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/netconfig.Po@am__quote@
@@ -2812,9 +2821,9 @@ info: info-am
 
 info-am:
 
-install-data-am: install-dbus_busDATA install-dist_dbus_dataDATA \
-	install-man install-systemd_modloadDATA \
-	install-systemd_unitDATA
+install-data-am: install-data-local install-dbus_busDATA \
+	install-dist_dbus_dataDATA install-man \
+	install-systemd_modloadDATA install-systemd_unitDATA
 
 install-dvi: install-dvi-am
 
@@ -2882,7 +2891,7 @@ uninstall-man: uninstall-man1
 	distclean-hdr distclean-libtool distclean-tags distcleancheck \
 	distdir distuninstallcheck dvi dvi-am html html-am info \
 	info-am install install-am install-binPROGRAMS install-data \
-	install-data-am install-dbus_busDATA \
+	install-data-am install-data-local install-dbus_busDATA \
 	install-dist_dbus_dataDATA install-dvi install-dvi-am \
 	install-exec install-exec-am install-html install-html-am \
 	install-info install-info-am install-libexecPROGRAMS \
@@ -2921,7 +2930,7 @@ unit/cert-server.csr: unit/cert-server-key.pem unit/gencerts.cnf
 			-key $< -out $@
 
 unit/cert-server.pem: unit/cert-server.csr unit/cert-ca.pem unit/gencerts.cnf
-	$(AM_V_GEN)openssl x509 -req -extensions cert_ext \
+	$(AM_V_GEN)openssl x509 -req -extensions server_ext \
 			-extfile $(srcdir)/unit/gencerts.cnf \
 			-in $< -CA $(builddir)/unit/cert-ca.pem \
 			-CAkey $(builddir)/unit/cert-ca-key.pem \
@@ -2967,6 +2976,10 @@ ell/ell.h: Makefile
 
 %.1: %.txt
 	$(AM_V_GEN)$(A2X) --doctype manpage --format manpage $(srcdir)/$<
+
+install-data-local:
+@DAEMON_TRUE@	$(MKDIR_P) -m 700 $(DESTDIR)$(daemon_storagedir)
+@WIRED_TRUE@	$(MKDIR_P) -m 700 $(DESTDIR)$(wired_storagedir)
 
 clean-local:
 	-rm -f unit/cert-*.pem unit/cert-*.csr unit/cert-*.srl

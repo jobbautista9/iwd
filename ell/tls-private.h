@@ -212,8 +212,12 @@ struct l_tls {
 	struct l_certchain *cert;
 	struct l_key *priv_key;
 	size_t priv_key_size;
+	char **subject_mask;
 
 	struct tls_cipher_suite **cipher_suite_pref_list;
+
+	bool in_callback;
+	bool pending_destroy;
 
 	/* Record layer */
 
