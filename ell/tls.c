@@ -44,6 +44,7 @@
 #include "asn1-private.h"
 #include "strv.h"
 #include "missing.h"
+#include "string.h"
 
 bool tls10_prf(const void *secret, size_t secret_len,
 		const char *label,
@@ -626,6 +627,166 @@ static const struct tls_hash_algorithm *tls_set_prf_hmac(struct l_tls *tls)
 		}
 
 	return NULL;
+}
+
+static bool tls_domain_match_mask(const char *name, size_t name_len,
+					const char *mask, size_t mask_len)
+{
+	bool at_start = true;
+
+	while (1) {
+		const char *name_seg_end = memchr(name, '.', name_len);
+		const char *mask_seg_end = memchr(mask, '.', mask_len);
+		size_t name_seg_len = name_seg_end ?
+			(size_t) (name_seg_end - name) : name_len;
+		size_t mask_seg_len = mask_seg_end ?
+			(size_t) (mask_seg_end - mask) : mask_len;
+
+		if (mask_seg_len == 1 && mask[0] == '*') {
+			/*
+			 * A * at the beginning of the mask matches any
+			 * number of labels.
+			 */
+			if (at_start && name_seg_end &&
+					tls_domain_match_mask(name_seg_end + 1,
+						name_len - name_seg_len - 1,
+						mask, mask_len))
+				return true;
+
+			goto ok_next;
+		}
+
+		if (name_seg_len != mask_seg_len ||
+				memcmp(name, mask, name_seg_len))
+			return false;
+
+ok_next:
+		/* If either string ends here both must end here */
+		if (!name_seg_end || !mask_seg_end)
+			return !name_seg_end && !mask_seg_end;
+
+		at_start = false;
+		name = name_seg_end + 1;
+		name_len -= name_seg_len + 1;
+		mask = mask_seg_end + 1;
+		mask_len -= mask_seg_len + 1;
+	}
+}
+
+static const struct asn1_oid subject_alt_name_oid =
+	{ 3, { 0x55, 0x1d, 0x11 } };
+static const struct asn1_oid dn_common_name_oid =
+	{ 3, { 0x55, 0x04, 0x03 } };
+
+#define SAN_DNS_NAME_ID ASN1_CONTEXT_IMPLICIT(2)
+
+static bool tls_cert_domains_match_mask(struct l_cert *cert, char **mask)
+{
+	const uint8_t *san, *dn, *end;
+	size_t san_len, dn_len;
+	uint8_t san_tag;
+	const char *cn = NULL;
+	size_t cn_len;
+	char **i;
+	bool dns_name_present = false;
+
+	/*
+	 * Locate SubjectAltName (RFC5280 Section 4.2.1.6) and descend into
+	 * the sole SEQUENCE element, check if any DNSName matches.
+	 */
+	san = cert_get_extension(cert, &subject_alt_name_oid, NULL, &san_len);
+	if (san) {
+		san = asn1_der_find_elem(san, san_len, 0, &san_tag, &san_len);
+		if (unlikely(!san || san_tag != ASN1_ID_SEQUENCE))
+			return false;
+
+		end = san + san_len;
+		while (san < end) {
+			const uint8_t *value;
+			uint8_t tag;
+			size_t len;
+
+			value = asn1_der_find_elem(san, end - san,
+							SAN_DNS_NAME_ID,
+							&tag, &len);
+			if (!value)
+				break;
+
+			/* Type is implicitly IA5STRING */
+
+			for (i = mask; *i; i++)
+				if (tls_domain_match_mask((const char *) value,
+							len, *i, strlen(*i)))
+					return true;
+
+			san = value + len;
+			dns_name_present = true;
+		}
+	}
+
+	/*
+	 * Retrieve the Common Name from the Subject DN and check if it
+	 * matches.
+	 *
+	 * We look at the Common Name only if no DNSNames were present in
+	 * the certificate, following Wi-Fi Alliance's Hotspot 2.0
+	 * Specification v3.1 section 7.3.3.2 step 2:
+	 * "Verify in the AAA server certificate that the domain name from
+	 * the FQDN [...] is a suffix match of the domain name in at least
+	 * one of the DNSName SubjectAltName extensions. If a SubjectAltName
+	 * of type DNSName is not present, then the domain name from the
+	 * FQDN shall be a suffix match to the CommonName portion of the
+	 * SubjectName. If neither of these conditions holds, then
+	 * verification fails."
+	 */
+	if (unlikely(dns_name_present))
+		return false;
+
+	dn = l_cert_get_dn(cert, &dn_len);
+	if (unlikely(!dn))
+		return false;
+
+	end = dn + dn_len;
+	while (dn < end) {
+		const uint8_t *set, *seq, *oid, *name;
+		uint8_t tag;
+		size_t len, oid_len, name_len;
+
+		set = asn1_der_find_elem(dn, end - dn, 0, &tag, &len);
+		if (unlikely(!set || tag != ASN1_ID_SET))
+			return false;
+
+		dn = set + len;
+
+		seq = asn1_der_find_elem(set, len, 0, &tag, &len);
+		if (unlikely(!seq || tag != ASN1_ID_SEQUENCE))
+			return false;
+
+		oid = asn1_der_find_elem(seq, len, 0, &tag, &oid_len);
+		if (unlikely(!oid || tag != ASN1_ID_OID))
+			return false;
+
+		name = asn1_der_find_elem(seq, len, 1, &tag, &name_len);
+		if (unlikely(!name || (tag != ASN1_ID_PRINTABLESTRING &&
+					tag != ASN1_ID_UTF8STRING &&
+					tag != ASN1_ID_IA5STRING)))
+			continue;
+
+		if (asn1_oid_eq(&dn_common_name_oid, oid_len, oid)) {
+			cn = (const char *) name;
+			cn_len = name_len;
+			break;
+		}
+	}
+
+	if (unlikely(!cn))
+		return false;
+
+	for (i = mask; *i; i++)
+		if (tls_domain_match_mask(cn, cn_len, *i, strlen(*i)))
+			return true;
+
+	return false;
 }
 
 #define SWITCH_ENUM_TO_STR(val) \
@@ -1792,6 +1953,18 @@ static void tls_handle_certificate(struct l_tls *tls,
 		goto done;
 	}
 
+	if (tls->subject_mask && !tls_cert_domains_match_mask(leaf,
+							tls->subject_mask)) {
+		char *mask = l_strjoinv(tls->subject_mask, '|');
+
+		TLS_DISCONNECT(TLS_ALERT_BAD_CERT, 0,
+				"Peer certificate's subject domain "
+				"doesn't match %s", mask);
+		l_free(mask);
+
+		goto done;
+	}
+
 	/* Save the end-entity certificate and free the chain */
 	der = l_cert_get_der_data(leaf, &der_len);
 	tls->peer_cert = l_cert_new_from_der(der, der_len);
@@ -1990,17 +2163,60 @@ static void tls_handle_certificate_verify(struct l_tls *tls,
 	TLS_SET_STATE(TLS_HANDSHAKE_WAIT_CHANGE_CIPHER_SPEC);
 }
 
-static const struct asn1_oid dn_organization_name_oid =
-	{ 3, { 0x55, 0x04, 0x0a } };
-static const struct asn1_oid dn_common_name_oid =
-	{ 3, { 0x55, 0x04, 0x03 } };
+struct dn_element_info {
+	const char *str;
+	const struct asn1_oid oid;
+};
+
+static const struct dn_element_info dn_elements[] = {
+	{ "CN", { 3, { 0x55, 0x04, 0x03 } } },
+	{ "SN", { 3, { 0x55, 0x04, 0x04 } } },
+	{ "serialNumber", { 3, { 0x55, 0x04, 0x05 } } },
+	{ "C", { 3, { 0x55, 0x04, 0x06 } } },
+	{ "ST", { 3, { 0x55, 0x04, 0x07 } } },
+	{ "L", { 3, { 0x55, 0x04, 0x08 } } },
+	{ "street", { 3, { 0x55, 0x04, 0x09 } } },
+	{ "O", { 3, { 0x55, 0x04, 0x0a } } },
+	{ "OU", { 3, { 0x55, 0x04, 0x0b } } },
+	{ "title", { 3, { 0x55, 0x04, 0x0c } } },
+	{ "telephoneNumber", { 3, { 0x55, 0x04, 0x14 } } },
+	{ "givenName", { 3, { 0x55, 0x04, 0x2a } } },
+	{ "initials", { 3, { 0x55, 0x04, 0x2b } } },
+	{ "emailAddress", {
+		9,
+		{ 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x09, 0x01 }
+	} },
+	{ "domainComponent", {
+		10,
+		{ 0x09, 0x92, 0x26, 0x89, 0x93, 0xf2, 0x2c, 0x64, 0x01, 0x19 }
+	} },
+	{}
+};
+
+static void tls_str_escape_append(struct l_string *out, char *str, size_t len)
+{
+	while (len--) {
+		switch (*str) {
+		case '\\':
+		case '/':
+		case '=':
+			l_string_append_c(out, '\\');
+			l_string_append_c(out, *str);
+			break;
+		default:
+			l_string_append_c(out, *str);
+			break;
+		}
+
+		str++;
+	}
+}
 
 static char *tls_get_peer_identity_str(struct l_cert *cert)
 {
 	const uint8_t *dn, *end;
 	size_t dn_size;
-	const uint8_t *printable_str = NULL;
-	size_t printable_str_len;
+	struct l_string *id_str;
 
 	if (!cert)
 		return NULL;
@@ -2009,45 +2225,52 @@ static char *tls_get_peer_identity_str(struct l_cert *cert)
 	if (!dn)
 		return NULL;
 
+	id_str = l_string_new(200);
+
 	end = dn + dn_size;
 	while (dn < end) {
 		const uint8_t *set, *seq, *oid, *name;
 		uint8_t tag;
 		size_t len, oid_len, name_len;
+		const struct dn_element_info *info;
 
 		set = asn1_der_find_elem(dn, end - dn, 0, &tag, &len);
 		if (!set || tag != ASN1_ID_SET)
-			return NULL;
+			goto error;
 
 		dn = set + len;
 
 		seq = asn1_der_find_elem(set, len, 0, &tag, &len);
 		if (!seq || tag != ASN1_ID_SEQUENCE)
-			return NULL;
+			goto error;
 
 		oid = asn1_der_find_elem(seq, len, 0, &tag, &oid_len);
 		if (!oid || tag != ASN1_ID_OID)
-			return NULL;
+			goto error;
 
 		name = asn1_der_find_elem(seq, len, 1, &tag, &name_len);
-		if (!oid || (tag != ASN1_ID_PRINTABLESTRING &&
-					tag != ASN1_ID_UTF8STRING))
+		if (!name || (tag != ASN1_ID_PRINTABLESTRING &&
+					tag != ASN1_ID_UTF8STRING &&
+					tag != ASN1_ID_IA5STRING))
 			continue;
 
-		/* organizationName takes priority, commonName is second */
-		if (asn1_oid_eq(&dn_organization_name_oid, oid_len, oid) ||
-				(!printable_str &&
-				 asn1_oid_eq(&dn_common_name_oid,
-						oid_len, oid))) {
-			printable_str = name;
-			printable_str_len = name_len;
-		}
+		for (info = dn_elements; info->str; info++)
+			if (asn1_oid_eq(&info->oid, oid_len, oid))
+				break;
+		if (!info->str)
+			continue;
+
+		l_string_append_c(id_str, '/');
+		l_string_append(id_str, info->str);
+		l_string_append_c(id_str, '=');
+		tls_str_escape_append(id_str, (char *) name, name_len);
 	}
 
-	if (printable_str)
-		return l_strndup((char *) printable_str, printable_str_len);
-	else
-		return NULL;
+	return l_string_unwrap(id_str);
+
+error:
+	l_string_free(id_str);
+	return NULL;
 }
 
 static void tls_finished(struct l_tls *tls)
@@ -2056,8 +2279,11 @@ static void tls_finished(struct l_tls *tls)
 
 	if (tls->peer_authenticated) {
 		peer_identity = tls_get_peer_identity_str(tls->peer_cert);
-		if (!peer_identity)
-			TLS_DEBUG("tls_get_peer_identity_str failed");
+		if (!peer_identity) {
+			TLS_DISCONNECT(TLS_ALERT_INTERNAL_ERROR, 0,
+					"tls_get_peer_identity_str failed");
+			return;
+		}
 	}
 
 	/* Free up the resources used in the handshake */
@@ -2066,7 +2292,9 @@ static void tls_finished(struct l_tls *tls)
 	TLS_SET_STATE(TLS_HANDSHAKE_DONE);
 	tls->ready = true;
 
+	tls->in_callback = true;
 	tls->ready_handle(peer_identity, tls->user_data);
+	tls->in_callback = false;
 	l_free(peer_identity);
 
 	tls_cleanup_handshake(tls);
@@ -2357,8 +2585,14 @@ LIB_EXPORT void l_tls_free(struct l_tls *tls)
 	if (unlikely(!tls))
 		return;
 
+	if (tls->in_callback) {
+		tls->pending_destroy = true;
+		return;
+	}
+
 	l_tls_set_cacert(tls, NULL);
 	l_tls_set_auth_data(tls, NULL, NULL, NULL);
+	l_tls_set_domain_mask(tls, NULL);
 
 	tls_reset_handshake(tls);
 	tls_cleanup_handshake(tls);
@@ -2505,6 +2739,11 @@ bool tls_handle_message(struct l_tls *tls, const uint8_t *message,
 					message + TLS_HANDSHAKE_HEADER_SIZE,
 					len - TLS_HANDSHAKE_HEADER_SIZE);
 
+		if (tls->pending_destroy) {
+			l_tls_free(tls);
+			return false;
+		}
+
 		return true;
 
 	case TLS_CT_APPLICATION_DATA:
@@ -2519,7 +2758,14 @@ bool tls_handle_message(struct l_tls *tls, const uint8_t *message,
 		if (!len)
 			return true;
 
+		tls->in_callback = true;
 		tls->rx(message, len, tls->user_data);
+		tls->in_callback = false;
+
+		if (tls->pending_destroy) {
+			l_tls_free(tls);
+			return false;
+		}
 
 		return true;
 	}
@@ -2691,6 +2937,30 @@ LIB_EXPORT void l_tls_set_version_range(struct l_tls *tls,
 	tls->max_version =
 		(max_version && max_version < TLS_MAX_VERSION) ?
 		max_version : TLS_MAX_VERSION;
+}
+
+/**
+ * l_tls_set_domain_mask:
+ * @tls: TLS object being configured
+ * @mask: NULL-terminated array of domain masks
+ *
+ * Sets a mask for domain names contained in the peer certificate
+ * (eg. the subject Common Name) to be matched against.  If none of the
+ * domains match the any mask, authentication will fail.  At least one
+ * domain has to match at least one mask from the list.
+ *
+ * The masks are each split into segments at the dot characters and each
+ * segment must match the corresponding label of the domain name --
+ * a domain name is a sequence of labels joined by dots.  An asterisk
+ * segment in the mask matches any label.  An asterisk segment at the
+ * beginning of the mask matches one or more consecutive labels from
+ * the beginning of the domain string.
+ */
+LIB_EXPORT void l_tls_set_domain_mask(struct l_tls *tls, char **mask)
+{
+	l_strv_free(tls->subject_mask);
+
+	tls->subject_mask = l_strv_copy(mask);
 }
 
 LIB_EXPORT const char *l_tls_alert_to_str(enum l_tls_alert_desc desc)

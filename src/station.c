@@ -401,6 +401,34 @@ static void station_bss_list_remove_expired_bsses(struct station *station)
 	l_queue_foreach_remove(station->bss_list, bss_free_if_expired, &data);
 }
 
+struct nai_search {
+	struct network *network;
+	const char **realms;
+};
+
+static bool match_nai_realms(const struct network_info *info, void *user_data)
+{
+	struct nai_search *search = user_data;
+
+	if (!network_info_match_nai_realm(info, search->realms))
+		return false;
+
+	network_set_info(search->network, (struct network_info *) info);
+
+	return true;
+}
+
+static void network_add_foreach(struct network *network, void *user_data)
+{
+	struct station *station = user_data;
+	struct scan_bss *bss = network_bss_select(network, false);
+
+	if (!bss)
+		return;
+
+	station_add_autoconnect_bss(station, network, bss);
+}
+
 static void station_anqp_response_cb(enum anqp_result result,
 					const void *anqp, size_t anqp_len,
 					void *user_data)
@@ -413,6 +441,7 @@ static void station_anqp_response_cb(enum anqp_result result,
 	uint16_t len;
 	const void *data;
 	char **realms = NULL;
+	struct nai_search search;
 
 	entry->pending = 0;
 
@@ -442,14 +471,30 @@ static void station_anqp_response_cb(enum anqp_result result,
 		}
 	}
 
-	network_set_nai_realms(network, realms);
+	if (!realms)
+		goto request_done;
+
+	search.network = network;
+	search.realms = (const char **)realms;
+
+	known_networks_foreach(match_nai_realms, &search);
 
 request_done:
 	l_queue_remove(station->anqp_pending, entry);
 
 	/* If no more requests, resume scanning */
-	if (l_queue_isempty(station->anqp_pending))
-		scan_resume(netdev_get_wdev_id(station->netdev));
+	if (!l_queue_isempty(station->anqp_pending))
+		return;
+
+	l_queue_destroy(station->autoconnect_list, l_free);
+	station->autoconnect_list = l_queue_new();
+
+	if (station_is_autoconnecting(station)) {
+		station_network_foreach(station, network_add_foreach, station);
+		station_autoconnect_next(station);
+	}
+
+	scan_resume(netdev_get_wdev_id(station->netdev));
 }
 
 static bool station_start_anqp(struct station *station, struct network *network,
@@ -464,7 +509,7 @@ static bool station_start_anqp(struct station *station, struct network *network,
 		return false;
 
 	/* Network already has ANQP data/HESSID */
-	if (hs20_find_settings_file(network))
+	if (network_get_info(network))
 		return false;
 
 	l_settings_get_bool(iwd_get_config(), "General", "disable_anqp",
@@ -576,11 +621,6 @@ void station_set_scan_results(struct station *station,
 
 		if (station_start_anqp(station, network, bss))
 			wait_for_anqp = true;
-
-		if (!add_to_autoconnect)
-			continue;
-
-		station_add_autoconnect_bss(station, network, bss);
 	}
 
 	station->bss_list = new_bss_list;
@@ -599,6 +639,10 @@ void station_set_scan_results(struct station *station,
 	 */
 	if (wait_for_anqp)
 		scan_suspend(netdev_get_wdev_id(station->netdev));
+	else if (add_to_autoconnect) {
+		station_network_foreach(station, network_add_foreach, station);
+		station_autoconnect_next(station);
+	}
 }
 
 static void station_reconnect(struct station *station);
@@ -924,9 +968,6 @@ static bool new_scan_results(int err, struct l_queue *bss_list, void *userdata)
 	autoconnect = station_is_autoconnecting(station);
 	station_set_scan_results(station, bss_list, autoconnect);
 
-	if (autoconnect)
-		station_autoconnect_next(station);
-
 	return true;
 }
 
@@ -996,9 +1037,6 @@ static bool station_quick_scan_results(int err, struct l_queue *bss_list,
 
 	autoconnect = station_is_autoconnecting(station);
 	station_set_scan_results(station, bss_list, autoconnect);
-
-	if (autoconnect)
-		station_autoconnect_next(station);
 
 	if (station->state == STATION_STATE_AUTOCONNECT_QUICK)
 		/*
@@ -1641,6 +1679,8 @@ static void station_roam_scan(struct station *station,
 {
 	struct scan_parameters params = { .freqs = freq_set, .flush = true };
 
+	l_debug("ifindex: %u", netdev_get_ifindex(station->netdev));
+
 	if (station->connected_network)
 		/* Use direct probe request */
 		params.ssid = network_get_ssid(station->connected_network);
@@ -1711,6 +1751,10 @@ static void station_neighbor_report_cb(struct netdev *netdev, int err,
 	struct scan_freq_set *freq_set_md, *freq_set_no_md;
 	uint32_t current_freq = 0;
 	struct handshake_state *hs = netdev_get_handshake(station->netdev);
+
+	l_debug("ifindex: %u, error: %d(%s)",
+			netdev_get_ifindex(station->netdev),
+			err, err < 0 ? strerror(-err) : "");
 
 	/*
 	 * Check if we're still attempting to roam -- if dbus Disconnect
@@ -1925,6 +1969,8 @@ void station_ap_directed_roam(struct station *station,
 	uint16_t dtimer;
 	uint8_t valid_interval;
 
+	l_debug("ifindex: %u", netdev_get_ifindex(station->netdev));
+
 	if (station_cannot_roam(station))
 		return;
 
@@ -1951,7 +1997,8 @@ void station_ap_directed_roam(struct station *station,
 	valid_interval = l_get_u8(body + pos);
 	pos++;
 
-	l_debug("BSS transition received from AP: Disassociation Time: %u, "
+	l_debug("roam: BSS transition received from AP: "
+			"Disassociation Time: %u, "
 			"Validity interval: %u", dtimer, valid_interval);
 
 	/* check req_mode for optional values */
@@ -1983,11 +2030,15 @@ void station_ap_directed_roam(struct station *station,
 	l_timeout_remove(station->roam_trigger_timeout);
 	station->roam_trigger_timeout = NULL;
 
-	if (req_mode & WNM_REQUEST_MODE_PREFERRED_CANDIDATE_LIST)
+
+	if (req_mode & WNM_REQUEST_MODE_PREFERRED_CANDIDATE_LIST) {
+		l_debug("roam: AP sent a preffered candidate list");
 		station_neighbor_report_cb(station->netdev, 0, body + pos,
 				body_len - pos,station);
-	else
+	} else {
+		l_debug("roam: AP did not include a preferred candidate list");
 		station_roam_scan(station, NULL);
+	}
 
 	return;
 
@@ -2917,6 +2968,31 @@ struct station *station_find(uint32_t ifindex)
 	}
 
 	return NULL;
+}
+
+struct network_foreach_data {
+	station_network_foreach_func_t func;
+	void *user_data;
+};
+
+static void network_foreach(const void *key, void *value, void *user_data)
+{
+	struct network_foreach_data *data = user_data;
+	struct network *network = value;
+
+	data->func(network, data->user_data);
+}
+
+void station_network_foreach(struct station *station,
+				station_network_foreach_func_t func,
+				void *user_data)
+{
+	struct network_foreach_data data = {
+		.func = func,
+		.user_data = user_data,
+	};
+
+	l_hashmap_foreach(station->networks, network_foreach, &data);
 }
 
 static struct station *station_create(struct netdev *netdev)

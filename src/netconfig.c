@@ -504,26 +504,20 @@ static void netconfig_ifaddr_del_cmd_cb(int error, uint16_t type,
 						const void *data, uint32_t len,
 						void *user_data)
 {
-	struct netconfig *netconfig;
-
 	if (error == -ENODEV)
 		/* The device is unplugged, we are done. */
 		return;
 
-	if (error) {
-		l_error("netconfig: Failed to delete IP address. "
-				"Error %d: %s", error, strerror(-error));
+	if (!error)
+		/*
+		 * The kernel removes all of the routes associated with the
+		 * deleted IP on its own. There is no need to explicitly remove
+		 * them.
+		 */
 		return;
-	}
 
-	netconfig = user_data;
-
-	/*
-	 * The kernel removes all of the routes associated with the deleted
-	 * IP on its own. There is no need to explicitly remove them.
-	 */
-
-	resolve_remove(netconfig->ifindex);
+	l_error("netconfig: Failed to delete IP address. "
+				"Error %d: %s", error, strerror(-error));
 }
 
 static void netconfig_uninstall_address(struct netconfig *netconfig,
@@ -690,6 +684,8 @@ static void netconfig_station_state_changed(enum station_state state,
 
 		/* TODO: IPv6 addressing */
 
+		resolve_remove(netconfig->ifindex);
+
 		break;
 	case STATION_STATE_ROAMING:
 		break;
@@ -745,6 +741,14 @@ bool netconfig_ifindex_remove(uint32_t ifindex)
 							L_UINT_TO_PTR(ifindex));
 	if (!netconfig)
 		return false;
+
+	if (netconfig->station_state != STATION_STATE_DISCONNECTED) {
+		netconfig_ipv4_select_and_uninstall(netconfig);
+
+		/* TODO Uninstall IPv6 addresses. */
+
+		resolve_remove(netconfig->ifindex);
+	}
 
 	netconfig_destroy(netconfig);
 

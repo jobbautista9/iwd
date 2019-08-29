@@ -299,6 +299,7 @@ struct proxy_callback_data {
 static void proxy_callback(struct l_dbus_message *message, void *user_data)
 {
 	struct proxy_callback_data *callback_data = user_data;
+	const struct proxy_interface *proxy;
 	const char *name;
 	const char *text;
 
@@ -308,9 +309,16 @@ static void proxy_callback(struct l_dbus_message *message, void *user_data)
 	if (command_is_interactive_mode())
 		return;
 
-	if (l_dbus_message_get_error(message, &name, &text))
+	if (l_dbus_message_get_error(message, &name, &text)) {
 		command_set_exit_status(EXIT_FAILURE);
+		goto quit;
+	}
 
+	proxy = callback_data->user_data;
+	if (!strcmp(proxy->type->interface, IWD_AGENT_MANAGER_INTERFACE))
+		return;
+
+quit:
 	l_main_quit();
 }
 
@@ -696,14 +704,18 @@ static void get_managed_objects_callback(struct l_dbus_message *message,
 	while (l_dbus_message_iter_next_entry(&objects, &path, &object))
 		proxy_interface_create(path, &object);
 
-	if (!command_is_interactive_mode()) {
-		command_noninteractive_trigger();
+	if (!command_is_interactive_mode() && !command_has_options())
+		goto proceed;
+
+	if (!agent_manager_register_agent()) {
+		l_main_quit();
 
 		return;
 	}
 
-	if (!agent_manager_register_agent()) {
-		l_main_quit();
+proceed:
+	if (!command_is_interactive_mode()) {
+		command_noninteractive_trigger();
 
 		return;
 	}
@@ -816,7 +828,9 @@ bool dbus_proxy_exit(void)
 {
 	struct interface_type_desc *desc;
 
-	if (command_is_interactive_mode())
+	if (command_is_interactive_mode() ||
+			(!command_is_interactive_mode() &&
+							command_has_options()))
 		agent_manager_unregister_agent();
 
 	for (desc = __start___interface; desc < __stop___interface; desc++) {

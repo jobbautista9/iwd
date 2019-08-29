@@ -2232,6 +2232,7 @@ static struct l_genl_msg *netdev_build_cmd_connect(struct netdev *netdev,
 	int iov_elems = 0;
 	bool is_rsn = hs->supplicant_ie != NULL;
 	const uint8_t *extended_capabilities;
+	const uint8_t *rm_enabled_capabilities;
 
 	msg = l_genl_msg_new_sized(NL80211_CMD_CONNECT, 512);
 	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &netdev->index);
@@ -2303,14 +2304,11 @@ static struct l_genl_msg *netdev_build_cmd_connect(struct netdev *netdev,
 				NL80211_ATTR_CONTROL_PORT_OVER_NL80211,
 				0, NULL);
 
-	if (wiphy_rrm_capable(netdev->wiphy) &&
-			bss->capability & IE_BSS_CAP_RM) {
-		uint8_t rm_cap_ie[7] = { IE_TYPE_RM_ENABLED_CAPABILITIES, 5,
-					0x00, 0x00, 0x00, 0x00, 0x00 };
-
-		/* TODO: Send an empty IE for now */
-		iov[iov_elems].iov_base = rm_cap_ie;
-		iov[iov_elems].iov_len = rm_cap_ie[1] + 2;
+	rm_enabled_capabilities =
+			wiphy_get_rm_enabled_capabilities(netdev->wiphy);
+	if (rm_enabled_capabilities && bss->capability & IE_BSS_CAP_RM) {
+		iov[iov_elems].iov_base = (void *) rm_enabled_capabilities;
+		iov[iov_elems].iov_len = rm_enabled_capabilities[1] + 2;
 		iov_elems += 1;
 
 		l_genl_msg_append_attr(msg, NL80211_ATTR_USE_RRM, 0, NULL);
@@ -2905,7 +2903,8 @@ static int fast_transition(struct netdev *netdev, struct scan_bss *target_bss,
 	handshake_state_set_authenticator_address(netdev->handshake,
 							target_bss->addr);
 
-	handshake_state_set_authenticator_ie(netdev->handshake,
+	if (target_bss->rsne)
+		handshake_state_set_authenticator_ie(netdev->handshake,
 							target_bss->rsne);
 	memcpy(netdev->handshake->mde + 2, target_bss->mde, 3);
 
@@ -3745,14 +3744,20 @@ static struct l_genl_msg *netdev_build_cmd_cqm_rssi_update(
 
 static void netdev_cmd_set_cqm_cb(struct l_genl_msg *msg, void *user_data)
 {
-	if (l_genl_msg_get_error(msg) < 0)
-		l_error("CMD_SET_CQM failed");
+	int r = l_genl_msg_get_error(msg);
+
+	if (!r)
+		return;
+
+	l_error("CMD_SET_CQM failed: %d(%s)", r, strerror(-r));
 }
 
 int netdev_set_rssi_report_levels(struct netdev *netdev, const int8_t *levels,
 					size_t levels_num)
 {
 	struct l_genl_msg *cmd_set_cqm;
+
+	l_debug("ifindex: %d, num_levels: %zu", netdev->index, levels_num);
 
 	if (levels_num > L_ARRAY_SIZE(netdev->rssi_levels))
 		return -ENOSPC;
@@ -3768,10 +3773,7 @@ int netdev_set_rssi_report_levels(struct netdev *netdev, const int8_t *levels,
 
 	if (!l_genl_family_send(nl80211, cmd_set_cqm, netdev_cmd_set_cqm_cb,
 				NULL, NULL)) {
-		l_error("CMD_SET_CQM failed");
-
 		l_genl_msg_unref(cmd_set_cqm);
-
 		return -EIO;
 	}
 
@@ -3789,20 +3791,22 @@ done:
 
 static int netdev_cqm_rssi_update(struct netdev *netdev)
 {
-	struct l_genl_msg *msg =
-		netdev_build_cmd_cqm_rssi_update(netdev,
-						netdev->rssi_levels,
-						netdev->rssi_levels_num);
+	struct l_genl_msg *msg;
 
+	l_debug("");
+
+	if (!wiphy_has_ext_feature(netdev->wiphy,
+					NL80211_EXT_FEATURE_CQM_RSSI_LIST))
+		return 0;
+
+	msg = netdev_build_cmd_cqm_rssi_update(netdev, netdev->rssi_levels,
+						netdev->rssi_levels_num);
 	if (!msg)
 		return -EINVAL;
 
 	if (!l_genl_family_send(nl80211, msg, netdev_cmd_set_cqm_cb,
 				NULL, NULL)) {
-		l_error("CMD_SET_CQM failed");
-
 		l_genl_msg_unref(msg);
-
 		return -EIO;
 	}
 

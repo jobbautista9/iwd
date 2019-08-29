@@ -26,6 +26,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <stdio.h>
 
 #include <ell/ell.h>
 
@@ -35,17 +36,22 @@
 #include "src/util.h"
 #include "src/hotspot.h"
 #include "src/ie.h"
+#include "src/knownnetworks.h"
+#include "src/storage.h"
 
 static struct l_dir_watch *hs20_dir_watch;
 static const char *hs20_dir = DAEMON_STORAGEDIR "/hotspot";
 static struct l_queue *hs20_settings;
 
 struct hs20_config {
+	struct network_info super;
 	char *filename;
 	uint8_t hessid[6];
 	char **nai_realms;
 	uint8_t *rc; /* roaming consortium */
 	size_t rc_len;
+	char *object_path;
+	char *name;
 };
 
 static bool match_filename(const void *a, const void *b)
@@ -63,43 +69,245 @@ static void hs20_config_free(void *user_data)
 {
 	struct hs20_config *config = user_data;
 
+	l_queue_remove(hs20_settings, config);
+
 	l_strv_free(config->nai_realms);
+	l_free(config->rc);
+	l_free(config->object_path);
 	l_free(config->filename);
+	l_free(config->name);
 	l_free(config);
 }
+
+static int hotspot_network_touch(struct network_info *info)
+{
+	struct hs20_config *config = l_container_of(info, struct hs20_config,
+							super);
+
+	return l_path_touch(config->filename);
+}
+
+static struct l_settings *hotspot_network_open(struct network_info *info)
+{
+	struct l_settings *settings;
+	struct hs20_config *config = l_container_of(info, struct hs20_config,
+							super);
+
+	settings = l_settings_new();
+
+	if (!l_settings_load_from_file(settings, config->filename)) {
+		l_settings_free(settings);
+		return NULL;
+	}
+
+	return settings;
+}
+
+static void hotspot_network_sync(struct network_info *info,
+					struct l_settings *settings)
+{
+	char *data;
+	size_t length = 0;
+	struct hs20_config *config = l_container_of(info, struct hs20_config,
+							super);
+
+	data = l_settings_to_data(settings, &length);
+	write_file(data, length, "%s", config->filename);
+	l_free(data);
+}
+
+static void hotspot_network_remove(struct network_info *info)
+{
+	struct hs20_config *config = l_container_of(info, struct hs20_config,
+							super);
+
+	unlink(config->filename);
+}
+
+static void hotspot_network_free(struct network_info *info)
+{
+	struct hs20_config *config = l_container_of(info, struct hs20_config,
+							super);
+
+	hs20_config_free(config);
+}
+
+static const char *hotspot_network_get_path(const struct network_info *info)
+{
+	char *digest;
+	struct l_checksum *sha;
+	char **realms;
+	struct hs20_config *config = l_container_of(info, struct hs20_config,
+							super);
+
+	if (config->object_path)
+		return config->object_path;
+
+	sha = l_checksum_new(L_CHECKSUM_SHA256);
+
+	if (config->nai_realms) {
+		realms = config->nai_realms;
+
+		while (*realms) {
+			l_checksum_update(sha, *realms, strlen(*realms));
+			realms++;
+		}
+	}
+
+	if (config->rc)
+		l_checksum_update(sha, config->rc, config->rc_len);
+
+	if (!util_mem_is_zero(config->hessid, 6))
+		l_checksum_update(sha, config->hessid, 6);
+
+	digest = l_checksum_get_string(sha);
+	l_checksum_free(sha);
+	config->object_path = l_strdup_printf("/%.8s_hotspot", digest);
+	l_free(digest);
+
+	return config->object_path;
+}
+
+static const char *hotspot_network_get_name(const struct network_info *info)
+{
+	struct hs20_config *config = l_container_of(info, struct hs20_config,
+							super);
+
+	return config->name;
+}
+
+static const char *hotspot_network_get_type(const struct network_info *info)
+{
+	return "hotspot";
+}
+
+static bool hotspot_match_hessid(const struct network_info *info,
+					const uint8_t *hessid)
+{
+	struct hs20_config *config = l_container_of(info, struct hs20_config,
+							super);
+
+	if (util_mem_is_zero(config->hessid, 6) || !hessid)
+		return false;
+
+	return !memcmp(config->hessid, hessid, 6);
+}
+
+static bool hotspot_match_roaming_consortium(const struct network_info *info,
+						const uint8_t *rc_ie,
+						size_t rc_len)
+{
+	const uint8_t *rc1, *rc2, *rc3;
+	size_t rc1_len, rc2_len, rc3_len;
+	struct hs20_config *config = l_container_of(info, struct hs20_config,
+							super);
+
+	if (!config->rc || !rc_ie)
+		return false;
+
+	if (ie_parse_roaming_consortium_from_data(rc_ie, rc_ie[1] + 2, NULL,
+						&rc1, &rc1_len, &rc2, &rc2_len,
+						&rc3, &rc3_len) < 0)
+		return false;
+
+	/* rc1 is guarenteed to be set if the above returns success */
+	if (rc1_len == config->rc_len && !memcmp(rc1, config->rc, rc1_len))
+		return true;
+
+	if (rc2 && rc2_len == config->rc_len &&
+				!memcmp(rc2, config->rc, rc2_len))
+		return true;
+
+	if (rc3 && rc1_len == config->rc_len &&
+				!memcmp(rc3, config->rc, rc3_len))
+		return true;
+
+	return false;
+}
+
+static bool hotspot_match_nai_realms(const struct network_info *info,
+					const char **nai_realms)
+{
+	const char **realms = nai_realms;
+	struct hs20_config *config = l_container_of(info, struct hs20_config,
+							super);
+
+	if (!config->nai_realms || !nai_realms)
+		return false;
+
+	while (*realms) {
+		if (l_strv_contains(config->nai_realms, *realms))
+			return true;
+
+		realms++;
+	}
+
+	return false;
+}
+
+static struct network_info_ops hotspot_ops = {
+	.open = hotspot_network_open,
+	.touch = hotspot_network_touch,
+	.sync = hotspot_network_sync,
+	.remove = hotspot_network_remove,
+	.free = hotspot_network_free,
+	.get_path = hotspot_network_get_path,
+	.get_name = hotspot_network_get_name,
+	.get_type = hotspot_network_get_type,
+
+	.match_hessid = hotspot_match_hessid,
+	.match_roaming_consortium = hotspot_match_roaming_consortium,
+	.match_nai_realms = hotspot_match_nai_realms,
+};
 
 static struct hs20_config *hs20_config_new(struct l_settings *settings,
 						char *filename)
 {
 	struct hs20_config *config;
-	char *str;
+	char *hessid_str;
 	char **nai_realms = NULL;
 	const char *rc_str;
-
-	config = l_new(struct hs20_config, 1);
+	char *name;
+	bool autoconnect = true;
 
 	/* One of HESSID, NAI realms, or Roaming Consortium must be included */
-	str = l_settings_get_string(settings, "Hotspot", "HESSID");
-	if (str) {
-		util_string_to_address(str, config->hessid);
-		l_free(str);
-	}
+	hessid_str = l_settings_get_string(settings, "Hotspot", "HESSID");
 
 	nai_realms = l_settings_get_string_list(settings, "Hotspot",
 						"NAIRealmNames", ',');
+
+	rc_str = l_settings_get_value(settings, "Hotspot", "RoamingConsortium");
+
+	l_settings_get_bool(settings, "Settings", "Autoconnect", &autoconnect);
+
+	name = l_settings_get_string(settings, "Hotspot", "Name");
+
+	if ((!hessid_str && !nai_realms && !rc_str) || !name) {
+		l_error("Could not parse hotspot config %s", filename);
+		goto free_values;
+	}
+
+	config = l_new(struct hs20_config, 1);
+
+	if (hessid_str) {
+		util_string_to_address(hessid_str, config->hessid);
+		l_free(hessid_str);
+	}
+
 	if (nai_realms)
 		config->nai_realms = nai_realms;
 
-	rc_str = l_settings_get_value(settings, "Hotspot", "RoamingConsortium");
 	if (rc_str) {
-		config->rc = l_util_from_hexstring(rc_str, &config->rc_len);
+		config->rc = l_util_from_hexstring(rc_str,
+							&config->rc_len);
 		/*
 		 * WiFi Alliance Hotspot 2.0 Spec - Section 3.1.4
 		 *
 		 * "The Consortium OI field is 3 or 5-octet field set to a value
 		 * of a roaming consortium OI"
 		 */
-		if (config->rc && config->rc_len != 3 && config->rc_len != 5) {
+		if (config->rc && config->rc_len != 3 &&
+						config->rc_len != 5) {
 			l_warn("invalid RoamingConsortium length %zu",
 					config->rc_len);
 			l_free(config->rc);
@@ -107,14 +315,25 @@ static struct hs20_config *hs20_config_new(struct l_settings *settings,
 		}
 	}
 
-	if (util_mem_is_zero(config->hessid, 6) && !nai_realms && !config->rc) {
-		l_free(config);
-		return NULL;
-	}
+	config->super.is_autoconnectable = autoconnect;
+	config->super.is_hotspot = true;
+	config->super.type = SECURITY_8021X;
+	config->super.ops = &hotspot_ops;
+	config->super.connected_time = l_path_get_mtime(filename);
+	config->name = name;
 
 	config->filename = l_strdup(filename);
 
+	known_networks_add(&config->super);
+
 	return config;
+
+free_values:
+	l_strv_free(nai_realms);
+	l_free(hessid_str);
+	l_free(name);
+
+	return NULL;
 }
 
 static void hs20_dir_watch_cb(const char *filename,
@@ -122,6 +341,7 @@ static void hs20_dir_watch_cb(const char *filename,
 				void *user_data)
 {
 	struct l_settings *new;
+	uint64_t connected_time;
 	struct hs20_config *config;
 
 	L_AUTO_FREE_VAR(char *, full_path) = NULL;
@@ -158,8 +378,7 @@ static void hs20_dir_watch_cb(const char *filename,
 		if (!config)
 			return;
 
-		hs20_config_free(config);
-		config = NULL;
+		known_networks_remove(&config->super);
 
 		/*
 		 * TODO: Disconnect any networks using this provisioning file
@@ -167,12 +386,11 @@ static void hs20_dir_watch_cb(const char *filename,
 
 		break;
 	case L_DIR_WATCH_EVENT_MODIFIED:
-		config = l_queue_remove_if(hs20_settings, match_filename,
-						full_path);
+		config = l_queue_find(hs20_settings, match_filename, full_path);
 		if (!config)
 			return;
 
-		hs20_config_free(config);
+		connected_time = l_path_get_mtime(full_path);
 
 		new = l_settings_new();
 
@@ -181,11 +399,7 @@ static void hs20_dir_watch_cb(const char *filename,
 			return;
 		}
 
-		config = hs20_config_new(new, full_path);
-		if (!config)
-			break;
-
-		l_queue_push_head(hs20_settings, config);
+		known_network_update(&config->super, new, connected_time);
 
 		break;
 	case L_DIR_WATCH_EVENT_ACCESSED:
@@ -198,110 +412,21 @@ static void hs20_dir_watch_destroy(void *user_data)
 	hs20_dir_watch = NULL;
 }
 
-static bool match_hessid(const void *a, const void *b)
-{
-	const struct hs20_config *config = a;
-	const uint8_t *hessid = b;
-
-	if (!memcmp(config->hessid, hessid, 6))
-		return true;
-
-	return false;
-}
-
-static bool match_nai_realm(const void *a, const void *b)
-{
-	const struct hs20_config *config = a;
-	char **realms = (char **)b;
-
-	while (*realms) {
-		if (l_strv_contains(config->nai_realms, *realms))
-			return true;
-
-		realms++;
-	}
-
-	return false;
-}
-
-static bool match_rc(const void *a, const void *b)
-{
-	const struct hs20_config *config = a;
-	const uint8_t *rc_ie = b;
-	const uint8_t *rc1, *rc2, *rc3;
-	size_t rc1_len, rc2_len, rc3_len;
-
-	if (ie_parse_roaming_consortium_from_data(rc_ie, rc_ie[1] + 2, NULL,
-						&rc1, &rc1_len, &rc2, &rc2_len,
-						&rc3, &rc3_len) < 0)
-		return false;
-
-	/* rc1 is guarenteed to be set if the above returns success */
-	if (rc1_len == config->rc_len && !memcmp(rc1, config->rc, rc1_len))
-		return true;
-
-	if (rc2 && rc2_len == config->rc_len &&
-				!memcmp(rc2, config->rc, rc2_len))
-		return true;
-
-	if (rc3 && rc1_len == config->rc_len &&
-				!memcmp(rc3, config->rc, rc3_len))
-		return true;
-
-	return false;
-}
-
-const char *hs20_find_settings_file(struct network *network)
-{
-	struct hs20_config *config;
-	const uint8_t *hessid = network_get_hessid(network);
-	char **nai_realms = network_get_nai_realms(network);
-	const uint8_t *rc_ie = network_get_roaming_consortium(network);
-
-	if (!hessid || util_mem_is_zero(hessid, 6)) {
-		l_debug("Network has no HESSID, trying NAI realms");
-		goto try_nai_realms;
-	}
-
-	config = l_queue_find(hs20_settings, match_hessid, hessid);
-	if (config)
-		return config->filename;
-
-try_nai_realms:
-	if (!nai_realms) {
-		l_debug("Network has no NAI Realms, trying roaming consortium");
-		goto try_roaming_consortium;
-	}
-
-	config = l_queue_find(hs20_settings, match_nai_realm, nai_realms);
-	if (config)
-		return config->filename;
-
-try_roaming_consortium:
-	if (!rc_ie) {
-		l_debug("Network has no roaming consortium IE");
-		return NULL;
-	}
-
-	config = l_queue_find(hs20_settings, match_rc, rc_ie);
-	if (config)
-		return config->filename;
-
-	return NULL;
-}
-
 const uint8_t *hs20_get_roaming_consortium(struct network *network,
 						size_t *len)
 {
+	const struct network_info *info = network_get_info(network);
 	struct hs20_config *config;
-	const uint8_t *rc_ie = network_get_roaming_consortium(network);
 
-	if (!rc_ie)
+	if (!info || !info->is_hotspot)
 		return NULL;
 
-	config = l_queue_find(hs20_settings, match_rc, rc_ie);
-	if (config) {
-		*len = config->rc_len;
+	config = l_container_of(info, struct hs20_config, super);
+
+	if (config->rc) {
+		if (len)
+			*len = config->rc_len;
+
 		return config->rc;
 	}
 
@@ -360,3 +485,4 @@ static void hotspot_exit(void)
 }
 
 IWD_MODULE(hotspot, hotspot_init, hotspot_exit)
+IWD_MODULE_DEPENDS(hotspot, known_networks)

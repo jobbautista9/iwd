@@ -1,6 +1,6 @@
 /*
  *
- *  Wireless daemon for Linux
+ *  Embedded Linux library
  *
  *  Copyright (C) 2019  Intel Corporation. All rights reserved.
  *
@@ -20,7 +20,20 @@
  *
  */
 
-struct network;
+#ifndef __ELL_PATH_H
+#define __ELL_PATH_H
 
-const uint8_t *hs20_get_roaming_consortium(struct network *network,
-						size_t *len);
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+const char *l_path_next(const char *path_str, char **ret);
+char *l_path_find(const char *basename, const char *path_str, int mode);
+uint64_t l_path_get_mtime(const char *path);
+int l_path_touch(const char *path);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __ELL_PATH_H */
