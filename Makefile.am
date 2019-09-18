@@ -212,7 +212,7 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h src/missing.h \
 					src/anqputil.h src/anqputil.c \
 					src/netconfig.h src/netconfig.c\
 					src/resolve.h src/resolve.c\
-					src/hotspot.h src/hotspot.c \
+					src/hotspot.c \
 					src/p2putil.h src/p2putil.c \
 					src/module.c \
 					$(eap_sources) \
@@ -574,8 +574,6 @@ ell/ell.h: Makefile
 
 SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && $(SED) \
 		-e 's,@libexecdir\@,$(libexecdir),g' \
-		-e 's,@daemon_storagedir\@,$(daemon_storagedir),g' \
-		-e 's,@wired_storagedir\@,$(wired_storagedir),g' \
 		< $< > $@
 
 %.service: %.service.in Makefile
@@ -585,11 +583,13 @@ SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && $(SED) \
 	$(AM_V_GEN)$(A2X) --doctype manpage --format manpage $(srcdir)/$<
 
 install-data-local:
+if !SYSTEMD_SERVICE
 if DAEMON
 	$(MKDIR_P) -m 700 $(DESTDIR)$(daemon_storagedir)
 endif
 if WIRED
 	$(MKDIR_P) -m 700 $(DESTDIR)$(wired_storagedir)
+endif
 endif
 
 clean-local:

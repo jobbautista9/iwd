@@ -34,13 +34,12 @@
 #include "src/common.h"
 #include "src/network.h"
 #include "src/util.h"
-#include "src/hotspot.h"
 #include "src/ie.h"
 #include "src/knownnetworks.h"
 #include "src/storage.h"
+#include "src/scan.h"
 
 static struct l_dir_watch *hs20_dir_watch;
-static const char *hs20_dir = DAEMON_STORAGEDIR "/hotspot";
 static struct l_queue *hs20_settings;
 
 struct hs20_config {
@@ -193,9 +192,11 @@ static bool hotspot_match_hessid(const struct network_info *info,
 	return !memcmp(config->hessid, hessid, 6);
 }
 
-static bool hotspot_match_roaming_consortium(const struct network_info *info,
+static const uint8_t *hotspot_match_roaming_consortium(
+						const struct network_info *info,
 						const uint8_t *rc_ie,
-						size_t rc_len)
+						size_t rc_len,
+						size_t *rc_len_out)
 {
 	const uint8_t *rc1, *rc2, *rc3;
 	size_t rc1_len, rc2_len, rc3_len;
@@ -203,26 +204,35 @@ static bool hotspot_match_roaming_consortium(const struct network_info *info,
 							super);
 
 	if (!config->rc || !rc_ie)
-		return false;
+		return NULL;
 
 	if (ie_parse_roaming_consortium_from_data(rc_ie, rc_ie[1] + 2, NULL,
 						&rc1, &rc1_len, &rc2, &rc2_len,
 						&rc3, &rc3_len) < 0)
-		return false;
+		return NULL;
 
 	/* rc1 is guarenteed to be set if the above returns success */
-	if (rc1_len == config->rc_len && !memcmp(rc1, config->rc, rc1_len))
-		return true;
+	if (rc1_len == config->rc_len && !memcmp(rc1, config->rc, rc1_len)) {
+		if (rc_len_out)
+			*rc_len_out = rc1_len;
+		return rc1;
+	}
 
 	if (rc2 && rc2_len == config->rc_len &&
-				!memcmp(rc2, config->rc, rc2_len))
-		return true;
+				!memcmp(rc2, config->rc, rc2_len)) {
+		if (rc_len_out)
+			*rc_len_out = rc2_len;
+		return rc2;
+	}
 
 	if (rc3 && rc1_len == config->rc_len &&
-				!memcmp(rc3, config->rc, rc3_len))
-		return true;
+				!memcmp(rc3, config->rc, rc3_len)) {
+		if (rc_len_out)
+			*rc_len_out = rc3_len;
+		return rc3;
+	}
 
-	return false;
+	return NULL;
 }
 
 static bool hotspot_match_nai_realms(const struct network_info *info,
@@ -245,6 +255,46 @@ static bool hotspot_match_nai_realms(const struct network_info *info,
 	return false;
 }
 
+static const struct iovec *hotspot_network_get_ies(
+						const struct network_info *info,
+						struct scan_bss *bss,
+						size_t *num_elems)
+{
+	static struct iovec iov[2];
+	static uint8_t hs20_ie[7];
+	static uint8_t rc_buf[11];
+	const uint8_t *rc;
+	size_t rc_len;
+	size_t iov_elems = 0;
+
+	ie_build_hs20_indication(bss->hs20_version, hs20_ie);
+
+	iov[iov_elems].iov_base = hs20_ie;
+	iov[iov_elems].iov_len = hs20_ie[1] + 2;
+	iov_elems++;
+
+	rc = hotspot_match_roaming_consortium(info, bss->rc_ie,
+						bss->rc_ie[1] + 2, &rc_len);
+	if (rc) {
+		ie_build_roaming_consortium(rc, rc_len, rc_buf);
+
+		iov[iov_elems].iov_base = rc_buf;
+		iov[iov_elems].iov_len = rc_buf[1] + 2;
+		iov_elems++;
+	}
+
+	*num_elems = iov_elems;
+
+	return iov;
+}
+
+static char *hotspot_network_get_file_path(const struct network_info *info)
+{
+	struct hs20_config *config = l_container_of(info, struct hs20_config,
+							super);
+	return l_strdup(config->filename);
+}
+
 static struct network_info_ops hotspot_ops = {
 	.open = hotspot_network_open,
 	.touch = hotspot_network_touch,
@@ -254,6 +304,8 @@ static struct network_info_ops hotspot_ops = {
 	.get_path = hotspot_network_get_path,
 	.get_name = hotspot_network_get_name,
 	.get_type = hotspot_network_get_type,
+	.get_extra_ies = hotspot_network_get_ies,
+	.get_file_path = hotspot_network_get_file_path,
 
 	.match_hessid = hotspot_match_hessid,
 	.match_roaming_consortium = hotspot_match_roaming_consortium,
@@ -354,7 +406,7 @@ static void hs20_dir_watch_cb(const char *filename,
 	if (!filename)
 		return;
 
-	full_path = l_strdup_printf("%s/%s", hs20_dir, filename);
+	full_path = storage_get_hotspot_path("%s", filename);
 
 	switch (event) {
 	case L_DIR_WATCH_EVENT_CREATED:
@@ -412,31 +464,12 @@ static void hs20_dir_watch_destroy(void *user_data)
 	hs20_dir_watch = NULL;
 }
 
-const uint8_t *hs20_get_roaming_consortium(struct network *network,
-						size_t *len)
-{
-	const struct network_info *info = network_get_info(network);
-	struct hs20_config *config;
-
-	if (!info || !info->is_hotspot)
-		return NULL;
-
-	config = l_container_of(info, struct hs20_config, super);
-
-	if (config->rc) {
-		if (len)
-			*len = config->rc_len;
-
-		return config->rc;
-	}
-
-	return NULL;
-}
-
 static int hotspot_init(void)
 {
 	DIR *dir;
 	struct dirent *dirent;
+
+	L_AUTO_FREE_VAR(char *, hs20_dir) = storage_get_hotspot_path(NULL);
 
 	dir = opendir(hs20_dir);
 	if (!dir)

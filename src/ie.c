@@ -1078,10 +1078,16 @@ static int build_ciphers_common(const struct ie_rsn_info *info, uint8_t *to,
 	/* Short hand the generated RSNE if possible */
 	if (info->num_pmkids == 0 && !force_group_mgmt_cipher) {
 		/* No Group Management Cipher Suite */
-		if (to[pos - 2] == 0 && to[pos - 1] == 0) {
-			pos -= 2;
+		if (to[pos - 2] == 0 && to[pos - 1] == 0)
+			/*
+			 * The RSN Capabilities bytes are in theory optional,
+			 * but some APs don't seem to like us not including
+			 * them in the RSN element.  Also wireshark has a
+			 * bug and complains of a malformed element if these
+			 * bytes are not included.
+			 */
 			goto done;
-		} else if (!info->mfpc)
+		else if (!info->mfpc)
 			goto done;
 		else if (info->group_management_cipher ==
 				IE_RSN_CIPHER_SUITE_BIP)
@@ -1321,11 +1327,11 @@ int ie_parse_wpa(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info)
 	if (!is_ie_wpa_ie(iter->data, iter->len))
 		return -EINVAL;
 
+	memset(&info, 0, sizeof(info));
 	info.group_cipher = IE_RSN_CIPHER_SUITE_TKIP;
 	info.pairwise_ciphers = IE_RSN_CIPHER_SUITE_TKIP;
 	info.akm_suites = IE_RSN_AKM_SUITE_PSK;
 
-	memset(&info, 0, sizeof(info));
 	RSNE_ADVANCE(data, len, 6);
 
 	/* Parse Group Cipher Suite field */
@@ -1394,7 +1400,19 @@ int ie_parse_wpa(struct ie_tlv_iter *iter, struct ie_rsn_info *out_info)
 
 	RSNE_ADVANCE(data, len, count * 4);
 
-	return -EBADMSG;
+	if (len < 2)
+		return -EBADMSG;
+
+	out_info->preauthentication = util_is_bit_set(data[0], 0);
+	out_info->no_pairwise = util_is_bit_set(data[0], 1);
+	out_info->ptksa_replay_counter = util_bit_field(data[0], 2, 2);
+	out_info->gtksa_replay_counter = util_bit_field(data[0], 4, 2);
+
+	RSNE_ADVANCE(data, len, 2);
+
+	l_warn("Received WPA element with extra trailing bytes -"
+		" which will be ignored");
+	return 0;
 
 done:
 	/*

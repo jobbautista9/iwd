@@ -276,14 +276,14 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/fils.c src/rtnlutil.h src/rtnlutil.c src/auth-proto.h \
 	src/anqp.h src/anqp.c src/anqputil.h src/anqputil.c \
 	src/netconfig.h src/netconfig.c src/resolve.h src/resolve.c \
-	src/hotspot.h src/hotspot.c src/p2putil.h src/p2putil.c \
-	src/module.c src/eap.c src/eap.h src/eap-private.h \
-	src/eap-wsc.c src/eap-wsc.h src/eap-md5.c src/eap-tls.c \
-	src/eap-ttls.c src/eap-mschapv2.c src/eap-mschapv2.h \
-	src/eap-sim.c src/eap-aka.c src/eap-peap.c src/eap-gtc.c \
-	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
-	src/wscutil.h src/wscutil.c src/simutil.h src/simutil.c \
-	src/simauth.h src/simauth.c src/watchlist.h src/watchlist.c \
+	src/hotspot.c src/p2putil.h src/p2putil.c src/module.c \
+	src/eap.c src/eap.h src/eap-private.h src/eap-wsc.c \
+	src/eap-wsc.h src/eap-md5.c src/eap-tls.c src/eap-ttls.c \
+	src/eap-mschapv2.c src/eap-mschapv2.h src/eap-sim.c \
+	src/eap-aka.c src/eap-peap.c src/eap-gtc.c src/eap-pwd.c \
+	src/util.h src/util.c src/crypto.h src/crypto.c src/wscutil.h \
+	src/wscutil.c src/simutil.h src/simutil.c src/simauth.h \
+	src/simauth.c src/watchlist.h src/watchlist.c \
 	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
 	src/mschaputil.c plugins/sim_hardcoded.c plugins/ofono.c
 am__objects_3 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
@@ -1089,7 +1089,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/anqputil.h src/anqputil.c \
 @DAEMON_TRUE@					src/netconfig.h src/netconfig.c\
 @DAEMON_TRUE@					src/resolve.h src/resolve.c\
-@DAEMON_TRUE@					src/hotspot.h src/hotspot.c \
+@DAEMON_TRUE@					src/hotspot.c \
 @DAEMON_TRUE@					src/p2putil.h src/p2putil.c \
 @DAEMON_TRUE@					src/module.c \
 @DAEMON_TRUE@					$(eap_sources) \
@@ -1306,8 +1306,6 @@ false_redirect_openssl = 2>/dev/null
 BUILT_SOURCES = $(ell_built_sources) src/builtin.h
 SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && $(SED) \
 		-e 's,@libexecdir\@,$(libexecdir),g' \
-		-e 's,@daemon_storagedir\@,$(daemon_storagedir),g' \
-		-e 's,@wired_storagedir\@,$(wired_storagedir),g' \
 		< $< > $@
 
 all: $(BUILT_SOURCES) config.h
@@ -2978,8 +2976,8 @@ ell/ell.h: Makefile
 	$(AM_V_GEN)$(A2X) --doctype manpage --format manpage $(srcdir)/$<
 
 install-data-local:
-@DAEMON_TRUE@	$(MKDIR_P) -m 700 $(DESTDIR)$(daemon_storagedir)
-@WIRED_TRUE@	$(MKDIR_P) -m 700 $(DESTDIR)$(wired_storagedir)
+@DAEMON_TRUE@@SYSTEMD_SERVICE_FALSE@	$(MKDIR_P) -m 700 $(DESTDIR)$(daemon_storagedir)
+@SYSTEMD_SERVICE_FALSE@@WIRED_TRUE@	$(MKDIR_P) -m 700 $(DESTDIR)$(wired_storagedir)
 
 clean-local:
 	-rm -f unit/cert-*.pem unit/cert-*.csr unit/cert-*.srl
