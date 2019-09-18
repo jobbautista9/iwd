@@ -53,7 +53,6 @@ static const char *interfaces;
 static const char *nointerfaces;
 static const char *phys;
 static const char *nophys;
-static const char *config_dir;
 static const char *plugins;
 static const char *noplugins;
 static const char *debugopt;
@@ -114,7 +113,6 @@ static void usage(void)
 		"\t-I, --nointerfaces     Interfaces to ignore\n"
 		"\t-p, --phys             Phys to manage\n"
 		"\t-P, --nophys           Phys to ignore\n"
-		"\t-c, --config           Configuration directory to use\n"
 		"\t-l, --plugin           Plugins to include\n"
 		"\t-L, --noplugin         Plugins to exclude\n"
 		"\t-d, --debug            Enable debug output\n"
@@ -129,7 +127,6 @@ static const struct option main_options[] = {
 	{ "nointerfaces", required_argument, NULL, 'I' },
 	{ "phys",         required_argument, NULL, 'p' },
 	{ "nophys",       required_argument, NULL, 'P' },
-	{ "config",       required_argument, NULL, 'c' },
 	{ "plugin",       required_argument, NULL, 'l' },
 	{ "noplugin",     required_argument, NULL, 'L' },
 	{ "debug",        optional_argument, NULL, 'd' },
@@ -348,13 +345,15 @@ int main(int argc, char *argv[])
 	bool enable_dbus_debug = false;
 	int exit_status;
 	struct l_dbus *dbus;
-	char *config_path;
+	const char *config_dir;
+	char **config_dirs;
 	uint32_t eap_mtu;
+	int i;
 
 	for (;;) {
 		int opt;
 
-		opt = getopt_long(argc, argv, "Bi:I:p:P:c:d::vh",
+		opt = getopt_long(argc, argv, "Bi:I:p:P:d::vh",
 							main_options, NULL);
 		if (opt < 0)
 			break;
@@ -374,9 +373,6 @@ int main(int argc, char *argv[])
 			break;
 		case 'P':
 			nophys = optarg;
-			break;
-		case 'c':
-			config_dir = optarg;
 			break;
 		case 'l':
 			plugins = optarg;
@@ -425,16 +421,28 @@ int main(int argc, char *argv[])
 
 	l_info("Wireless daemon version %s", VERSION);
 
+	config_dir = getenv("CONFIGURATION_DIRECTORY");
 	if (!config_dir)
 		config_dir = DAEMON_CONFIGDIR;
 
-	config_path = l_strdup_printf("%s/%s", config_dir, "main.conf");
+	l_debug("Using configuration directory %s", config_dir);
+
 	iwd_config = l_settings_new();
 
-	if (!l_settings_load_from_file(iwd_config, config_path))
-		l_warn("Skipping optional configuration file %s", config_path);
+	config_dirs = l_strsplit(config_dir, ':');
+	for (i = 0; config_dirs[i]; i++) {
+		char *path = l_strdup_printf("%s/%s", config_dirs[i],
+								"main.conf");
+		bool result = l_settings_load_from_file(iwd_config, path);
+		l_free(path);
 
-	l_free(config_path);
+		if (result) {
+			l_info("Loaded configuration from %s/main.conf",
+							config_dirs[i]);
+			break;
+		}
+	}
+	l_strv_free(config_dirs);
 
 	__eapol_set_config(iwd_config);
 
@@ -443,15 +451,8 @@ int main(int argc, char *argv[])
 
 	exit_status = EXIT_FAILURE;
 
-	if (create_dirs(DAEMON_STORAGEDIR "/")) {
-		l_error("Failed to create " DAEMON_STORAGEDIR "/");
+	if (!storage_create_dirs())
 		goto fail_dbus;
-	}
-
-	if (create_dirs(DAEMON_STORAGEDIR "/hotspot/")) {
-		l_error("Failed to create " DAEMON_STORAGEDIR "/hotspot/");
-		goto fail_dbus;
-	}
 
 	genl = l_genl_new();
 	if (!genl) {
@@ -506,6 +507,7 @@ fail_netdev:
 
 	dbus_exit();
 	l_dbus_destroy(dbus);
+	storage_cleanup_dirs();
 fail_dbus:
 	l_genl_unref(genl);
 fail_genl:

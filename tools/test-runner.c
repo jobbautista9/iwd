@@ -25,6 +25,7 @@
 #include <config.h>
 #endif
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -490,7 +491,8 @@ static bool start_qemu(void)
 	return true;
 }
 
-static pid_t execute_program(char *argv[], bool wait, bool verbose, bool log)
+static pid_t execute_program(char *argv[], char *envp[], bool wait,
+						bool verbose, bool log)
 {
 	int status;
 	pid_t pid, child_pid;
@@ -528,9 +530,9 @@ static pid_t execute_program(char *argv[], bool wait, bool verbose, bool log)
 			close(fd);
 		}
 
-		execvp(argv[0], argv);
+		execvpe(argv[0], argv, envp);
 
-		l_error("Failed to call execvp for: %s. Error: %s", argv[0],
+		l_error("Failed to call execvpe for: %s. Error: %s", argv[0],
 							strerror(errno));
 
 		exit(EXIT_FAILURE);
@@ -626,7 +628,8 @@ static bool start_dbus_daemon(void)
 	if (check_verbosity("dbus"))
 		setenv("DBUS_VERBOSE", "1", true);
 
-	pid = execute_program(argv, false, check_verbosity("dbus"), false);
+	pid = execute_program(argv, environ, false,
+					check_verbosity("dbus"), false);
 	if (pid < 0)
 		return false;
 
@@ -637,7 +640,7 @@ static bool start_dbus_daemon(void)
 		argv[0] = "dbus-monitor";
 		argv[1] = "--system";
 		argv[2] = NULL;
-		execute_program(argv, false, true, false);
+		execute_program(argv, environ, false, true, false);
 	}
 
 	l_debug("D-Bus is running");
@@ -653,7 +656,7 @@ static bool start_haveged(void)
 	argv[0] = "haveged";
 	argv[1] = NULL;
 
-	pid = execute_program(argv, true, false, false);
+	pid = execute_program(argv, environ, true, false, false);
 	if (pid < 0)
 		return false;
 
@@ -675,7 +678,7 @@ static bool set_interface_state(const char *if_name, bool isUp)
 	argv[2] = state;
 	argv[3] = NULL;
 
-	pid = execute_program(argv, true, false, false);
+	pid = execute_program(argv, environ, true, false, false);
 	if (pid < 0)
 		return false;
 
@@ -697,7 +700,7 @@ static bool create_interface(const char *if_name, const char *phy_name)
 	argv[7] = "managed";
 	argv[8] = NULL;
 
-	pid = execute_program(argv, true, false, false);
+	pid = execute_program(argv, environ, true, false, false);
 	if (pid < 0)
 		return false;
 
@@ -715,7 +718,7 @@ static bool delete_interface(const char *if_name)
 	argv[3] = "del";
 	argv[4] = NULL;
 
-	pid = execute_program(argv, true, false, false);
+	pid = execute_program(argv, environ, true, false, false);
 	if (pid < 0)
 		return false;
 
@@ -731,7 +734,7 @@ static bool list_interfaces(void)
 	argv[1] = "-a";
 	argv[2] = NULL;
 
-	pid = execute_program(argv, true, true, false);
+	pid = execute_program(argv, environ, true, true, false);
 	if (pid < 0)
 		return false;
 
@@ -747,7 +750,7 @@ static bool list_hwsim_radios(void)
 	argv[1] = "--list";
 	argv[2] = NULL;
 
-	pid = execute_program(argv, true, true, false);
+	pid = execute_program(argv, environ, true, true, false);
 	if (pid < 0)
 		return false;
 
@@ -795,7 +798,8 @@ static int create_hwsim_radio(const char *radio_name,
 
 	argv[idx] = NULL;
 
-	pid = execute_program(argv, true, check_verbosity(BIN_HWSIM), false);
+	pid = execute_program(argv, environ, true,
+					check_verbosity(BIN_HWSIM), false);
 	if (pid < 0)
 		return -1;
 
@@ -814,7 +818,7 @@ static bool destroy_hwsim_radio(int radio_id)
 	argv[1] = destroy_param;
 	argv[2] = NULL;
 
-	pid = execute_program(argv, true, false, false);
+	pid = execute_program(argv, environ, true, false, false);
 	if (pid < 0)
 		return false;
 
@@ -834,7 +838,8 @@ static pid_t register_hwsim_as_trans_medium(void)
 	argv[idx++] = BIN_HWSIM;
 	argv[idx++] = NULL;
 
-	return execute_program(argv, false, check_verbosity(BIN_HWSIM), false);
+	return execute_program(argv, environ, false,
+					check_verbosity(BIN_HWSIM), false);
 }
 
 static void terminate_medium(pid_t medium_pid)
@@ -858,13 +863,13 @@ static void start_loopback(void)
 	argv[2] = "127.0.0.1";
 	argv[3] = "up";
 	argv[4] = NULL;
-	execute_program(argv, false, false, false);
+	execute_program(argv, environ, false, false, false);
 
 	argv[0] = "route";
 	argv[1] = "add";
 	argv[2] = "127.0.0.1";
 	argv[3] = NULL;
-	execute_program(argv, false, false, false);
+	execute_program(argv, environ, false, false, false);
 
 	loopback_started = true;
 }
@@ -883,7 +888,7 @@ static pid_t start_phonesim(void)
 
 	setenv("OFONO_PHONESIM_CONFIG", "/tmp/phonesim.conf", true);
 
-	return execute_program(argv, false, false, false);
+	return execute_program(argv, environ, false, false, false);
 }
 
 static void stop_phonesim(pid_t pid)
@@ -909,7 +914,7 @@ static pid_t start_ofono(void)
 
 	start_loopback();
 
-	return execute_program(argv, false, verbose, false);
+	return execute_program(argv, environ, false, verbose, false);
 }
 
 static void stop_ofono(pid_t pid)
@@ -964,7 +969,7 @@ static pid_t start_hostapd(char **config_files, struct wiphy **wiphys)
 		argv[idx++] = NULL;
 	}
 
-	pid = execute_program(argv, false, verbose, false);
+	pid = execute_program(argv, environ, false, verbose, false);
 	if (pid < 0) {
 		goto exit;
 	}
@@ -1393,7 +1398,7 @@ done:
 static pid_t start_iwd(const char *config_dir, struct l_queue *wiphy_list,
 		const char *ext_options, int num_phys)
 {
-	char *argv[13];
+	char *argv[13], **envp;
 	char *iwd_phys = NULL;
 	pid_t ret;
 	int idx = 0;
@@ -1410,8 +1415,6 @@ static pid_t start_iwd(const char *config_dir, struct l_queue *wiphy_list,
 	}
 
 	argv[idx++] = BIN_IWD;
-	argv[idx++] = "-c";
-	argv[idx++] = (char *) config_dir;
 
 	if (check_verbosity(BIN_IWD) || shell)
 		argv[idx++] = "-d";
@@ -1454,10 +1457,18 @@ static pid_t start_iwd(const char *config_dir, struct l_queue *wiphy_list,
 	argv[idx++] = (char *)ext_options;
 	argv[idx] = NULL;
 
-	ret = execute_program(argv, false, check_verbosity(BIN_IWD), shell);
+	envp = l_strv_copy(environ);
+	envp = l_strv_append_printf(envp, "CONFIGURATION_DIRECTORY=%s",
+							config_dir);
+	envp = l_strv_append_printf(envp, "STATE_DIRECTORY=%s",
+							DAEMON_STORAGEDIR);
 
-	if (iwd_phys)
-		l_free(iwd_phys);
+	ret = execute_program(argv, envp, false,
+					check_verbosity(BIN_IWD), shell);
+
+	l_strv_free(envp);
+
+	l_free(iwd_phys);
 
 	return ret;
 }
@@ -1708,8 +1719,8 @@ start_next_test:
 	argv[2] = NULL;
 
 	print_test_status(py_test, TEST_STATUS_STARTED, 0);
-	test_exec_pid = execute_program(argv, false,
-			check_verbosity("pytests"), false);
+	test_exec_pid = execute_program(argv, environ, false,
+					check_verbosity("pytests"), false);
 
 	gettimeofday(&time_before, NULL);
 
@@ -1850,7 +1861,7 @@ static void set_reg_domain(const char *domain)
 	argv[3] = (char *) domain;
 	argv[4] = NULL;
 
-	execute_program(argv, false, false, false);
+	execute_program(argv, environ, false, false, false);
 }
 
 static void wiphy_up(void *data, void *user_data)
@@ -2262,12 +2273,29 @@ static void run_auto_tests(void)
 			i++;
 		}
 	} else {
-		l_info("Automatic test execution requested");
-		l_info("Searching for the test configurations...");
+		/*
+		 * --shell without any specific tests implies 'shell' test
+		 */
+		if (shell) {
+			char *config_dir_path;
+			config_dir_path = l_strdup_printf("%s/shell",
+								test_home_path);
 
-		if (!find_test_configuration(test_home_path, 0,
-							test_config_map))
-			goto exit;
+			if (!find_test_configuration(config_dir_path, 1,
+							test_config_map)) {
+				l_free(config_dir_path);
+				goto exit;
+			}
+
+			l_free(config_dir_path);
+		} else {
+			l_info("Automatic test execution requested");
+			l_info("Searching for the test configurations...");
+
+			if (!find_test_configuration(test_home_path, 0,
+								test_config_map))
+				goto exit;
+		}
 	}
 
 	if (l_hashmap_isempty(test_config_map)) {
@@ -2321,7 +2349,8 @@ static void run_unit_tests(void)
 		argv[0] = unit_test_abs_path;
 		argv[1] = NULL;
 
-		execute_program(argv, true, check_verbosity("unit"), false);
+		execute_program(argv, environ, true,
+					check_verbosity("unit"), false);
 
 		l_free(unit_test_abs_path);
 	}
@@ -2769,7 +2798,14 @@ static void usage(void)
 						" executable\n"
 		"\t-w, --hw <config>	Run using a physical hardware "
 					"configuration\n"
-		"\t-s, --shell		Boot into shell, not autotests\n");
+		"\t-s, --shell		Boot into shell. If -A is used the"
+					" environment\n"
+					"\t\t\t\twill be setup exactly as it is"
+					" in the test,\n"
+					"\t\t\t\tbut no test will be run. If no"
+					" test is specified\n"
+					"\t\t\t\tthe 'shell' test"
+					" will be used");
 	l_info("Commands:\n"
 		"\t-A, --auto-tests <dirs>	Comma separated list of the "
 						"test configuration\n\t\t\t\t"

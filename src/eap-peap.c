@@ -63,13 +63,23 @@ static void eap_peap_phase2_complete(enum eap_result result, void *user_data)
 {
 	struct eap_state *eap = user_data;
 
+	l_debug("result: %d", result);
+
 	/*
 	 * PEAPv1: draft-josefsson-pppext-eap-tls-eap-05, Section 2.2
 	 *
 	 * The receipt of a EAP-Failure or EAP-Success within the TLS protected
 	 * channel results in a shutdown of the TLS channel by the peer.
 	 */
-	eap_tls_common_tunnel_close(eap);
+	if (result == EAP_RESULT_SUCCESS)
+		/*
+		 * Some of the EAP-PEAP server implementations seem to require a
+		 * cleartext ACK for the tunneled EAP-Success messages instead
+		 * of simply closing the tunnel.
+		 */
+		eap_tls_common_send_empty_response(eap);
+	else
+		eap_tls_common_tunnel_close(eap);
 
 	eap_discard_success_and_failure(eap, false);
 	eap_tls_common_set_completed(eap);
@@ -128,6 +138,8 @@ static int eap_extensions_handle_result_avp(struct eap_state *eap,
 	data += 2;
 
 	result = l_get_be16(data);
+
+	l_debug("result: %d", result);
 
 	switch (result) {
 	case EAP_EXTENSIONS_RESULT_SUCCCESS:

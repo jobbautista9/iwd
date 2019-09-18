@@ -29,6 +29,8 @@
 #include <errno.h>
 #include <stdio.h>
 #include <unistd.h>
+#include <limits.h>
+#include <stdlib.h>
 
 #include <ell/ell.h>
 
@@ -46,6 +48,7 @@ static struct l_queue *known_networks;
 static size_t num_known_hidden_networks;
 static struct l_dir_watch *storage_dir_watch;
 static struct watchlist known_network_watches;
+static struct l_settings *known_freqs;
 
 static void network_info_free(void *data)
 {
@@ -176,6 +179,11 @@ static const char *known_network_get_type(const struct network_info *info)
 	return security_to_str(info->type);
 }
 
+static char *known_network_get_file_path(const struct network_info *info)
+{
+	return storage_get_network_file_path(info->type, info->ssid);
+}
+
 static struct network_info_ops known_network_ops = {
 	.open = known_network_open,
 	.touch = known_network_touch,
@@ -185,6 +193,7 @@ static struct network_info_ops known_network_ops = {
 	.get_path = known_network_get_path,
 	.get_name = known_network_get_name,
 	.get_type = known_network_get_type,
+	.get_file_path = known_network_get_file_path,
 };
 
 struct l_settings *network_info_open_settings(struct network_info *info)
@@ -212,6 +221,86 @@ const char *network_info_get_type(const struct network_info *info)
 	return info->ops->get_type(info);
 }
 
+const struct iovec *network_info_get_extra_ies(const struct network_info *info,
+						struct scan_bss *bss,
+						size_t *num_elems)
+{
+	if (!info || !info->ops->get_extra_ies)
+		return NULL;
+
+	return info->ops->get_extra_ies(info, bss, num_elems);
+}
+
+const uint8_t *network_info_get_uuid(struct network_info *info)
+{
+	char *file_path;
+	char *to_hash;
+	/*
+	 * 16 bytes of randomness. Since we only care about a unique value there
+	 * is no need to use any special pre-defined namespace.
+	 */
+	static const uint8_t nsid[16] = {
+		0xfd, 0x88, 0x6f, 0x1e, 0xdf, 0x02, 0xd7, 0x8b,
+		0xc4, 0x90, 0x30, 0x59, 0x73, 0x8a, 0x86, 0x0d
+	};
+
+	if (info->has_uuid)
+		return info->uuid;
+
+	file_path = info->ops->get_file_path(info);
+
+	/*
+	 * This will generate a UUID based on file path and mtime. This
+	 * is done so we can get a different UUID if the network has
+	 * been forgotten.
+	 */
+	to_hash = l_strdup_printf("%s_%" PRIu64, file_path,
+					info->connected_time);
+	l_uuid_v5(nsid, to_hash, strlen(to_hash), info->uuid);
+	l_free(to_hash);
+	l_free(file_path);
+
+	info->has_uuid = true;
+
+	return info->uuid;
+}
+
+void network_info_set_uuid(struct network_info *info, const uint8_t *uuid)
+{
+	memcpy(info->uuid, uuid, 16);
+	info->has_uuid = true;
+}
+
+struct scan_freq_set *network_info_get_roam_frequencies(
+					const struct network_info *info,
+					uint32_t current_freq,
+					uint8_t max)
+{
+	struct scan_freq_set *freqs;
+	const struct l_queue_entry *entry;
+
+	freqs = scan_freq_set_new();
+
+	for (entry = l_queue_get_entries(info->known_frequencies); entry && max;
+			entry = entry->next) {
+		struct known_frequency *kn = entry->data;
+
+		if (kn->frequency == current_freq)
+			continue;
+
+		scan_freq_set_add(freqs, kn->frequency);
+
+		max--;
+	}
+
+	if (scan_freq_set_isempty(freqs)) {
+		scan_freq_set_free(freqs);
+		return NULL;
+	}
+
+	return freqs;
+}
+
 bool network_info_match_hessid(const struct network_info *info,
 				const uint8_t *hessid)
 {
@@ -221,14 +310,17 @@ bool network_info_match_hessid(const struct network_info *info,
 	return info->ops->match_hessid(info, hessid);
 }
 
-bool network_info_match_roaming_consortium(const struct network_info *info,
+const uint8_t *network_info_match_roaming_consortium(
+						const struct network_info *info,
 						const uint8_t *rc,
-						size_t rc_len)
+						size_t rc_len,
+						size_t *rc_len_out)
 {
 	if (!info->ops->match_roaming_consortium)
-		return false;
+		return NULL;
 
-	return info->ops->match_roaming_consortium(info, rc, rc_len);
+	return info->ops->match_roaming_consortium(info, rc, rc_len,
+							rc_len_out);
 }
 
 bool network_info_match_nai_realm(const struct network_info *info,
@@ -548,6 +640,14 @@ void known_networks_remove(struct network_info *network)
 				known_networks_watch_func_t,
 				KNOWN_NETWORKS_EVENT_REMOVED, network);
 
+	if (known_freqs && network->has_uuid) {
+		char uuid[37];
+
+		l_uuid_to_string(network->uuid, uuid, sizeof(uuid));
+		l_settings_remove_group(known_freqs, uuid);
+		storage_known_frequencies_sync(known_freqs);
+	}
+
 	network_info_free(network);
 }
 
@@ -715,93 +815,128 @@ static char *known_frequencies_to_string(struct l_queue *known_frequencies)
 	return l_string_unwrap(str);
 }
 
-static void known_network_frequencies_load(void)
+struct hotspot_search {
+	struct network_info *info;
+	const char *path;
+};
+
+static bool match_hotspot_path(const struct network_info *info, void *user_data)
 {
-	char **network_names;
-	struct l_settings *known_freqs;
+	struct hotspot_search *search = user_data;
+	char *path;
+
+	if (!info->is_hotspot)
+		return true;
+
+	path = info->ops->get_file_path(info);
+
+	if (!strcmp(path, search->path)) {
+		l_free(path);
+		search->info = (struct network_info *)info;
+		return false;
+	}
+
+	l_free(path);
+
+	return true;
+}
+
+static struct network_info *find_network_info_from_path(const char *path)
+{
+	enum security security;
+	struct hotspot_search search;
+	const char *ssid = storage_network_ssid_from_path(path, &security);
+
+	if (ssid)
+		return known_networks_find(ssid, security);
+
+	search.info = NULL;
+	search.path = path;
+
+	/* Try hotspot */
+	known_networks_foreach(match_hotspot_path, &search);
+
+	return search.info;
+}
+
+static int known_network_frequencies_load(void)
+{
+	char **groups;
 	struct l_queue *known_frequencies;
 	uint32_t i;
+	uint8_t uuid[16];
 
 	known_freqs = storage_known_frequencies_load();
 	if (!known_freqs) {
 		l_debug("No known frequency file found.");
-		return;
+		return 0;
 	}
 
-	network_names = l_settings_get_groups(known_freqs);
-	if (!network_names[0])
-		goto done;
+	groups = l_settings_get_groups(known_freqs);
 
-	for (i = 0; network_names[i]; i++) {
-		struct network_info *network_info;
-		enum security security;
-		const char *ssid;
+	for (i = 0; groups[i]; i++) {
+		struct network_info *info;
 		char *freq_list;
-
-		ssid = storage_network_ssid_from_path(network_names[i],
-								&security);
-		if (!ssid)
+		const char *path = l_settings_get_value(known_freqs, groups[i],
+							"name");
+		if (!path)
 			continue;
 
-		freq_list = l_settings_get_string(known_freqs, network_names[i],
-									"list");
+		info = find_network_info_from_path(path);
+		if (!info)
+			continue;
+
+		freq_list = l_settings_get_string(known_freqs, groups[i],
+							"list");
 		if (!freq_list)
 			continue;
-
-		network_info = known_networks_find(ssid, security);
-		if (!network_info)
-			goto next;
 
 		known_frequencies = known_frequencies_from_string(freq_list);
 		if (!known_frequencies)
 			goto next;
 
-		network_info->known_frequencies = known_frequencies;
+		if (!l_uuid_from_string(groups[i], uuid))
+			goto next;
+
+		network_info_set_uuid(info, uuid);
+		info->known_frequencies = known_frequencies;
+
 next:
 		l_free(freq_list);
 	}
 
-done:
-	l_strv_free(network_names);
-	l_settings_free(known_freqs);
+	l_strv_free(groups);
+
+	return 0;
 }
 
-static bool known_network_frequencies_to_settings(
-					const struct network_info *network_info,
-					void *user_data)
+/*
+ * Syncs a single network_info frequency to the global frequency file
+ */
+void known_network_frequency_sync(struct network_info *info)
 {
-	struct l_settings *known_freqs = user_data;
 	char *freq_list_str;
-	char *network_path;
+	char *file_path;
+	char group[37];
 
-	if (!network_info->known_frequencies)
-		return true;
+	if (!info->known_frequencies)
+		return;
 
-	freq_list_str = known_frequencies_to_string(
-					network_info->known_frequencies);
+	if (!known_freqs)
+		known_freqs = l_settings_new();
 
-	network_path = storage_get_network_file_path(network_info->type,
-							network_info->ssid);
+	freq_list_str = known_frequencies_to_string(info->known_frequencies);
 
-	l_settings_set_value(known_freqs, network_path, "list", freq_list_str);
-	l_free(network_path);
+	file_path = info->ops->get_file_path(info);
+
+	l_uuid_to_string(network_info_get_uuid(info), group, sizeof(group));
+
+	l_settings_set_value(known_freqs, group, "name", file_path);
+	l_settings_set_value(known_freqs, group, "list", freq_list_str);
+	l_free(file_path);
 	l_free(freq_list_str);
 
-	return true;
-}
-
-static void known_network_frequencies_sync(void)
-{
-	struct l_settings *known_freqs;
-
-	known_freqs = l_settings_new();
-
-	known_networks_foreach(known_network_frequencies_to_settings,
-								known_freqs);
-
 	storage_known_frequencies_sync(known_freqs);
-
-	l_settings_free(known_freqs);
 }
 
 uint32_t known_networks_watch_add(known_networks_watch_func_t func,
@@ -822,6 +957,8 @@ static int known_networks_init(void)
 	DIR *dir;
 	struct dirent *dirent;
 
+	L_AUTO_FREE_VAR(char *, storage_dir) = storage_get_path(NULL);
+
 	if (!l_dbus_register_interface(dbus, IWD_KNOWN_NETWORK_INTERFACE,
 						setup_known_network_interface,
 						NULL, false)) {
@@ -830,10 +967,9 @@ static int known_networks_init(void)
 		return -EPERM;
 	}
 
-	dir = opendir(DAEMON_STORAGEDIR);
+	dir = opendir(storage_dir);
 	if (!dir) {
-		l_info("Unable to open %s: %s", DAEMON_STORAGEDIR,
-							strerror(errno));
+		l_info("Unable to open %s: %s", storage_dir, strerror(errno));
 		l_dbus_unregister_interface(dbus, IWD_KNOWN_NETWORK_INTERFACE);
 		return -ENOENT;
 	}
@@ -871,9 +1007,7 @@ static int known_networks_init(void)
 
 	closedir(dir);
 
-	known_network_frequencies_load();
-
-	storage_dir_watch = l_dir_watch_new(DAEMON_STORAGEDIR,
+	storage_dir_watch = l_dir_watch_new(storage_dir,
 						known_networks_watch_cb, NULL,
 						known_networks_watch_destroy);
 	watchlist_init(&known_network_watches, NULL);
@@ -887,8 +1021,6 @@ static void known_networks_exit(void)
 
 	l_dir_watch_destroy(storage_dir_watch);
 
-	known_network_frequencies_sync();
-
 	l_queue_destroy(known_networks, network_info_free);
 	known_networks = NULL;
 
@@ -898,3 +1030,16 @@ static void known_networks_exit(void)
 }
 
 IWD_MODULE(known_networks, known_networks_init, known_networks_exit)
+
+static void known_frequencies_exit(void)
+{
+	l_settings_free(known_freqs);
+}
+
+/*
+ * Since the known frequency file should only be read in after all known
+ * networks are loaded (including hotspots) we need to create another module
+ * here which depends on hotspot.
+ */
+IWD_MODULE(known_frequencies, known_network_frequencies_load, known_frequencies_exit)
+IWD_MODULE_DEPENDS(known_frequencies, hotspot)

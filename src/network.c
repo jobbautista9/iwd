@@ -49,7 +49,6 @@
 #include "src/network.h"
 #include "src/blacklist.h"
 #include "src/util.h"
-#include "src/hotspot.h"
 
 static uint32_t known_networks_watch;
 
@@ -151,6 +150,9 @@ void network_connected(struct network *network)
 		err = network_info_touch(network->info);
 		if (err < 0)
 			l_error("Error %i touching network config", err);
+
+		/* Syncs frequencies of already known network*/
+		known_network_frequency_sync(network->info);
 	}
 
 	l_queue_foreach_remove(network->secrets,
@@ -436,11 +438,21 @@ const struct network_info *network_get_info(const struct network *network)
 	return network->info;
 }
 
+static void add_known_frequency(void *data, void *user_data)
+{
+	struct scan_bss *bss = data;
+	struct network_info *info = user_data;
+
+	known_network_add_frequency(info, bss->frequency);
+}
+
 void network_set_info(struct network *network, struct network_info *info)
 {
 	if (info) {
 		network->info = info;
 		network->info->seen_count++;
+
+		l_queue_foreach(network->bss_list, add_known_frequency, info);
 	} else {
 		network->info->seen_count--;
 		network->info = NULL;
@@ -575,7 +587,8 @@ static bool hotspot_info_matches(struct network *network,
 		return true;
 
 	if (network_info_match_roaming_consortium(info, bss->rc_ie,
-							bss->rc_ie[1] + 2))
+							bss->rc_ie[1] + 2,
+							NULL))
 		return true;
 
 	return false;
@@ -1157,6 +1170,14 @@ void network_blacklist_add(struct network *network, struct scan_bss *bss)
 	l_queue_push_head(network->blacklist, bss);
 }
 
+const struct iovec *network_get_extra_ies(struct network *network,
+						size_t *num_elems)
+{
+	struct scan_bss *bss = network_bss_select(network, false);
+
+	return network_info_get_extra_ies(network->info, bss, num_elems);
+}
+
 static bool network_property_get_name(struct l_dbus *dbus,
 					struct l_dbus_message *message,
 					struct l_dbus_message_builder *builder,
@@ -1404,6 +1425,9 @@ static void known_networks_changed(enum known_networks_event event,
 	switch (event) {
 	case KNOWN_NETWORKS_EVENT_ADDED:
 		station_foreach(match_known_network, (void *) info);
+
+		/* Syncs frequencies of newly known network */
+		known_network_frequency_sync((struct network_info *)info);
 		break;
 	case KNOWN_NETWORKS_EVENT_REMOVED:
 		station_foreach(disconnect_no_longer_known, (void *) info);

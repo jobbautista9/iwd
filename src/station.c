@@ -53,7 +53,6 @@
 #include "src/netconfig.h"
 #include "src/anqp.h"
 #include "src/anqputil.h"
-#include "src/hotspot.h"
 
 static struct l_queue *station_list;
 static uint32_t netdev_watch;
@@ -478,6 +477,8 @@ static void station_anqp_response_cb(enum anqp_result result,
 	search.realms = (const char **)realms;
 
 	known_networks_foreach(match_nai_realms, &search);
+
+	l_strv_free(realms);
 
 request_done:
 	l_queue_remove(station->anqp_pending, entry);
@@ -1695,6 +1696,25 @@ static void station_roam_scan(struct station *station,
 		station_roam_failed(station);
 }
 
+static bool station_roam_scan_known_freqs(struct station *station)
+{
+	const struct network_info *info = network_get_info(
+						station->connected_network);
+	struct scan_freq_set *freqs = network_info_get_roam_frequencies(info,
+					station->connected_bss->frequency, 5);
+
+	if (!freqs) {
+		l_debug("no known frequencies to scan");
+		return false;
+	}
+
+	station_roam_scan(station, freqs);
+
+	scan_freq_set_free(freqs);
+
+	return true;
+}
+
 static uint32_t station_freq_from_neighbor_report(const uint8_t *country,
 		struct ie_neighbor_report_info *info, enum scan_band *out_band)
 {
@@ -1764,8 +1784,10 @@ static void station_neighbor_report_cb(struct netdev *netdev, int err,
 		return;
 
 	if (!reports || err) {
-		/* Have to do a full scan */
-		station_roam_scan(station, NULL);
+		if (!station_roam_scan_known_freqs(station)) {
+			l_debug("no neighbor report results or known freqs");
+			station_roam_failed(station);
+		}
 
 		return;
 	}
@@ -1894,8 +1916,11 @@ static void station_roam_trigger_cb(struct l_timeout *timeout, void *user_data)
 						station_neighbor_report_cb))
 			return;
 
-	/* Otherwise do a full scan for target BSS candidates */
-	station_roam_scan(station, NULL);
+	if (!station_roam_scan_known_freqs(station)) {
+		l_debug("No neighbor report or known frequencies, roam failed");
+		station_roam_failed(station);
+		return;
+	}
 }
 
 static void station_roam_timeout_rearm(struct station *station, int seconds)
@@ -2238,12 +2263,8 @@ static void station_connect_cb(struct netdev *netdev, enum netdev_result result,
 int __station_connect_network(struct station *station, struct network *network,
 				struct scan_bss *bss)
 {
-	const uint8_t *rc = NULL;
-	uint8_t hs20_ie[7];
-	size_t rc_len = 0;
-	uint8_t rc_buf[32];
-	struct iovec iov[2];
-	int iov_elems = 0;
+	const struct iovec *extra_ies;
+	size_t iov_elems = 0;
 	struct handshake_state *hs;
 	int r;
 
@@ -2251,30 +2272,9 @@ int __station_connect_network(struct station *station, struct network *network,
 	if (!hs)
 		return -ENOTSUP;
 
-	if (bss->hs20_capable) {
-		/* Include HS20 Indication with (Re)Association */
-		ie_build_hs20_indication(bss->hs20_version, hs20_ie);
+	extra_ies = network_get_extra_ies(network, &iov_elems);
 
-		iov[iov_elems].iov_base = hs20_ie;
-		iov[iov_elems].iov_len = hs20_ie[1] + 2;
-		iov_elems++;
-
-		/*
-		 * If a matching roaming consortium OI is found for the network
-		 * this single RC value will be set in the handshake and used
-		 * during (Re)Association.
-		 */
-		rc = hs20_get_roaming_consortium(network, &rc_len);
-		if (rc) {
-			ie_build_roaming_consortium(rc, rc_len, rc_buf);
-
-			iov[iov_elems].iov_base = rc_buf;
-			iov[iov_elems].iov_len = rc_buf[1] + 2;
-			iov_elems++;
-		}
-	}
-
-	r = netdev_connect(station->netdev, bss, hs, iov_elems ? iov : NULL,
+	r = netdev_connect(station->netdev, bss, hs, extra_ies,
 				iov_elems, station_netdev_event,
 				station_connect_cb, station);
 	if (r < 0) {
