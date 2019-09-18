@@ -1,8 +1,10 @@
-iwd (0.21-1) UNRELEASED; urgency=medium
+iwd (0.21-1) unstable; urgency=medium
 
   * New upstream release.
+  * Ship main.conf example and other docs (Closes: #939037)
+  * Drop obsolete postinst script
 
- -- Andreas Henriksson <andreas@fatal.se>  Wed, 18 Sep 2019 10:29:11 +0200
+ -- Andreas Henriksson <andreas@fatal.se>  Wed, 18 Sep 2019 10:34:03 +0200
 
 iwd (0.20-1) unstable; urgency=medium
 
