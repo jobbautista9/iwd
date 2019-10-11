@@ -2886,7 +2886,7 @@ static void test_handshake_event(struct handshake_state *hs,
 }
 
 static void eapol_sm_test_tls(struct eapol_8021x_tls_test_state *s,
-				const char *config)
+				struct l_settings *config)
 {
 	static const unsigned char ap_wpa_ie[] = {
 		0xdd, 0x16, 0x00, 0x50, 0xf2, 0x01, 0x01, 0x00,
@@ -2898,7 +2898,6 @@ static void eapol_sm_test_tls(struct eapol_8021x_tls_test_state *s,
 	struct handshake_state *hs;
 	struct test_handshake_state *ths;
 	struct eapol_sm *sm;
-	struct l_settings *settings;
 	uint8_t tx_buf[2000];
 	size_t header_len, data_len, tx_len;
 	bool start;
@@ -2906,6 +2905,9 @@ static void eapol_sm_test_tls(struct eapol_8021x_tls_test_state *s,
 	struct eapol_key *step1, *step2, *step3, *step4;
 	uint8_t ptk_buf[64];
 	uint8_t *ptk;
+	struct l_certchain *server_cert;
+	struct l_key *server_key;
+	struct l_queue *ca_cert;
 
 	aa = ap_address;
 	spa = sta_address;
@@ -2930,12 +2932,8 @@ static void eapol_sm_test_tls(struct eapol_8021x_tls_test_state *s,
 
 	handshake_state_set_authenticator_ie(hs, ap_wpa_ie);
 
-	settings = l_settings_new();
-	l_settings_load_from_data(settings, config, strlen(config));
-	handshake_state_set_8021x_config(hs, settings);
+	handshake_state_set_8021x_config(hs, config);
 	eapol_start(sm);
-
-	l_settings_free(settings);
 
 	__eapol_set_tx_packet_func(verify_8021x_identity_resp);
 	s->pending_req = 1;
@@ -2955,9 +2953,18 @@ static void eapol_sm_test_tls(struct eapol_8021x_tls_test_state *s,
 	s->tx_buf_len = 0;
 	s->tx_buf_offset = 0;
 
-	assert(l_tls_set_auth_data(s->tls, CERTDIR "cert-server.pem",
-				CERTDIR "cert-server-key-pkcs8.pem", NULL));
-	assert(l_tls_set_cacert(s->tls, CERTDIR "cert-ca.pem"));
+	server_cert = l_pem_load_certificate_chain(CERTDIR "cert-server.pem");
+	assert(server_cert);
+
+	server_key = l_pem_load_private_key(CERTDIR "cert-server-key-pkcs8.pem",
+						NULL, NULL);
+	assert(server_key);
+
+	ca_cert = l_pem_load_certificate_list(CERTDIR "cert-ca.pem");
+	assert(ca_cert);
+
+	assert(l_tls_set_auth_data(s->tls, server_cert, server_key));
+	assert(l_tls_set_cacert(s->tls, ca_cert));
 	assert(l_tls_start(s->tls));
 
 	ths->handshake_failed = false;
@@ -3140,25 +3147,48 @@ done:
 
 static void eapol_sm_test_eap_tls(const void *data)
 {
-	static const char *eapol_8021x_config = "[Security]\n"
+	static const char *config_8021x = "[Security]\n"
 		"EAP-Method=TLS\n"
 		"EAP-Identity=abc@example.com\n"
 		"EAP-TLS-CACert=" CERTDIR "cert-ca.pem\n"
 		"EAP-TLS-ClientCert=" CERTDIR "cert-client.pem\n"
 		"EAP-TLS-ClientKey=" CERTDIR "cert-client-key-pkcs8.pem";
 	struct eapol_8021x_tls_test_state s = {};
+	struct l_settings* config = l_settings_new();
+
+	l_settings_load_from_data(config, config_8021x, strlen(config_8021x));
 
 	s.app_data_cb = eapol_sm_test_tls_new_data;
 	s.ready_cb = eapol_sm_test_tls_test_ready;
 	s.disconnect_cb = eapol_sm_test_tls_test_disconnected;
 	s.method = EAP_TYPE_TLS;
 
-	eapol_sm_test_tls(&s, eapol_8021x_config);
+	eapol_sm_test_tls(&s, config);
+
+	l_settings_free(config);
+}
+
+static void eapol_sm_test_eap_tls_embedded(const void *data)
+{
+	struct eapol_8021x_tls_test_state s = {};
+	struct l_settings *config;
+
+	config = l_settings_new();
+	l_settings_load_from_file(config, CERTDIR "tls-settings.8021x");
+
+	s.app_data_cb = eapol_sm_test_tls_new_data;
+	s.ready_cb = eapol_sm_test_tls_test_ready;
+	s.disconnect_cb = eapol_sm_test_tls_test_disconnected;
+	s.method = EAP_TYPE_TLS;
+
+	eapol_sm_test_tls(&s, config);
+
+	l_settings_free(config);
 }
 
 static void eapol_sm_test_eap_tls_subject_good(const void *data)
 {
-	static const char *eapol_8021x_config = "[Security]\n"
+	static const char *config_8021x = "[Security]\n"
 		"EAP-Method=TLS\n"
 		"EAP-Identity=abc@example.com\n"
 		"EAP-TLS-CACert=" CERTDIR "cert-ca.pem\n"
@@ -3166,18 +3196,23 @@ static void eapol_sm_test_eap_tls_subject_good(const void *data)
 		"EAP-TLS-ClientKey=" CERTDIR "cert-client-key-pkcs8.pem\n"
 		"EAP-TLS-ServerDomainMask=bad.example.org;*.example.org";
 	struct eapol_8021x_tls_test_state s = {};
+	struct l_settings* config = l_settings_new();
+
+	l_settings_load_from_data(config, config_8021x, strlen(config_8021x));
 
 	s.app_data_cb = eapol_sm_test_tls_new_data;
 	s.ready_cb = eapol_sm_test_tls_test_ready;
 	s.disconnect_cb = eapol_sm_test_tls_test_disconnected;
 	s.method = EAP_TYPE_TLS;
 
-	eapol_sm_test_tls(&s, eapol_8021x_config);
+	eapol_sm_test_tls(&s, config);
+
+	l_settings_free(config);
 }
 
 static void eapol_sm_test_eap_tls_subject_bad(const void *data)
 {
-	static const char *eapol_8021x_config = "[Security]\n"
+	static const char *config_8021x = "[Security]\n"
 		"EAP-Method=TLS\n"
 		"EAP-Identity=abc@example.com\n"
 		"EAP-TLS-CACert=" CERTDIR "cert-ca.pem\n"
@@ -3185,6 +3220,9 @@ static void eapol_sm_test_eap_tls_subject_bad(const void *data)
 		"EAP-TLS-ClientKey=" CERTDIR "cert-client-key-pkcs8.pem\n"
 		"EAP-TLS-ServerDomainMask=bad.example.org";
 	struct eapol_8021x_tls_test_state s = {};
+	struct l_settings* config = l_settings_new();
+
+	l_settings_load_from_data(config, config_8021x, strlen(config_8021x));
 
 	s.app_data_cb = eapol_sm_test_tls_new_data;
 	s.ready_cb = eapol_sm_test_tls_test_ready;
@@ -3192,7 +3230,9 @@ static void eapol_sm_test_eap_tls_subject_bad(const void *data)
 	s.method = EAP_TYPE_TLS;
 	s.expect_handshake_fail = true;
 
-	eapol_sm_test_tls(&s, eapol_8021x_config);
+	eapol_sm_test_tls(&s, config);
+
+	l_settings_free(config);
 }
 
 static const uint8_t eap_ttls_eap_identity_avp[] = {
@@ -3255,7 +3295,7 @@ static void eapol_sm_test_eap_ttls_test_ready(const char *peer_identity,
 
 static void eapol_sm_test_eap_ttls_md5(const void *data)
 {
-	static const char *eapol_8021x_config = "[Security]\n"
+	static const char *config_8021x = "[Security]\n"
 		"EAP-Method=TTLS\n"
 		"EAP-Identity=abc@example.com\n"
 		"EAP-TTLS-CACert=" CERTDIR "cert-ca.pem\n"
@@ -3265,13 +3305,18 @@ static void eapol_sm_test_eap_ttls_md5(const void *data)
 		"EAP-TTLS-Phase2-Identity=abc@example.com\n"
 		"EAP-TTLS-Phase2-Password=testpasswd";
 	struct eapol_8021x_eap_ttls_test_state s = {};
+	struct l_settings* config = l_settings_new();
+
+	l_settings_load_from_data(config, config_8021x, strlen(config_8021x));
 
 	s.tls.app_data_cb = eapol_sm_test_eap_ttls_new_data;
 	s.tls.ready_cb = eapol_sm_test_eap_ttls_test_ready;
 	s.tls.disconnect_cb = eapol_sm_test_tls_test_disconnected;
 	s.tls.method = EAP_TYPE_TTLS;
 
-	eapol_sm_test_tls(&s.tls, eapol_8021x_config);
+	eapol_sm_test_tls(&s.tls, config);
+
+	l_settings_free(config);
 }
 
 static const uint8_t eap_ttls_start_req[] = {
@@ -3466,6 +3511,12 @@ static void eapol_ft_handshake_test(const void *data)
 	eapol_exit();
 }
 
+#define IS_ENABLED(config_macro) _IS_ENABLED1(config_macro)
+#define _IS_ENABLED1(config_macro) _IS_ENABLED2(_XXXX##config_macro)
+#define _XXXX1 _YYYY,
+#define _IS_ENABLED2(one_or_two_args) _IS_ENABLED3(one_or_two_args true, false)
+#define _IS_ENABLED3(ignore_this, val, ...) val
+
 int main(int argc, char *argv[])
 {
 	l_test_init(&argc, &argv);
@@ -3577,10 +3628,11 @@ int main(int argc, char *argv[])
 	l_test_add("EAPoL/WPA2 Retransmit Test",
 			&eapol_sm_wpa2_retransmit_test, NULL);
 
-	if (l_cipher_is_supported(L_CIPHER_DES3_EDE_CBC) &&
+	if (IS_ENABLED(HAVE_PKCS8_SUPPORT) &&
+			l_cipher_is_supported(L_CIPHER_DES3_EDE_CBC) &&
 			l_cipher_is_supported(L_CIPHER_AES_CBC) &&
 			l_key_is_supported(L_KEY_FEATURE_RESTRICT |
-							L_KEY_FEATURE_CRYPTO)) {
+						L_KEY_FEATURE_CRYPTO)) {
 		l_test_add("EAPoL/8021x EAP-TLS & 4-Way Handshake",
 					&eapol_sm_test_eap_tls, NULL);
 
@@ -3593,6 +3645,8 @@ int main(int argc, char *argv[])
 				&eapol_sm_test_eap_tls_subject_good, NULL);
 		l_test_add("EAPoL/8021x EAP-TLS subject name mismatch",
 				&eapol_sm_test_eap_tls_subject_bad, NULL);
+		l_test_add("EAPoL/8021x EAP-TLS embedded certs",
+				&eapol_sm_test_eap_tls_embedded, NULL);
 	}
 
 	l_test_add("EAPoL/FT-Using-PSK 4-Way Handshake",

@@ -23,6 +23,7 @@
 #define COMMAND_OPTION_USERNAME		"username"
 #define COMMAND_OPTION_PASSWORD		"password"
 #define COMMAND_OPTION_PASSPHRASE	"passphrase"
+#define COMMAND_OPTION_DONTASK		"dontask"
 
 typedef char *(*command_completion_func_t) (const char *text, int state);
 
@@ -56,8 +57,8 @@ struct command_family {
 	void (*reset_default_entity)(void);
 };
 
-const char *command_option_get(const char *name);
-bool command_has_options(void);
+bool command_option_get(const char *name, const char **value_out);
+bool command_needs_no_agent(void);
 
 bool command_line_find_token(const char *token, uint8_t num_to_inspect);
 char **command_completion(const char *text, int start, int end);

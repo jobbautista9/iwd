@@ -56,7 +56,7 @@ static void command_options_destroy(void *data)
 	l_free(option);
 }
 
-const char *command_option_get(const char *name)
+bool command_option_get(const char *name, const char **value_out)
 {
 	const struct l_queue_entry *entry;
 
@@ -67,15 +67,19 @@ const char *command_option_get(const char *name)
 		if (strcmp(option->name, name))
 			continue;
 
-		return option->value;
+		if (value_out)
+			*value_out = option->value;
+
+		return true;
 	}
 
-	return NULL;
+	return false;
 }
 
-bool command_has_options(void)
+bool command_needs_no_agent(void)
 {
-	return !l_queue_isempty(command_options);
+	return command_option_get(COMMAND_OPTION_DONTASK, NULL) &&
+					(l_queue_length(command_options) == 1);
 }
 
 static enum cmd_status cmd_version(const char *entity,
@@ -503,6 +507,20 @@ static void list_commands(const char *command_family,
 	}
 }
 
+static void list_cmd_options(void)
+{
+	display(MARGIN "--%-*s%s\n", 48, COMMAND_OPTION_USERNAME,
+					"Provide username");
+	display(MARGIN "--%-*s%s\n", 48, COMMAND_OPTION_PASSWORD,
+					"Provide password");
+	display(MARGIN "--%-*s%s\n", 48, COMMAND_OPTION_PASSPHRASE,
+					"Provide passphrase");
+	display(MARGIN "--%-*s%s\n", 48, COMMAND_OPTION_DONTASK,
+					"Don’t ask for missing\n"
+					"\t\t\t\t\t\t    credentials");
+	display(MARGIN "--%-*s%s\n", 48, "help", "Display help");
+}
+
 static void list_cmd_families(void)
 {
 	const struct l_queue_entry *entry;
@@ -516,6 +534,32 @@ static void list_cmd_families(void)
 	}
 }
 
+static void command_display_help(void)
+{
+	display("\n");
+	display_table_header("iwctl version " VERSION, MARGIN "%-*s",
+								5, "Usage");
+	display(MARGIN "iwctl [--options] [commands]\n");
+	display_table_footer();
+
+	display_table_header("Available options", MARGIN "%-*s%-*s",
+					50, "Options", 28, "Description");
+	list_cmd_options();
+	display_table_footer();
+
+	display_table_header("Available commands", MARGIN "%-*s%-*s",
+					50, "Commands", 28, "Description");
+	list_cmd_families();
+	display_table_footer();
+
+	if (!interactive_mode)
+		return;
+
+	display("\nMiscellaneous:\n");
+
+	list_commands(NULL, misc_commands);
+}
+
 static bool command_match_misc_commands(char **argv, int argc)
 {
 	if (match_cmd(NULL, argv[0], argv + 1, argc - 1, misc_commands))
@@ -524,17 +568,7 @@ static bool command_match_misc_commands(char **argv, int argc)
 	if (strcmp(argv[0], "help"))
 		return false;
 
-	display_table_header("Available commands", MARGIN "%-*s%-*s",
-					50, "Commands", 28, "Description");
-
-	list_cmd_families();
-
-	if (!interactive_mode)
-		return true;
-
-	display("\nMiscellaneous:\n");
-
-	list_commands(NULL, misc_commands);
+	command_display_help();
 
 	return true;
 }
@@ -621,6 +655,8 @@ static const struct option command_opts[] = {
 	{ COMMAND_OPTION_USERNAME,	required_argument, NULL, 'u' },
 	{ COMMAND_OPTION_PASSWORD,	required_argument, NULL, 'p' },
 	{ COMMAND_OPTION_PASSPHRASE,	required_argument, NULL, 'P' },
+	{ COMMAND_OPTION_DONTASK,	no_argument,	   NULL, 'd' },
+	{ "help",			no_argument,	   NULL, 'h' },
 	{ }
 };
 
@@ -645,7 +681,7 @@ bool command_init(char **argv, int argc)
 	for (;;) {
 		struct command_option *option;
 
-		opt = getopt_long(argc, argv, "u:p:P:", command_opts, NULL);
+		opt = getopt_long(argc, argv, "u:p:P:dh", command_opts, NULL);
 
 		switch (opt) {
 		case 'u':
@@ -672,12 +708,25 @@ bool command_init(char **argv, int argc)
 			l_queue_push_tail(command_options, option);
 
 			break;
+		case 'd':
+			option = l_new(struct command_option, 1);
+			option->name = COMMAND_OPTION_DONTASK;
+
+			l_queue_push_tail(command_options, option);
+
+			break;
+		case 'h':
+			command_display_help();
+
+			l_main_quit();
+
+			return true;
 		case -1:
 			goto options_parsed;
 		case '?':
 			exit_status = EXIT_FAILURE;
 
-			return false;
+			return true;
 		}
 	}
 
@@ -687,7 +736,7 @@ options_parsed:
 
 	if (argc < 2) {
 		interactive_mode = true;
-		return true;
+		return false;
 	}
 
 	command_noninteractive.argv = argv;
