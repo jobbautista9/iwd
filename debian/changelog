@@ -1,6 +1,9 @@
 iwd (0.22-1) unstable; urgency=medium
 
   * New upstream release.
+  * iwd.docs: doc/*.txt no longer shipped
+  * Build-depend on python3-docutils for manpage generation
+  * Build-dep on openssl for unit test cert generation
 
  -- Andreas Henriksson <andreas@fatal.se>  Fri, 11 Oct 2019 10:34:15 +0200
 
