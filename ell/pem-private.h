@@ -1,6 +1,6 @@
 /*
  *
- *  Wireless daemon for Linux
+ *  Embedded Linux library
  *
  *  Copyright (C) 2019  Intel Corporation. All rights reserved.
  *
@@ -20,22 +20,13 @@
  *
  */
 
-struct netconfig;
+#ifdef HAVE_CONFIG_H
+#include <config.h>
+#endif
 
-enum netconfig_event {
-	NETCONFIG_EVENT_CONNECTED,
-};
+#define _GNU_SOURCE
+#include <sys/types.h>
 
-typedef void (*netconfig_notify_func_t)(enum netconfig_event event,
-							void *user_data);
-
-bool netconfig_configure(struct netconfig *netconfig,
-				const struct l_settings *active_settings,
-				const uint8_t *mac_address,
-				netconfig_notify_func_t notify,
-				void *user_data);
-bool netconfig_reconfigure(struct netconfig *netconfig);
-bool netconfig_reset(struct netconfig *netconfig);
-
-struct netconfig *netconfig_new(uint32_t ifindex);
-void netconfig_destroy(struct netconfig *netconfig);
+const char *pem_next(const void *buf, size_t buf_len, char **type_label,
+				size_t *base64_len,
+				const char **endp, bool strict);

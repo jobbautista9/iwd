@@ -88,6 +88,8 @@ struct station {
 
 	struct l_queue *anqp_pending;
 
+	struct netconfig *netconfig;
+
 	bool preparing_roam : 1;
 	bool signal_low : 1;
 	bool roam_no_orig_ap : 1;
@@ -1158,6 +1160,7 @@ static void station_enter_state(struct station *station,
 	case STATION_STATE_DISCONNECTED:
 	case STATION_STATE_CONNECTED:
 		periodic_scan_stop(station);
+
 		break;
 	case STATION_STATE_DISCONNECTING:
 	case STATION_STATE_ROAMING:
@@ -1245,6 +1248,9 @@ static void station_disassociated(struct station *station)
 {
 	l_debug("%u", netdev_get_ifindex(station->netdev));
 
+	if (station->netconfig)
+		netconfig_reset(station->netconfig);
+
 	station_reset_connection_state(station);
 
 	station_enter_state(station, STATION_STATE_DISCONNECTED);
@@ -1279,6 +1285,11 @@ static void station_roamed(struct station *station)
 	station->signal_low = false;
 	station->roam_min_time.tv_sec = 0;
 	station->roam_no_orig_ap = false;
+
+	if (station->netconfig)
+		netconfig_reconfigure(station->netconfig);
+
+	station_enter_state(station, STATION_STATE_CONNECTED);
 }
 
 static void station_roam_failed(struct station *station)
@@ -1303,6 +1314,22 @@ static void station_roam_failed(struct station *station)
 		station_roam_timeout_rearm(station, 60);
 }
 
+static void station_netconfig_event_handler(enum netconfig_event event,
+							void *user_data)
+{
+	struct station *station = user_data;
+
+	switch (event) {
+	case NETCONFIG_EVENT_CONNECTED:
+		station_enter_state(station, STATION_STATE_CONNECTED);
+
+		break;
+	default:
+		l_error("station: Unsupported netconfig event: %d.", event);
+		break;
+	}
+}
+
 static void station_reassociate_cb(struct netdev *netdev,
 					enum netdev_result result,
 					void *event_data,
@@ -1315,10 +1342,9 @@ static void station_reassociate_cb(struct netdev *netdev,
 	if (station->state != STATION_STATE_ROAMING)
 		return;
 
-	if (result == NETDEV_RESULT_OK) {
+	if (result == NETDEV_RESULT_OK)
 		station_roamed(station);
-		station_enter_state(station, STATION_STATE_CONNECTED);
-	} else
+	else
 		station_roam_failed(station);
 }
 
@@ -1334,10 +1360,9 @@ static void station_fast_transition_cb(struct netdev *netdev,
 	if (station->state != STATION_STATE_ROAMING)
 		return;
 
-	if (result == NETDEV_RESULT_OK) {
+	if (result == NETDEV_RESULT_OK)
 		station_roamed(station);
-		station_enter_state(station, STATION_STATE_CONNECTED);
-	} else
+	else
 		station_roam_failed(station);
 }
 
@@ -2257,7 +2282,16 @@ static void station_connect_cb(struct netdev *netdev, enum netdev_result result,
 	}
 
 	network_connected(station->connected_network);
-	station_enter_state(station, STATION_STATE_CONNECTED);
+
+	if (station->netconfig)
+		netconfig_configure(station->netconfig,
+					network_get_settings(
+						station->connected_network),
+					netdev_get_address(station->netdev),
+					station_netconfig_event_handler,
+					station);
+	else
+		station_enter_state(station, STATION_STATE_CONNECTED);
 }
 
 int __station_connect_network(struct station *station, struct network *network,
@@ -2324,6 +2358,9 @@ static void station_disconnect_onconnect(struct station *station,
 					dbus_error_from_errno(-EIO, message));
 		return;
 	}
+
+	if (station->netconfig)
+		netconfig_reset(station->netconfig);
 
 	station_reset_connection_state(station);
 
@@ -2559,6 +2596,9 @@ int station_disconnect(struct station *station)
 	if (netdev_disconnect(station->netdev,
 					station_disconnect_cb, station) < 0)
 		return -EIO;
+
+	if (station->netconfig)
+		netconfig_reset(station->netconfig);
 
 	/*
 	 * If the disconnect somehow fails we won't know if we're still
@@ -3021,7 +3061,7 @@ static struct station *station_create(struct netdev *netdev)
 	l_dbus_object_add_interface(dbus, netdev_get_path(netdev),
 					IWD_STATION_INTERFACE, station);
 
-	netconfig_ifindex_add(netdev_get_ifindex(netdev));
+	station->netconfig = netconfig_new(netdev_get_ifindex(netdev));
 
 	station->anqp_pending = l_queue_new();
 
@@ -3038,7 +3078,10 @@ static void station_free(struct station *station)
 	if (station->connected_bss)
 		netdev_disconnect(station->netdev, NULL, NULL);
 
-	netconfig_ifindex_remove(netdev_get_ifindex(station->netdev));
+	if (station->netconfig) {
+		netconfig_destroy(station->netconfig);
+		station->netconfig = NULL;
+	}
 
 	periodic_scan_stop(station);
 
@@ -3166,3 +3209,4 @@ static void station_exit(void)
 }
 
 IWD_MODULE(station, station_init, station_exit)
+IWD_MODULE_DEPENDS(station, netconfig)

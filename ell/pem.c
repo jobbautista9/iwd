@@ -45,15 +45,17 @@
 #include "cipher.h"
 #include "cert-private.h"
 #include "missing.h"
+#include "pem-private.h"
 
 #define PEM_START_BOUNDARY	"-----BEGIN "
 #define PEM_END_BOUNDARY	"-----END "
 
-static const uint8_t *is_start_boundary(const uint8_t *buf, size_t buf_len,
+static const char *is_start_boundary(const void *buf, size_t buf_len,
 					size_t *label_len)
 {
-	const uint8_t *start, *end, *ptr;
+	const char *start, *end, *ptr;
 	int prev_special, special;
+	const char *buf_ptr = buf;
 
 	if (buf_len < strlen(PEM_START_BOUNDARY))
 		return NULL;
@@ -74,7 +76,7 @@ static const uint8_t *is_start_boundary(const uint8_t *buf, size_t buf_len,
 	end = start;
 	prev_special = 1;
 
-	while (end < buf + buf_len && l_ascii_isprint(*end)) {
+	while (end < buf_ptr + buf_len && l_ascii_isprint(*end)) {
 		special = *end == ' ' || *end == '-';
 
 		if (prev_special && special)
@@ -89,11 +91,11 @@ static const uint8_t *is_start_boundary(const uint8_t *buf, size_t buf_len,
 		end--;
 
 	/* Check we have a "-----" (RFC7468 section 2) */
-	if (end + 5 > buf + buf_len || memcmp(end, "-----", 5))
+	if (end + 5 > buf_ptr + buf_len || memcmp(end, "-----", 5))
 		return NULL;
 
 	/* Check all remaining characters are horizontal whitespace (WSP) */
-	for (ptr = end + 5; ptr < buf + buf_len; ptr++)
+	for (ptr = end + 5; ptr < buf_ptr + buf_len; ptr++)
 		if (*ptr != ' ' && *ptr != '\t')
 			return NULL;
 
@@ -102,35 +104,38 @@ static const uint8_t *is_start_boundary(const uint8_t *buf, size_t buf_len,
 	return start;
 }
 
-static bool is_end_boundary(const uint8_t *buf, size_t buf_len,
-				const uint8_t *label, size_t label_len)
+static bool is_end_boundary(const void *buf, size_t buf_len,
+				const char *label, size_t label_len)
 {
+	const char *buf_ptr = buf;
 	size_t len = strlen(PEM_END_BOUNDARY) + label_len + 5;
 
 	if (buf_len < len)
 		return false;
 
-	if (memcmp(buf, PEM_END_BOUNDARY, strlen(PEM_END_BOUNDARY)) ||
-			memcmp(buf + strlen(PEM_END_BOUNDARY),
+	if (memcmp(buf_ptr, PEM_END_BOUNDARY, strlen(PEM_END_BOUNDARY)) ||
+			memcmp(buf_ptr + strlen(PEM_END_BOUNDARY),
 				label, label_len) ||
-			memcmp(buf + (len - 5), "-----", 5))
+			memcmp(buf_ptr + (len - 5), "-----", 5))
 		return false;
 
 	/* Check all remaining characters are horizontal whitespace (WSP) */
 	for (; len < buf_len; len++)
-		if (buf[len] != ' ' && buf[len] != '\t')
+		if (buf_ptr[len] != ' ' && buf_ptr[len] != '\t')
 			return false;
 
 	return true;
 }
 
-static uint8_t *pem_load_buffer(const uint8_t *buf, size_t buf_len, int index,
-				char **type_label, size_t *len,
-				const uint8_t **endp)
+const char *pem_next(const void *buf, size_t buf_len, char **type_label,
+				size_t *base64_len,
+				const char **endp, bool strict)
 {
-	const uint8_t *base64_data = NULL, *label = NULL, *eol;
-	uint8_t *data;
+	const char *buf_ptr = buf;
+	const char *base64_data = NULL, *eol;
+	const char *label = NULL;
 	size_t label_len = 0;
+	const char *start = NULL;
 
 	/*
 	 * The base64 parser uses the RFC7468 laxbase64text grammar but we
@@ -139,44 +144,44 @@ static uint8_t *pem_load_buffer(const uint8_t *buf, size_t buf_len, int index,
 	 * are not confused for actual PEM "textual encoding".
 	 */
 	while (buf_len) {
-		for (eol = buf; eol < buf + buf_len; eol++)
+		for (eol = buf_ptr; eol < buf_ptr + buf_len; eol++)
 			if (*eol == '\r' || *eol == '\n')
 				break;
 
 		if (!base64_data) {
-			label = is_start_boundary(buf, eol - buf, &label_len);
-
-			if (label)
+			label = is_start_boundary(buf_ptr, eol - buf_ptr,
+							&label_len);
+			if (label) {
+				start = label - strlen("-----BEGIN ");
 				base64_data = eol;
-		} else if (is_end_boundary(buf, eol - buf, label, label_len)) {
-			if (index == 0) {
-				data = l_base64_decode(
-						(const char *) base64_data,
-						buf - base64_data, len);
-				if (!data)
-					return NULL;
+			} else if (strict)
+				break;
+		} else if (start && is_end_boundary(buf_ptr, eol - buf_ptr,
+							label, label_len)) {
+			if (type_label)
+				*type_label = l_strndup(label, label_len);
 
-				*type_label = l_strndup((const char *) label,
-							label_len);
+			if (base64_len)
+				*base64_len = buf_ptr - base64_data;
 
-				if (endp)
+			if (endp) {
+				if (eol == buf + buf_len)
+					*endp = eol;
+				else
 					*endp = eol + 1;
-
-				return data;
 			}
 
-			base64_data = NULL;
-			index--;
+			return base64_data;
 		}
 
-		if (eol == buf + buf_len)
+		if (eol == buf_ptr + buf_len)
 			break;
 
-		buf_len -= eol + 1 - buf;
-		buf = eol + 1;
+		buf_len -= eol + 1 - buf_ptr;
+		buf_ptr = eol + 1;
 
-		if (buf_len && *eol == '\r' && *buf == '\n') {
-			buf++;
+		if (buf_len && *eol == '\r' && *buf_ptr == '\n') {
+			buf_ptr++;
 			buf_len--;
 		}
 	}
@@ -188,11 +193,34 @@ static uint8_t *pem_load_buffer(const uint8_t *buf, size_t buf_len, int index,
 	return NULL;
 }
 
-LIB_EXPORT uint8_t *l_pem_load_buffer(const uint8_t *buf, size_t buf_len,
-					int index, char **type_label,
-					size_t *out_len)
+static uint8_t *pem_load_buffer(const void *buf, size_t buf_len,
+				char **type_label, size_t *len)
 {
-	return pem_load_buffer(buf, buf_len, index, type_label, out_len, NULL);
+	size_t base64_len;
+	const char *base64;
+	char *label;
+	uint8_t *ret;
+
+	base64 = pem_next(buf, buf_len, &label, &base64_len,
+				NULL, false);
+	if (!base64)
+		return NULL;
+
+	ret = l_base64_decode(base64, base64_len, len);
+	if (ret) {
+		*type_label = label;
+		return ret;
+	}
+
+	l_free(label);
+
+	return NULL;
+}
+
+LIB_EXPORT uint8_t *l_pem_load_buffer(const void *buf, size_t buf_len,
+					char **type_label, size_t *out_len)
+{
+	return pem_load_buffer(buf, buf_len, type_label, out_len);
 }
 
 struct pem_file_info {
@@ -232,7 +260,7 @@ static void pem_file_close(struct pem_file_info *info)
 	close(info->fd);
 }
 
-LIB_EXPORT uint8_t *l_pem_load_file(const char *filename, int index,
+LIB_EXPORT uint8_t *l_pem_load_file(const char *filename,
 					char **type_label, size_t *len)
 {
 	struct pem_file_info file;
@@ -241,16 +269,14 @@ LIB_EXPORT uint8_t *l_pem_load_file(const char *filename, int index,
 	if (pem_file_open(&file, filename) < 0)
 		return NULL;
 
-	result = pem_load_buffer(file.data, file.st.st_size, index,
-					type_label, len, NULL);
+	result = pem_load_buffer(file.data, file.st.st_size,
+					type_label, len);
 	pem_file_close(&file);
 	return result;
 }
 
-LIB_EXPORT struct l_certchain *l_pem_load_certificate_chain(
-							const char *filename)
+static struct l_certchain *pem_list_to_chain(struct l_queue *list)
 {
-	struct l_queue *list = l_pem_load_certificate_list(filename);
 	struct l_certchain *chain;
 
 	if (!list)
@@ -265,35 +291,62 @@ LIB_EXPORT struct l_certchain *l_pem_load_certificate_chain(
 	return chain;
 }
 
-LIB_EXPORT struct l_queue *l_pem_load_certificate_list(const char *filename)
+LIB_EXPORT struct l_certchain *l_pem_load_certificate_chain_from_data(
+						const void *buf, size_t len)
 {
-	struct pem_file_info file;
-	const uint8_t *ptr, *end;
-	struct l_queue *list = NULL;
+	struct l_queue *list = l_pem_load_certificate_list_from_data(buf, len);
 
-	if (pem_file_open(&file, filename) < 0)
+	if (!list)
 		return NULL;
 
-	ptr = file.data;
-	end = file.data + file.st.st_size;
+	return pem_list_to_chain(list);
+}
+
+LIB_EXPORT struct l_certchain *l_pem_load_certificate_chain(
+							const char *filename)
+{
+	struct l_queue *list = l_pem_load_certificate_list(filename);
+
+	if (!list)
+		return NULL;
+
+	return pem_list_to_chain(list);
+}
+
+LIB_EXPORT struct l_queue *l_pem_load_certificate_list_from_data(
+						const void *buf, size_t len)
+{
+	const char *ptr, *end;
+	struct l_queue *list = NULL;
+
+	ptr = buf;
+	end = buf + len;
 
 	while (ptr && ptr < end) {
 		uint8_t *der;
 		size_t der_len;
-		char *label;
+		char *label = NULL;
 		struct l_cert *cert;
+		const char *base64;
+		size_t base64_len;
 
-		der = pem_load_buffer(ptr, end - ptr, 0, &label, &der_len, &ptr);
+		base64 = pem_next(ptr, len, &label, &base64_len, &ptr, false);
+		if (!base64) {
+			if (!ptr)
+				break;
+
+			/* if ptr was not reset to NULL; parse error */
+			goto error;
+		}
+
+		der = l_base64_decode(base64, base64_len, &der_len);
 
 		if (!der || strcmp(label, "CERTIFICATE")) {
 			if (der)
 				l_free(label);
 			l_free(der);
 
-			if (!ptr)	/* EOF */
-				break;
-			else
-				goto error;
+			goto error;
 		}
 
 		l_free(label);
@@ -309,47 +362,35 @@ LIB_EXPORT struct l_queue *l_pem_load_certificate_list(const char *filename)
 		l_queue_push_tail(list, cert);
 	}
 
-	pem_file_close(&file);
 	return list;
 
 error:
 	l_queue_destroy(list, (l_queue_destroy_func_t) l_cert_free);
-	pem_file_close(&file);
 	return NULL;
 }
 
-/**
- * l_pem_load_private_key
- * @filename: path string to the PEM file to load
- * @passphrase: private key encryption passphrase or NULL for unencrypted
- * @encrypted: receives indication whether the file was encrypted if non-NULL
- *
- * Load the PEM encoded RSA Private Key file at @filename.  If it is an
- * encrypted private key and @passphrase was non-NULL, the file is
- * decrypted.  If it's unencrypted @passphrase is ignored.  @encrypted
- * stores information of whether the file was encrypted, both in a
- * success case and on error when NULL is returned.  This can be used to
- * check if a passphrase is required without prior information.
- *
- * Returns: An l_key object to be freed with an l_key_free* function,
- * or NULL.
- **/
-LIB_EXPORT struct l_key *l_pem_load_private_key(const char *filename,
+LIB_EXPORT struct l_queue *l_pem_load_certificate_list(const char *filename)
+{
+	struct pem_file_info file;
+	struct l_queue *list = NULL;
+
+	if (pem_file_open(&file, filename) < 0)
+		return NULL;
+
+	list = l_pem_load_certificate_list_from_data(file.data,
+							file.st.st_size);
+	pem_file_close(&file);
+
+	return list;
+}
+
+static struct l_key *pem_load_private_key(uint8_t *content,
+						size_t len,
+						char *label,
 						const char *passphrase,
 						bool *encrypted)
 {
-	uint8_t *content;
-	char *label;
-	size_t len;
 	struct l_key *pkey = NULL;
-
-	if (encrypted)
-		*encrypted = false;
-
-	content = l_pem_load_file(filename, 0, &label, &len);
-
-	if (!content)
-		return NULL;
 
 	/*
 	 * RFC7469- and PKCS#8-compatible label (default in OpenSSL 1.0.1+)
@@ -451,4 +492,59 @@ err:
 
 	l_free(label);
 	return pkey;
+}
+
+LIB_EXPORT struct l_key *l_pem_load_private_key_from_data(const void *buf,
+							size_t buf_len,
+							const char *passphrase,
+							bool *encrypted)
+{
+	uint8_t *content;
+	char *label;
+	size_t len;
+
+	if (encrypted)
+		*encrypted = false;
+
+	content = pem_load_buffer(buf, buf_len, &label, &len);
+
+	if (!content)
+		return NULL;
+
+	return pem_load_private_key(content, len, label, passphrase, encrypted);
+}
+
+/**
+ * l_pem_load_private_key
+ * @filename: path string to the PEM file to load
+ * @passphrase: private key encryption passphrase or NULL for unencrypted
+ * @encrypted: receives indication whether the file was encrypted if non-NULL
+ *
+ * Load the PEM encoded RSA Private Key file at @filename.  If it is an
+ * encrypted private key and @passphrase was non-NULL, the file is
+ * decrypted.  If it's unencrypted @passphrase is ignored.  @encrypted
+ * stores information of whether the file was encrypted, both in a
+ * success case and on error when NULL is returned.  This can be used to
+ * check if a passphrase is required without prior information.
+ *
+ * Returns: An l_key object to be freed with an l_key_free* function,
+ * or NULL.
+ **/
+LIB_EXPORT struct l_key *l_pem_load_private_key(const char *filename,
+						const char *passphrase,
+						bool *encrypted)
+{
+	uint8_t *content;
+	char *label;
+	size_t len;
+
+	if (encrypted)
+		*encrypted = false;
+
+	content = l_pem_load_file(filename, &label, &len);
+
+	if (!content)
+		return NULL;
+
+	return pem_load_private_key(content, len, label, passphrase, encrypted);
 }

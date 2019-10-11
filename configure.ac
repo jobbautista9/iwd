@@ -1,5 +1,5 @@
 AC_PREREQ(2.60)
-AC_INIT(iwd, 0.21)
+AC_INIT(iwd, 0.22)
 
 AC_CONFIG_HEADERS(config.h)
 AC_CONFIG_AUX_DIR(build-aux)
@@ -150,7 +150,6 @@ AM_CONDITIONAL(DAEMON, test "${enable_daemon}" != "no")
 AC_ARG_ENABLE([client], AC_HELP_STRING([--disable-client],
 				[don't install iwctl client utility]),
 					[enable_client=${enableval}])
-AM_CONDITIONAL(CLIENT, test "${enable_client}" != "no")
 if (test "${enable_client}" != "no"); then
 	AC_CHECK_HEADERS(readline/readline.h, enable_readline=yes,
 			AC_MSG_ERROR(readline header files are required))
@@ -187,6 +186,15 @@ AC_ARG_ENABLE([systemd-service], AC_HELP_STRING([--disable-systemd-service],
 				[don't install systemd service files]),
 					[enable_systemd_service=${enableval}])
 AM_CONDITIONAL(SYSTEMD_SERVICE, test "${enable_systemd_service}" != "no")
+
+AC_ARG_ENABLE([manual-pages], AC_HELP_STRING([--disable-manual-pages],
+				[don't install manual pages]),
+					[enable_manual_pages=${enableval}])
+if (test "${enable_manual_pages}" != "no"); then
+	AC_CHECK_PROGS(RST2MAN, [rst2man rst2man.py], "no")
+fi
+AM_CONDITIONAL(MANUAL_PAGES, test "${enable_manual_pages}" != "no")
+AM_CONDITIONAL(RUN_RST2MAN, test "${enable_manual_pages}" != "no" && test "${RST2MAN}" != "no")
 
 AC_ARG_WITH([dbus-busdir], AC_HELP_STRING([--with-dbus-busdir=DIR],
 				[path to D-Bus bus services directory]),
@@ -236,7 +244,7 @@ if (test "${enable_external_ell}" = "yes"); then
 			test "${enable_monitor}" != "no" ||
 			test "${enable_wired}" = "yes" ||
 			test "${enable_hwsim}" = "yes"); then
-		ell_min_version="0.22"
+		ell_min_version="0.24"
 	else
 		ell_min_version="0.5"
 	fi
@@ -272,14 +280,6 @@ AC_ARG_ENABLE([sim_hardcoded], AC_HELP_STRING([--enable-sim-hardcoded],
 				[enable hard coded SIM keys]),
 					[enable_sim_hardcoded=${enableval}])
 AM_CONDITIONAL(SIM_HARDCODED, test "${enable_sim_hardcoded}" = "yes")
-
-AC_ARG_ENABLE([docs], AC_HELP_STRING([--enable-docs],
-				[build documentation and manual pages]),
-					[enable_docs=${enableval}])
-if (test "${enable_docs}" = "yes"); then
-	AC_PATH_PROG(A2X, [a2x], [], $PATH:/sbin:/usr/sbin)
-fi
-AM_CONDITIONAL(BUILD_DOCS, test "$A2X" != "")
 
 AC_CONFIG_FILES(Makefile)
 

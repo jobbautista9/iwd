@@ -50,6 +50,19 @@ static struct pending_op {
 	struct l_queue *saved_input;
 } pending_op;
 
+static struct l_dbus_message *agent_error(const char *text)
+{
+	display_error(text);
+
+	if (!command_is_interactive_mode()) {
+		command_set_exit_status(EXIT_FAILURE);
+
+		l_main_quit();
+	}
+
+	return NULL;
+}
+
 static struct l_dbus_message *release_method_call(struct l_dbus *dbus,
 						struct l_dbus_message *message,
 						void *user_data)
@@ -66,9 +79,9 @@ static struct l_dbus_message *request_passphrase_command_option(
 						struct l_dbus_message *message)
 {
 	struct l_dbus_message *reply;
-	const char *passphrase;
+	const char *passphrase = NULL;
 
-	passphrase = command_option_get(COMMAND_OPTION_PASSPHRASE);
+	command_option_get(COMMAND_OPTION_PASSPHRASE, &passphrase);
 	if (!passphrase)
 		return NULL;
 
@@ -93,6 +106,11 @@ static struct l_dbus_message *request_passphrase_method_call(
 	reply = request_passphrase_command_option(message);
 	if (reply)
 		return reply;
+
+	if (command_option_get(COMMAND_OPTION_DONTASK, NULL))
+		return agent_error("No passphrase is provided as "
+					"'--"COMMAND_OPTION_PASSPHRASE"' "
+						"command-line option.\n");
 
 	l_dbus_message_get_arguments(message, "o", &path);
 	if (!path)
@@ -130,6 +148,11 @@ static struct l_dbus_message *request_private_key_passphrase_method_call(
 	if (reply)
 		return reply;
 
+	if (command_option_get(COMMAND_OPTION_DONTASK, NULL))
+		return agent_error("No passphrase is provided as "
+					"'--"COMMAND_OPTION_PASSPHRASE"' "
+						"command-line option.\n");
+
 	l_dbus_message_get_arguments(message, "o", &path);
 	if (!path)
 		return NULL;
@@ -154,14 +177,14 @@ static struct l_dbus_message *request_username_and_password_command_option(
 						struct l_dbus_message *message)
 {
 	struct l_dbus_message *reply;
-	const char *username;
-	const char *password;
+	const char *username = NULL;
+	const char *password = NULL;
 
-	username = command_option_get(COMMAND_OPTION_USERNAME);
+	command_option_get(COMMAND_OPTION_USERNAME, &username);
 	if (!username)
 		return NULL;
 
-	password = command_option_get(COMMAND_OPTION_PASSWORD);
+	command_option_get(COMMAND_OPTION_PASSWORD, &password);
 	if (!password)
 		return NULL;
 
@@ -186,6 +209,12 @@ static struct l_dbus_message *request_username_and_password_method_call(
 	reply = request_username_and_password_command_option(message);
 	if (reply)
 		return reply;
+
+	if (command_option_get(COMMAND_OPTION_DONTASK, NULL))
+		return agent_error("No username or password is provided as "
+					"'--"COMMAND_OPTION_USERNAME"' or "
+					"'--"COMMAND_OPTION_PASSWORD"' "
+						"command-line option.\n");
 
 	l_dbus_message_get_arguments(message, "o", &path);
 	if (!path)
@@ -213,7 +242,7 @@ static struct l_dbus_message *request_user_password_command_option(
 	struct l_dbus_message *reply;
 	const char *password;
 
-	password = command_option_get(COMMAND_OPTION_PASSWORD);
+	command_option_get(COMMAND_OPTION_PASSWORD, &password);
 	if (!password)
 		return NULL;
 
@@ -240,6 +269,11 @@ static struct l_dbus_message *request_user_password_method_call(
 	reply = request_user_password_command_option(message);
 	if (reply)
 		return reply;
+
+	if (command_option_get(COMMAND_OPTION_DONTASK, NULL))
+		return agent_error("No password is provided as "
+					"'--"COMMAND_OPTION_PASSWORD"' "
+					"command-line option.\n");
 
 	l_dbus_message_get_arguments(message, "os", &path, &username);
 	if (!path || !username)
