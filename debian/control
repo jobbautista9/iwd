@@ -5,6 +5,7 @@ Maintainer: Andreas Henriksson <andreas@fatal.se>
 Build-Depends: debhelper-compat (= 12),
                libreadline-dev,
                libdbus-1-dev,
+               openssl <!nocheck>,
                python3-docutils <!nodoc>,
                systemd
 Standards-Version: 4.2.1
