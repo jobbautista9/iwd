@@ -40,6 +40,7 @@
 #include "src/handshake.h"
 #include "src/watchlist.h"
 #include "src/erp.h"
+#include "src/iwd.h"
 
 static struct l_queue *state_machines;
 static struct l_queue *preauths;
@@ -885,9 +886,9 @@ struct eapol_sm *eapol_sm_new(struct handshake_state *hs)
 
 void eapol_sm_free(struct eapol_sm *sm)
 {
-	eapol_sm_destroy(sm);
-
 	l_queue_remove(state_machines, sm);
+
+	eapol_sm_destroy(sm);
 }
 
 void eapol_sm_set_listen_interval(struct eapol_sm *sm, uint16_t interval)
@@ -1105,7 +1106,11 @@ static void eapol_handle_ptk_1_of_4(struct eapol_sm *sm,
 	pmkid = handshake_util_find_pmkid_kde(EAPOL_KEY_DATA(ek, sm->mic_len),
 					EAPOL_KEY_DATA_LEN(ek, sm->mic_len));
 
-	ie_parse_rsne_from_data(own_ie, own_ie[1] + 2, &rsn_info);
+	if (!sm->handshake->wpa_ie) {
+		if (ie_parse_rsne_from_data(own_ie, own_ie[1] + 2,
+						&rsn_info) < 0)
+			goto error_unspecified;
+	}
 
 	/*
 	 * Require the PMKID KDE whenever we've sent a list of PMKIDs in
@@ -1556,7 +1561,8 @@ static void eapol_handle_ptk_3_of_4(struct eapol_sm *sm,
 		const uint8_t *mde = sm->handshake->mde;
 		const uint8_t *fte = sm->handshake->fte;
 
-		ie_parse_rsne_from_data(rsne, rsne[1] + 2, &ie_info);
+		if (ie_parse_rsne_from_data(rsne, rsne[1] + 2, &ie_info) < 0)
+			goto error_ie_different;
 
 		if (ie_info.num_pmkids != 1 || memcmp(ie_info.pmkids,
 						sm->handshake->pmk_r1_name, 16))
@@ -2705,16 +2711,16 @@ void __eapol_set_config(struct l_settings *config)
 		eapol_4way_handshake_time = 5;
 }
 
-bool eapol_init()
+int eapol_init(void)
 {
 	state_machines = l_queue_new();
 	preauths = l_queue_new();
 	watchlist_init(&frame_watches, &eapol_frame_watch_ops);
 
-	return true;
+	return 0;
 }
 
-bool eapol_exit()
+void eapol_exit(void)
 {
 	if (!l_queue_isempty(state_machines))
 		l_warn("stale eapol state machines found");
@@ -2727,6 +2733,6 @@ bool eapol_exit()
 	l_queue_destroy(preauths, preauth_sm_destroy);
 
 	watchlist_destroy(&frame_watches);
-
-	return true;
 }
+
+IWD_MODULE(eapol, eapol_init, eapol_exit);

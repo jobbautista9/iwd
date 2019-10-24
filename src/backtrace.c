@@ -114,7 +114,7 @@ void __iwd_backtrace_print(unsigned int offset)
 		if (written < 0)
 			break;
 
-		len = read(infd[0], buf, sizeof(buf));
+		len = read(infd[0], buf, sizeof(buf) - 1);
 		if (len < 0)
 			break;
 
@@ -130,6 +130,9 @@ void __iwd_backtrace_print(unsigned int offset)
 		}
 
 		ptr = strchr(pos, '\n');
+		if (!ptr)
+			continue;
+
 		*ptr++ = '\0';
 
 		if (strncmp(pos, program_path, pathlen) == 0)

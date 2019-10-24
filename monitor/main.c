@@ -221,6 +221,12 @@ static struct l_netlink *rtm_interface_send_message(struct l_netlink *rtnl,
 			return NULL;
 	}
 
+	if (!rtnl)
+		rtnl = l_netlink_new(NETLINK_ROUTE);
+
+	if (!rtnl)
+		return NULL;
+
 	bufsize = NLMSG_LENGTH(sizeof(struct ifinfomsg)) +
 		RTA_SPACE(ifname_len) + RTA_SPACE(0) +
 		RTA_SPACE(nlmon_type_len);
@@ -230,12 +236,6 @@ static struct l_netlink *rtm_interface_send_message(struct l_netlink *rtnl,
 
 	rtmmsg->ifi_family = AF_UNSPEC;
 	rtmmsg->ifi_change = ~0;
-
-	if (!rtnl)
-		rtnl = l_netlink_new(NETLINK_ROUTE);
-
-	if (!rtnl)
-		return NULL;
 
 	rta_buf = rtmmsg + 1;
 
@@ -250,7 +250,6 @@ static struct l_netlink *rtm_interface_send_message(struct l_netlink *rtnl,
 	linkinfo_rta->rta_len = rta_buf - (void *) linkinfo_rta;
 
 	switch (rtm_msg_type) {
-
 	case RTM_NEWLINK:
 		rtmmsg->ifi_flags = IFF_UP | IFF_ALLMULTI | IFF_NOARP;
 
@@ -275,8 +274,8 @@ static struct l_netlink *rtm_interface_send_message(struct l_netlink *rtnl,
 
 	default:
 		l_netlink_destroy(rtnl);
-		l_free(rtmmsg);
-		return NULL;
+		rtnl = NULL;
+		break;
 	}
 
 	l_free(rtmmsg);

@@ -320,7 +320,7 @@ static struct hs20_config *hs20_config_new(struct l_settings *settings,
 	char **nai_realms = NULL;
 	const char *rc_str;
 	char *name;
-	bool autoconnect = true;
+	bool autoconnect;
 
 	/* One of HESSID, NAI realms, or Roaming Consortium must be included */
 	hessid_str = l_settings_get_string(settings, "Hotspot", "HESSID");
@@ -330,7 +330,9 @@ static struct hs20_config *hs20_config_new(struct l_settings *settings,
 
 	rc_str = l_settings_get_value(settings, "Hotspot", "RoamingConsortium");
 
-	l_settings_get_bool(settings, "Settings", "Autoconnect", &autoconnect);
+	if (!l_settings_get_bool(settings, "Settings", "Autoconnect",
+								&autoconnect))
+		autoconnect = true;
 
 	name = l_settings_get_string(settings, "Hotspot", "Name");
 
@@ -342,7 +344,12 @@ static struct hs20_config *hs20_config_new(struct l_settings *settings,
 	config = l_new(struct hs20_config, 1);
 
 	if (hessid_str) {
-		util_string_to_address(hessid_str, config->hessid);
+		if (!util_string_to_address(hessid_str, config->hessid)) {
+			l_error("Invalid HESSID in settings");
+			l_free(config);
+			goto free_values;
+		}
+
 		l_free(hessid_str);
 	}
 
@@ -418,11 +425,12 @@ static void hs20_dir_watch_cb(const char *filename,
 		}
 
 		config = hs20_config_new(new, full_path);
+		l_settings_free(new);
+
 		if (!config)
-			break;
+			return;
 
 		l_queue_push_head(hs20_settings, config);
-
 		break;
 	case L_DIR_WATCH_EVENT_REMOVED:
 		config = l_queue_remove_if(hs20_settings, match_filename,
@@ -452,6 +460,8 @@ static void hs20_dir_watch_cb(const char *filename,
 		}
 
 		known_network_update(&config->super, new, connected_time);
+
+		l_settings_free(new);
 
 		break;
 	case L_DIR_WATCH_EVENT_ACCESSED:

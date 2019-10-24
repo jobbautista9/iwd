@@ -1467,12 +1467,14 @@ void netdev_handshake_failed(struct handshake_state *hs, uint16_t reason_code)
 
 	switch (netdev->type) {
 	case NL80211_IFTYPE_STATION:
+	case NL80211_IFTYPE_P2P_CLIENT:
 		msg = netdev_build_cmd_disconnect(netdev, reason_code);
 		netdev->disconnect_cmd_id = l_genl_family_send(nl80211, msg,
 							netdev_disconnect_cb,
 							netdev, NULL);
 		break;
 	case NL80211_IFTYPE_AP:
+	case NL80211_IFTYPE_P2P_GO:
 		msg = netdev_build_cmd_del_station(netdev, nhs->super.spa,
 				reason_code, false);
 		if (!l_genl_family_send(nl80211, msg, NULL, NULL, NULL))
@@ -1668,6 +1670,8 @@ static void netdev_connect_event(struct l_genl_msg *msg, struct netdev *netdev)
 	if (!status_code || *status_code != 0)
 		goto error;
 
+	if (!ies)
+		goto process_resp_ies;
 	/*
 	 * The driver may have modified the IEs we passed to CMD_CONNECT
 	 * before sending them out, the actual IE sent is reflected in the
@@ -1696,6 +1700,7 @@ static void netdev_connect_event(struct l_genl_msg *msg, struct netdev *netdev)
 		}
 	}
 
+process_resp_ies:
 	if (resp_ies) {
 		const uint8_t *fte = NULL;
 		const uint8_t *qos_set = NULL;
@@ -2459,7 +2464,8 @@ int netdev_connect(struct netdev *netdev, struct scan_bss *bss,
 	struct eapol_sm *sm = NULL;
 	bool is_rsn = hs->supplicant_ie != NULL;
 
-	if (netdev->type != NL80211_IFTYPE_STATION)
+	if (netdev->type != NL80211_IFTYPE_STATION &&
+			netdev->type != NL80211_IFTYPE_P2P_CLIENT)
 		return -ENOTSUP;
 
 	if (netdev->connected)
@@ -2515,7 +2521,8 @@ int netdev_connect_wsc(struct netdev *netdev, struct scan_bss *bss,
 	size_t ie_len;
 	struct eapol_sm *sm;
 
-	if (netdev->type != NL80211_IFTYPE_STATION)
+	if (netdev->type != NL80211_IFTYPE_STATION &&
+			netdev->type != NL80211_IFTYPE_P2P_CLIENT)
 		return -ENOTSUP;
 
 	if (netdev->connected)
@@ -2558,7 +2565,8 @@ int netdev_disconnect(struct netdev *netdev,
 {
 	struct l_genl_msg *disconnect;
 
-	if (netdev->type != NL80211_IFTYPE_STATION)
+	if (netdev->type != NL80211_IFTYPE_STATION &&
+			netdev->type != NL80211_IFTYPE_P2P_CLIENT)
 		return -ENOTSUP;
 
 	if (!netdev->connected)
@@ -3435,10 +3443,8 @@ static void netdev_mlme_notify(struct l_genl_msg *msg, void *user_data)
 		}
 	}
 
-	if (!netdev) {
-		l_warn("MLME notification is missing ifindex attribute");
+	if (!netdev)
 		return;
-	}
 
 	switch (cmd) {
 	case NL80211_CMD_AUTHENTICATE:
@@ -4360,6 +4366,11 @@ static void netdev_getlink_cb(int error, uint16_t type, const void *data,
 
 	netdev_newlink_notify(ifi, bytes);
 
+	/* Don't do anything automatically for P2P interfaces */
+	if (netdev->type == NL80211_IFTYPE_P2P_CLIENT ||
+			netdev->type == NL80211_IFTYPE_P2P_GO)
+		return;
+
 	/*
 	 * If the interface is UP, reset it to ensure a clean state.
 	 * Otherwise, if we need to set a random mac, do so.  If not, just
@@ -4755,20 +4766,20 @@ bool netdev_watch_remove(uint32_t id)
 	return watchlist_remove(&netdev_watches, id);
 }
 
-bool netdev_init(void)
+static int netdev_init(void)
 {
 	struct l_genl *genl = iwd_get_genl();
 	const struct l_settings *settings = iwd_get_config();
 
 	if (rtnl)
-		return false;
+		return -EALREADY;
 
 	l_debug("Opening route netlink socket");
 
 	rtnl = l_netlink_new(NETLINK_ROUTE);
 	if (!rtnl) {
 		l_error("Failed to open route netlink socket");
-		return false;
+		return -EIO;
 	}
 
 	if (getenv("IWD_RTNL_DEBUG"))
@@ -4777,8 +4788,13 @@ bool netdev_init(void)
 	if (!l_netlink_register(rtnl, RTNLGRP_LINK,
 				netdev_link_notify, NULL, NULL)) {
 		l_error("Failed to register for RTNL link notifications");
-		l_netlink_destroy(rtnl);
-		return false;
+		goto fail_netlink;
+	}
+
+	nl80211 = l_genl_family_new(genl, NL80211_GENL_NAME);
+	if (!nl80211) {
+		l_error("Failed to obtain nl80211");
+		goto fail_netlink;
 	}
 
 	if (!l_settings_get_int(settings, "General", "roam_rssi_threshold",
@@ -4801,19 +4817,20 @@ bool netdev_init(void)
 	if (!unicast_watch)
 		l_error("Registering for unicast notification failed");
 
-	return true;
-}
-
-void netdev_set_nl80211(struct l_genl_family *in)
-{
-	nl80211 = in;
-
 	if (!l_genl_family_register(nl80211, "mlme", netdev_mlme_notify,
 								NULL, NULL))
 		l_error("Registering for MLME notification failed");
+
+	return 0;
+
+fail_netlink:
+	l_netlink_destroy(rtnl);
+	rtnl = NULL;
+
+	return -EIO;
 }
 
-void netdev_exit(void)
+static void netdev_exit(void)
 {
 	struct l_genl *genl = iwd_get_genl();
 
@@ -4823,6 +4840,8 @@ void netdev_exit(void)
 	l_genl_remove_unicast_watch(genl, unicast_watch);
 
 	watchlist_destroy(&netdev_watches);
+
+	l_genl_family_free(nl80211);
 	nl80211 = NULL;
 
 	l_debug("Closing route netlink socket");
@@ -4840,3 +4859,6 @@ void netdev_shutdown(void)
 	l_queue_destroy(netdev_list, netdev_free);
 	netdev_list = NULL;
 }
+
+IWD_MODULE(netdev, netdev_init, netdev_exit);
+IWD_MODULE_DEPENDS(netdev, eapol);

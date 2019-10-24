@@ -33,6 +33,7 @@
 #include "src/missing.h"
 #include "src/eap.h"
 #include "src/eap-private.h"
+#include "src/iwd.h"
 
 static uint32_t default_mtu;
 static struct l_queue *eap_methods;
@@ -676,6 +677,12 @@ int eap_unregister_method(struct eap_method *method)
 	return -ENOENT;
 }
 
+void __eap_set_config(struct l_settings *config)
+{
+	if (!l_settings_get_uint(config, "EAP", "mtu", &default_mtu))
+		default_mtu = 1400; /* on WiFi the real MTU is around 2304 */
+}
+
 static void __eap_method_enable(struct eap_method_desc *start,
 					struct eap_method_desc *stop)
 {
@@ -715,7 +722,7 @@ static void __eap_method_disable(struct eap_method_desc *start,
 extern struct eap_method_desc __start___eap[];
 extern struct eap_method_desc __stop___eap[];
 
-void eap_init(uint32_t mtu)
+int eap_init(void)
 {
 	eap_methods = l_queue_new();
 	__eap_method_enable(__start___eap, __stop___eap);
@@ -725,10 +732,10 @@ void eap_init(uint32_t mtu)
 	 * EAP is capable of functioning on lower layers that
 	 *        provide an EAP MTU size of 1020 octets or greater.
 	 */
-	if (mtu == 0)
+	if (default_mtu == 0)
 		default_mtu = 1020;
-	else
-		default_mtu = mtu;
+
+	return 0;
 }
 
 void eap_exit(void)
@@ -736,3 +743,5 @@ void eap_exit(void)
 	__eap_method_disable(__start___eap, __stop___eap);
 	l_queue_destroy(eap_methods, NULL);
 }
+
+IWD_MODULE(eap, eap_init, eap_exit);

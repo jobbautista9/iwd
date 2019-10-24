@@ -2912,7 +2912,7 @@ static void eapol_sm_test_tls(struct eapol_8021x_tls_test_state *s,
 	aa = ap_address;
 	spa = sta_address;
 
-	eap_init(0);
+	eap_init();
 	eapol_init();
 	__handshake_set_get_nonce_func(test_nonce);
 
@@ -3174,7 +3174,9 @@ static void eapol_sm_test_eap_tls_embedded(const void *data)
 	struct l_settings *config;
 
 	config = l_settings_new();
-	l_settings_load_from_file(config, CERTDIR "tls-settings.8021x");
+	assert(config);
+
+	assert(l_settings_load_from_file(config, CERTDIR "tls-settings.8021x"));
 
 	s.app_data_cb = eapol_sm_test_tls_new_data;
 	s.ready_cb = eapol_sm_test_tls_test_ready;
@@ -3375,7 +3377,7 @@ static void eapol_sm_test_eap_nak(const void *data)
 	aa = ap_address;
 	spa = sta_address;
 
-	eap_init(0);
+	eap_init();
 	eapol_init();
 	__handshake_set_get_nonce_func(test_nonce);
 
