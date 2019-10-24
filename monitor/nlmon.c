@@ -3013,8 +3013,9 @@ static void print_p2p_channel_list(unsigned int level, const char *label,
 
 	while (size) {
 		uint8_t channels;
-		char str[128];
-		int pos = 0;
+		struct l_string *string;
+		char *str;
+		bool first = true;
 
 		if (size < 2 || size < 2 + bytes[1]) {
 			printf("malformed P2P %s\n", label);
@@ -3025,11 +3026,18 @@ static void print_p2p_channel_list(unsigned int level, const char *label,
 		channels = *bytes++;
 		size -= 2 + channels;
 
-		while (channels--)
-			snprintf(str + pos, sizeof(str) - pos, "%s%u",
-					pos ? ", " : "", (int) *bytes++);
+		string = l_string_new(128);
 
+		while (channels--) {
+			l_string_append_printf(string, "%s%u",
+						first ? "" : ", ",
+						(int ) *bytes++);
+			first = false;
+		}
+
+		str = l_string_unwrap(string);
 		print_attr(level + 2, "%s", str);
+		l_free(str);
 	}
 }
 
@@ -3669,7 +3677,6 @@ static void print_authentication_mgmt_frame(unsigned int level,
 {
 	const char *str;
 	const struct mmpdu_authentication *body;
-	struct ie_tlv_iter iter;
 
 	if (!mmpdu)
 		return;
@@ -3710,13 +3717,8 @@ static void print_authentication_mgmt_frame(unsigned int level,
 			L_LE16_TO_CPU(body->transaction_sequence) > 3)
 		return;
 
-	ie_tlv_iter_init(&iter, body->ies, (const uint8_t *) mmpdu + size -
-				body->ies);
-	ie_tlv_iter_next(&iter);
-
-	print_attr(level + 1, "Challenge text: \"%s\" (%u)",
-				ie_tlv_iter_get_data(&iter),
-				ie_tlv_iter_get_length(&iter));
+	print_ie(level + 1, "IEs", body->ies,
+			(const uint8_t *) mmpdu + size - body->ies);
 }
 
 static void print_deauthentication_mgmt_frame(unsigned int level,

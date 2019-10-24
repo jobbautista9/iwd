@@ -1,8 +1,8 @@
 .\" Man page generated from reStructuredText.
 .
-.TH MAIN.CONF 5 "22 September 2019" "iwd" "Linux Connectivity"
+.TH IWD 5 "22 September 2019" "iwd" "Linux Connectivity"
 .SH NAME
-main.conf \- Configuration file for wireless daemon
+iwd \- Configuration file for wireless daemon
 .
 .nr rst2man-indent-level 0
 .
@@ -32,13 +32,65 @@ level margin: \\n[rst2man-indent\\n[rst2man-indent-level]]
 ..
 .SH SYNOPSIS
 .sp
-/etc/iwd/main.conf
+Configuration file \fBmain.conf\fP
 .SH DESCRIPTION
 .sp
-The /etc/iwd/main.conf file configures the systemd\-wide settings for iwd(8)
+The \fImain.conf\fP configuration file configures the system\-wide settings for
+\fBiwd\fP\&.  This file lives in the configuration directory specified by the
+environment variable \fI$CONFIGURATION_DIRECTORY\fP, which is normally provided
+by \fBsystemd\fP\&.  In the absence of such an environment variable it defaults
+to \fI/etc/iwd\fP\&.  If no \fImain.conf\fP is present, then default values are
+chosen.  The presence of \fImain.conf\fP is not required.
+.SH FILE FORMAT
+.sp
+See \fIiwd.network\fP for details on the file format.
+.SH SETTINGS
+.sp
+The settings are split into several categories.  Each category has a group
+associated with it and described in separate tables below.
+.SS General Settings
+.sp
+The group \fB[General]\fP contains general settings.
+.TS
+center;
+|l|l|.
+_
+T{
+enable_network_config
+T}	T{
+Values: true, false (default)
+.sp
+Enable network configuration.
+.sp
+Setting this option to \fItrue\fP enables \fBiwd\fP to configure the network
+interfaces with the IP addresses.  There are two types IP addressing
+supported by \fBiwd\fP: static and dynamic.  The static IP addresses are
+configured through the network configuration files.  If no static IP
+configuration has been provided for a network, iwd will attempt to
+obtain the dynamic addresses from the network through the built\-in
+DHCP client.
+.sp
+The network configuration feature is disabled by default.
+T}
+_
+T{
+dns_resolve_method
+T}	T{
+Values: resolvconf, systemd (default)
+.sp
+Indicate a DNS resolution method used by the system.
+.sp
+This configuration option must be used in conjunction with
+\fBenable_network_config\fP and provides the choice of system resolver
+integration.
+.sp
+If not specified, \fBsystemd\fP is used as default.
+T}
+_
+.TE
 .SH SEE ALSO
 .sp
-iwd(8)
+iwd(8), iwd.network(5)
 .SH AUTHOR
 Marcel Holtmann <marcel@holtmann.org>
 .SH COPYRIGHT

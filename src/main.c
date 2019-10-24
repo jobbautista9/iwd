@@ -46,7 +46,6 @@
 #include "src/backtrace.h"
 
 static struct l_genl *genl;
-static struct l_genl_family *nl80211;
 static struct l_settings *iwd_config;
 static struct l_timeout *timeout;
 static const char *interfaces;
@@ -57,6 +56,7 @@ static const char *plugins;
 static const char *noplugins;
 static const char *debugopt;
 static bool terminating;
+static bool nl80211_complete;
 
 static void main_loop_quit(struct l_timeout *timeout, void *user_data)
 {
@@ -70,7 +70,7 @@ static void iwd_shutdown(void)
 
 	terminating = true;
 
-	if (!nl80211) {
+	if (!nl80211_complete) {
 		l_main_quit();
 		return;
 	}
@@ -100,6 +100,26 @@ const struct l_settings *iwd_get_config(void)
 struct l_genl *iwd_get_genl(void)
 {
 	return genl;
+}
+
+const char *iwd_get_iface_whitelist(void)
+{
+	return interfaces;
+}
+
+const char *iwd_get_iface_blacklist(void)
+{
+	return nointerfaces;
+}
+
+const char *iwd_get_phy_whitelist(void)
+{
+	return phys;
+}
+
+const char *iwd_get_phy_blacklist(void)
+{
+	return nophys;
 }
 
 static void usage(void)
@@ -145,15 +165,15 @@ static void nl80211_appeared(const struct l_genl_family_info *info,
 							void *user_data)
 {
 	l_debug("Found nl80211 interface");
-	nl80211 = l_genl_family_new(genl, NL80211_GENL_NAME);
 
-	manager_init(nl80211, interfaces, nointerfaces);
-	anqp_init(nl80211);
+	nl80211_complete = true;
 
-	if (!wiphy_init(nl80211, phys, nophys))
-		l_error("Unable to init wiphy functionality");
+	if (iwd_modules_init() < 0) {
+		l_main_quit();
+		return;
+	}
 
-	netdev_set_nl80211(nl80211);
+	plugin_init(plugins, noplugins);
 }
 
 static void request_name_callback(struct l_dbus *dbus, bool success,
@@ -347,7 +367,6 @@ int main(int argc, char *argv[])
 	struct l_dbus *dbus;
 	const char *config_dir;
 	char **config_dirs;
-	uint32_t eap_mtu;
 	int i;
 
 	for (;;) {
@@ -445,9 +464,7 @@ int main(int argc, char *argv[])
 	l_strv_free(config_dirs);
 
 	__eapol_set_config(iwd_config);
-
-	if (!l_settings_get_uint(iwd_config, "EAP", "mtu", &eap_mtu))
-		eap_mtu = 1400; /* on WiFi the real MTU is around 2304 */
+	__eap_set_config(iwd_config);
 
 	exit_status = EXIT_FAILURE;
 
@@ -476,32 +493,10 @@ int main(int argc, char *argv[])
 	l_dbus_set_disconnect_handler(dbus, dbus_disconnected, NULL, NULL);
 	dbus_init(dbus);
 
-	eap_init(eap_mtu);
-	eapol_init();
-
-	if (!netdev_init())
-		goto fail_netdev;
-
-	if (iwd_modules_init() < 0)
-		goto fail_modules;
-
-	plugin_init(plugins, noplugins);
 	exit_status = l_main_run_with_signal(signal_handler, NULL);
 	plugin_exit();
 
-fail_modules:
 	iwd_modules_exit();
-	netdev_exit();
-fail_netdev:
-	eapol_exit();
-	eap_exit();
-
-	if (nl80211) {
-		manager_exit();
-		anqp_exit();
-		wiphy_exit();
-		l_genl_family_free(nl80211);
-	}
 
 	dbus_exit();
 	l_dbus_destroy(dbus);

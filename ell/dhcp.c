@@ -460,7 +460,7 @@ static uint16_t dhcp_attempt_secs(uint64_t start)
  */
 static uint64_t dhcp_fuzz_secs(uint32_t secs)
 {
-	uint64_t ms = secs * 1000;
+	uint64_t ms = secs * 1000ULL;
 	uint32_t r = l_getrandom_uint32();
 
 	/*
@@ -941,8 +941,11 @@ static void dhcp_client_rx_message(const void *data, size_t len, void *userdata)
 		CLIENT_ENTER_STATE(DHCP_STATE_REQUESTING);
 		client->attempt = 1;
 
-		if (dhcp_client_send_request(client) < 0)
-			goto error;
+		if (dhcp_client_send_request(client) < 0) {
+			l_dhcp_client_stop(client);
+
+			return;
+		}
 
 		l_timeout_modify_ms(client->timeout_resend, dhcp_fuzz_secs(4));
 		break;
@@ -950,9 +953,11 @@ static void dhcp_client_rx_message(const void *data, size_t len, void *userdata)
 	case DHCP_STATE_RENEWING:
 	case DHCP_STATE_REBINDING:
 		if (msg_type == DHCP_MESSAGE_TYPE_NAK) {
+			l_dhcp_client_stop(client);
+
 			dhcp_client_event_notify(client,
 					L_DHCP_CLIENT_EVENT_NO_LEASE);
-			goto error;
+			return;
 		}
 
 		if (msg_type != DHCP_MESSAGE_TYPE_ACK)
@@ -993,11 +998,6 @@ static void dhcp_client_rx_message(const void *data, size_t len, void *userdata)
 	case DHCP_STATE_BOUND:
 		break;
 	}
-
-	return;
-
-error:
-	l_dhcp_client_stop(client);
 }
 
 LIB_EXPORT struct l_dhcp_client *l_dhcp_client_new(uint32_t ifindex)

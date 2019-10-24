@@ -498,6 +498,9 @@ static int sae_process_commit(struct sae_sm *sm, const uint8_t *from,
 
 	l_ecc_point_free(k_point);
 
+	if (klen < 0)
+		goto reject;
+
 	/* keyseed = H(<0>32, k) */
 	hmac_sha256(zero_key, 32, k, klen, keyseed, 32);
 
@@ -687,6 +690,9 @@ static int sae_verify_nothing(struct sae_sm *sm, uint16_t transaction,
 
 	/* frame shall be silently discarded and Del event sent */
 	if (status != 0)
+		return -EBADMSG;
+
+	if (len < 2)
 		return -EBADMSG;
 
 	/* reject with unsupported group */
@@ -909,6 +915,9 @@ static int sae_verify_confirmed(struct sae_sm *sm, uint16_t trans,
 	if (sm->sync > SAE_SYNC_MAX)
 		return -EBADMSG;
 
+	if (len < 2)
+		return -EBADMSG;
+
 	/* frame shall be silently discarded */
 	if (l_get_le16(frame) != sm->group)
 		return 0;
@@ -929,7 +938,7 @@ static int sae_verify_confirmed(struct sae_sm *sm, uint16_t trans,
 /*
  * 802.11-2016 - 12.4.8.6.6 Protocol instance behavior - Accepted state
  */
-static bool sae_verify_accepted(struct sae_sm *sm, uint16_t trans,
+static int sae_verify_accepted(struct sae_sm *sm, uint16_t trans,
 					uint16_t status, const uint8_t *frame,
 					size_t len)
 {
@@ -938,11 +947,14 @@ static bool sae_verify_accepted(struct sae_sm *sm, uint16_t trans,
 	/* spec does not specify what to do here, so print and discard */
 	if (trans != SAE_STATE_CONFIRMED) {
 		l_error("received transaction %u in accepted state", trans);
-		return false;
+		return -EBADMSG;
 	}
 
 	if (sm->sync > SAE_SYNC_MAX)
-		return false;
+		return -EBADMSG;
+
+	if (len < 2)
+		return -EBADMSG;
 
 	sc = l_get_le16(frame);
 
@@ -952,14 +964,14 @@ static bool sae_verify_accepted(struct sae_sm *sm, uint16_t trans,
 	 * silently discarded.
 	 */
 	if (sc <= sm->rc || sc == 0xffff)
-		return false;
+		return -EBADMSG;
 
 	/*
 	 * If the verification fails, the received frame shall be silently
 	 * discarded.
 	 */
 	if (!sae_verify_confirm(sm, frame))
-		return false;
+		return -EBADMSG;
 
 	/*
 	 * If the verification succeeds, the Rc variable shall be set to the
@@ -972,11 +984,7 @@ static bool sae_verify_accepted(struct sae_sm *sm, uint16_t trans,
 
 	sae_send_confirm(sm);
 
-	/*
-	 * Since the confirmed needed special processing because of accepted
-	 * state we don't want the standard code path to execute.
-	 */
-	return false;
+	return 0;
 }
 
 static int sae_verify_packet(struct sae_sm *sm, uint16_t trans,
@@ -1016,29 +1024,7 @@ static int sae_rx_authenticate(struct auth_proto *ap,
 
 	auth = mmpdu_body(hdr);
 
-	if (!auth) {
-		l_debug("Auth frame body did not validate");
-		goto reject;
-	}
-
-	len -= sizeof(struct mmpdu_header);
-
-	if (len < 4) {
-		l_error("bad packet length");
-		goto reject;
-	}
-
-	/*
-	 * TODO: Hostapd seems to not include the group number when rejecting
-	 * with an unsupported group, which violates the spec. This means our
-	 * len == 4, but we can still recover this connection by renegotiating
-	 * a new group. Because of this we need to special case this status
-	 * code, as well as add the check in the verify function to allow for
-	 * this missing group number.
-	 */
-	if (len == 4 && L_LE16_TO_CPU(auth->status) !=
-				MMPDU_STATUS_CODE_UNSUPP_FINITE_CYCLIC_GROUP)
-		goto reject;
+	len -= mmpdu_header_len(hdr);
 
 	ret = sae_verify_packet(sm, L_LE16_TO_CPU(auth->transaction_sequence),
 					L_LE16_TO_CPU(auth->status),
@@ -1049,10 +1035,10 @@ static int sae_rx_authenticate(struct auth_proto *ap,
 	switch (L_LE16_TO_CPU(auth->transaction_sequence)) {
 	case SAE_STATE_COMMITTED:
 		return sae_process_commit(sm, hdr->address_2, auth->ies,
-						len - 2);
+						len - 6);
 	case SAE_STATE_CONFIRMED:
 		return sae_process_confirm(sm, hdr->address_2, auth->ies,
-						len - 2);
+						len - 6);
 	default:
 		l_error("invalid transaction sequence %u",
 				L_LE16_TO_CPU(auth->transaction_sequence));

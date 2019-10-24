@@ -28,14 +28,13 @@ struct l_genl_family;
 const struct l_settings *iwd_get_config(void);
 struct l_genl *iwd_get_genl(void);
 
-bool netdev_init(void);
-void netdev_exit(void);
-void netdev_set_nl80211(struct l_genl_family *nl80211);
 void netdev_shutdown(void);
 
-bool manager_init(struct l_genl_family *in,
-			const char *if_whitelist, const char *if_blacklist);
-void manager_exit(void);
+const char *iwd_get_iface_whitelist(void);
+const char *iwd_get_iface_blacklist(void);
+
+const char *iwd_get_phy_whitelist(void);
+const char *iwd_get_phy_blacklist(void);
 
 struct iwd_module_desc {
 	const char *name;

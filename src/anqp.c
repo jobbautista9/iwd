@@ -287,6 +287,9 @@ uint32_t anqp_request(uint32_t ifindex, const uint8_t *addr,
 	uint32_t duration = 300;
 	struct netdev *netdev = netdev_find(ifindex);
 
+	if (!netdev)
+		return 0;
+
 	/*
 	 * TODO: Netdev dependencies will eventually be removed so we need
 	 * another way to figure out wiphy capabilities.
@@ -474,11 +477,11 @@ static void anqp_mlme_notify(struct l_genl_msg *msg, void *user_data)
 	}
 }
 
-bool anqp_init(struct l_genl_family *in)
+static int anqp_init(void)
 {
 	struct l_genl *genl = iwd_get_genl();
 
-	nl80211 = in;
+	nl80211 = l_genl_family_new(genl, NL80211_GENL_NAME);
 
 	anqp_requests = l_queue_new();
 
@@ -492,13 +495,14 @@ bool anqp_init(struct l_genl_family *in)
 								NULL, NULL))
 		l_error("Registering for MLME notification failed");
 
-	return true;
+	return 0;
 }
 
-void anqp_exit(void)
+static void anqp_exit(void)
 {
 	struct l_genl *genl = iwd_get_genl();
 
+	l_genl_family_free(nl80211);
 	nl80211 = NULL;
 
 	l_queue_destroy(anqp_requests, anqp_destroy);
@@ -507,3 +511,6 @@ void anqp_exit(void)
 
 	l_genl_remove_unicast_watch(genl, unicast_watch);
 }
+
+IWD_MODULE(anqp, anqp_init, anqp_exit);
+IWD_MODULE_DEPENDS(anqp, netdev);

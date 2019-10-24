@@ -159,14 +159,17 @@ static bool owe_compute_keys(struct owe_sm *owe, const void *public_key,
 
 	if (!l_ecdh_generate_shared_secret(owe->private, other_public,
 						&shared_secret)) {
+		l_ecc_point_free(other_public);
 		return false;
 	}
 
 	l_ecc_point_free(other_public);
 
 	nbytes = l_ecc_scalar_get_data(shared_secret, ss_buf, sizeof(ss_buf));
-
 	l_ecc_scalar_free(shared_secret);
+
+	if (nbytes < 0)
+		return false;
 
 	ptr += l_ecc_point_get_x(owe->public_key, ptr, sizeof(key));
 	memcpy(ptr, public_key, nbytes);
@@ -215,7 +218,6 @@ static bool owe_compute_keys(struct owe_sm *owe, const void *public_key,
 
 failed:
 	memset(ss_buf, 0, sizeof(ss_buf));
-	l_ecc_scalar_free(shared_secret);
 	return false;
 }
 
@@ -245,7 +247,7 @@ static int owe_rx_associate(struct auth_proto *ap, const uint8_t *frame,
 	size_t owe_dh_len = 0;
 	const uint8_t *owe_dh = NULL;
 	struct ie_rsn_info info;
-	bool akm_found;
+	bool akm_found = false;
 	const void *data;
 
 	mpdu = mpdu_validate(frame, len);

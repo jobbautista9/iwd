@@ -524,6 +524,9 @@ static pid_t execute_program(char *argv[], char *envp[], bool wait,
 							S_IRUSR | S_IWUSR);
 			}
 
+			if (fd == -1)
+				exit(EXIT_FAILURE);
+
 			dup2(fd, 1);
 			dup2(fd, 2);
 
@@ -1634,7 +1637,7 @@ static void print_test_status(char *test_name, enum test_status ts,
 
 	interval_str = l_malloc(int_len);
 	memset(interval_str, ' ', int_len);
-	interval_str[int_len] = '\0';
+	interval_str[int_len - 1] = '\0';
 
 	if (interval > 0)
 		sprintf(interval_str, "%.3f sec", interval);
@@ -1961,8 +1964,8 @@ static void create_network_and_run_tests(void *data, void *user_data)
 						HW_CONFIG_SETUP_TMPFS_EXTRAS,
 									':');
 
-	sim_keys = l_settings_get_string(hw_settings, HW_CONFIG_GROUP_SETUP,
-			"sim_keys");
+	sim_keys = l_settings_get_value(hw_settings, HW_CONFIG_GROUP_SETUP,
+								"sim_keys");
 
 	if (sim_keys) {
 		if (!strcmp(sim_keys, "ofono")) {
@@ -2413,6 +2416,8 @@ next:
 		l_free(unit_test_abs_path);
 	}
 
+	closedir(d);
+
 exit:
 	l_strfreev(unit_tests);
 }
@@ -2670,7 +2675,8 @@ static void run_tests(void)
 		test_action_str = ptr + 4;
 
 		ptr = strchr(test_action_str, '\'');
-		*ptr = '\0';
+		if (ptr)
+			*ptr = '\0';
 
 		if (!strcmp(test_action_str, "virtual"))
 			native_hw = false;
@@ -2952,9 +2958,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'g':
 			gdb_opt = optarg;
-			if (!(!strcmp(gdb_opt, "iwd") ||
-					!strcmp(gdb_opt, "hostapd") ||
-					!strcmp(gdb_opt, "hwsim"))) {
+			if (!gdb_opt || (strcmp(gdb_opt, "iwd") &&
+					strcmp(gdb_opt, "hostapd") &&
+					strcmp(gdb_opt, "hwsim"))) {
 				l_error("--gdb can only be used with iwd"
 					", hwsim or hostapd");
 				return EXIT_FAILURE;
