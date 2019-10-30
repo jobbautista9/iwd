@@ -1,3 +1,12 @@
+iwd (1.0-1) unstable; urgency=medium
+
+  * New upstream release.
+  * debian/iwd.docs: drop installing main.conf example
+    - obsolete example was removed upstream, see newly written
+      manpage documentation now available instead.
+
+ -- Andreas Henriksson <andreas@fatal.se>  Wed, 30 Oct 2019 14:30:11 +0100
+
 iwd (0.23-1) unstable; urgency=medium
 
   * New upstream release.
