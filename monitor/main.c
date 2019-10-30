@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2013-2014  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2013-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -176,7 +176,8 @@ static size_t rta_add(void *rta_buf, unsigned short type, uint16_t len,
 
 	rta->rta_len = rta_len;
 	rta->rta_type = type;
-	memcpy(RTA_DATA(rta), data, len);
+	if (len)
+		memcpy(RTA_DATA(rta), data, len);
 
 	return RTA_SPACE(len);
 }

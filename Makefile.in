@@ -102,25 +102,26 @@ noinst_PROGRAMS = $(am__EXEEXT_6) $(am__EXEEXT_9)
 @DAEMON_TRUE@@SYSTEMD_SERVICE_TRUE@am__append_7 = src/iwd.service
 @DAEMON_TRUE@@SYSTEMD_SERVICE_TRUE@am__append_8 = src/iwd.service
 @DAEMON_TRUE@@SYSTEMD_SERVICE_TRUE@am__append_9 = src/net.connman.iwd.service
-@DAEMON_TRUE@@MANUAL_PAGES_TRUE@am__append_10 = src/iwd.8 src/iwd.conf.5 src/iwd.network.5
-@CLIENT_TRUE@am__append_11 = client/iwctl
-@CLIENT_TRUE@@MANUAL_PAGES_TRUE@am__append_12 = client/iwctl.1
-@MONITOR_TRUE@am__append_13 = monitor/iwmon
-@MANUAL_PAGES_TRUE@@MONITOR_TRUE@am__append_14 = monitor/iwmon.1
-@WIRED_TRUE@am__append_15 = wired/ead
-@DBUS_POLICY_TRUE@@WIRED_TRUE@am__append_16 = wired/ead-dbus.conf
-@SYSTEMD_SERVICE_TRUE@@WIRED_TRUE@am__append_17 = wired/ead.service
+@DAEMON_TRUE@@SYSTEMD_SERVICE_TRUE@am__append_10 = src/80-iwd.link
+@DAEMON_TRUE@@MANUAL_PAGES_TRUE@am__append_11 = src/iwd.8 src/iwd.config.5 src/iwd.network.5
+@CLIENT_TRUE@am__append_12 = client/iwctl
+@CLIENT_TRUE@@MANUAL_PAGES_TRUE@am__append_13 = client/iwctl.1
+@MONITOR_TRUE@am__append_14 = monitor/iwmon
+@MANUAL_PAGES_TRUE@@MONITOR_TRUE@am__append_15 = monitor/iwmon.1
+@WIRED_TRUE@am__append_16 = wired/ead
+@DBUS_POLICY_TRUE@@WIRED_TRUE@am__append_17 = wired/ead-dbus.conf
 @SYSTEMD_SERVICE_TRUE@@WIRED_TRUE@am__append_18 = wired/ead.service
-@SYSTEMD_SERVICE_TRUE@@WIRED_TRUE@am__append_19 = wired/net.connman.ead.service
-@MANUAL_PAGES_TRUE@@WIRED_TRUE@am__append_20 = wired/ead.8
-@HWSIM_TRUE@am__append_21 = tools/hwsim
-@DBUS_POLICY_TRUE@@HWSIM_TRUE@am__append_22 = tools/hwsim-dbus.conf
-@HWSIM_TRUE@@MANUAL_PAGES_TRUE@am__append_23 = tools/hwsim.1
-@TOOLS_TRUE@am__append_24 = tools/test-runner
-@CLIENT_TRUE@am__append_25 = unit/test-client
-@MAINTAINER_MODE_TRUE@am__append_26 = $(unit_tests)
+@SYSTEMD_SERVICE_TRUE@@WIRED_TRUE@am__append_19 = wired/ead.service
+@SYSTEMD_SERVICE_TRUE@@WIRED_TRUE@am__append_20 = wired/net.connman.ead.service
+@MANUAL_PAGES_TRUE@@WIRED_TRUE@am__append_21 = wired/ead.8
+@HWSIM_TRUE@am__append_22 = tools/hwsim
+@DBUS_POLICY_TRUE@@HWSIM_TRUE@am__append_23 = tools/hwsim-dbus.conf
+@HWSIM_TRUE@@MANUAL_PAGES_TRUE@am__append_24 = tools/hwsim.1
+@TOOLS_TRUE@am__append_25 = tools/test-runner
+@CLIENT_TRUE@am__append_26 = unit/test-client
+@MAINTAINER_MODE_TRUE@am__append_27 = $(unit_tests)
 TESTS = $(am__EXEEXT_8)
-@MAINTAINER_MODE_TRUE@am__append_27 = -DHAVE_PKCS8_SUPPORT
+@MAINTAINER_MODE_TRUE@am__append_28 = -DHAVE_PKCS8_SUPPORT
 subdir = .
 ACLOCAL_M4 = $(top_srcdir)/aclocal.m4
 am__aclocal_m4_deps = $(top_srcdir)/build-aux/libtool.m4 \
@@ -147,6 +148,7 @@ am__installdirs = "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libexecdir)" \
 	"$(DESTDIR)$(man1dir)" "$(DESTDIR)$(man5dir)" \
 	"$(DESTDIR)$(man8dir)" "$(DESTDIR)$(dbus_busdir)" \
 	"$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_modloaddir)" \
+	"$(DESTDIR)$(systemd_networkdir)" \
 	"$(DESTDIR)$(systemd_unitdir)"
 @DAEMON_TRUE@am__EXEEXT_4 = src/iwd$(EXEEXT)
 @WIRED_TRUE@am__EXEEXT_5 = wired/ead$(EXEEXT)
@@ -646,7 +648,7 @@ MANS = $(man_MANS)
 am__dist_dbus_data_DATA_DIST = src/iwd-dbus.conf wired/ead-dbus.conf \
 	tools/hwsim-dbus.conf
 DATA = $(dbus_bus_DATA) $(dist_dbus_data_DATA) $(systemd_modload_DATA) \
-	$(systemd_unit_DATA)
+	$(systemd_network_DATA) $(systemd_unit_DATA)
 am__tagged_files = $(HEADERS) $(SOURCES) $(TAGS_FILES) \
 	$(LISP)config.h.in
 # Read a list of newline-separated strings from the standard input,
@@ -946,6 +948,7 @@ SET_MAKE = @SET_MAKE@
 SHELL = @SHELL@
 STRIP = @STRIP@
 SYSTEMD_MODLOADDIR = @SYSTEMD_MODLOADDIR@
+SYSTEMD_NETWORKDIR = @SYSTEMD_NETWORKDIR@
 SYSTEMD_UNITDIR = @SYSTEMD_UNITDIR@
 VERSION = @VERSION@
 abs_builddir = @abs_builddir@
@@ -1129,18 +1132,20 @@ builtin_sources = $(am__append_3) $(am__append_5)
 @EXTERNAL_ELL_FALSE@ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources)
 @DBUS_POLICY_TRUE@dbus_datadir = @DBUS_DATADIR@/dbus-1/system.d
 @DBUS_POLICY_TRUE@dist_dbus_data_DATA = $(am__append_6) \
-@DBUS_POLICY_TRUE@	$(am__append_16) $(am__append_22)
+@DBUS_POLICY_TRUE@	$(am__append_17) $(am__append_23)
 @SYSTEMD_SERVICE_TRUE@systemd_unitdir = @SYSTEMD_UNITDIR@
 @SYSTEMD_SERVICE_TRUE@systemd_unit_DATA = $(am__append_8) \
-@SYSTEMD_SERVICE_TRUE@	$(am__append_18)
+@SYSTEMD_SERVICE_TRUE@	$(am__append_19)
 @SYSTEMD_SERVICE_TRUE@dbus_busdir = @DBUS_BUSDIR@
-@SYSTEMD_SERVICE_TRUE@dbus_bus_DATA = $(am__append_9) $(am__append_19)
+@SYSTEMD_SERVICE_TRUE@dbus_bus_DATA = $(am__append_9) $(am__append_20)
+@SYSTEMD_SERVICE_TRUE@systemd_networkdir = @SYSTEMD_NETWORKDIR@
+@SYSTEMD_SERVICE_TRUE@systemd_network_DATA = $(am__append_10)
 @SYSTEMD_SERVICE_TRUE@systemd_modloaddir = @SYSTEMD_MODLOADDIR@
 @SYSTEMD_SERVICE_TRUE@systemd_modload_DATA = src/pkcs8.conf
-@MANUAL_PAGES_TRUE@man_MANS = $(am__append_10) $(am__append_12) \
-@MANUAL_PAGES_TRUE@	$(am__append_14) $(am__append_20) \
-@MANUAL_PAGES_TRUE@	$(am__append_23)
-manual_pages = src/iwd.8 src/iwd.conf.5 src/iwd.network.5 \
+@MANUAL_PAGES_TRUE@man_MANS = $(am__append_11) $(am__append_13) \
+@MANUAL_PAGES_TRUE@	$(am__append_15) $(am__append_21) \
+@MANUAL_PAGES_TRUE@	$(am__append_24)
+manual_pages = src/iwd.8 src/iwd.config.5 src/iwd.network.5 \
 		client/iwctl.1 monitor/iwmon.1 wired/ead.8 tools/hwsim.1
 
 eap_sources = src/eap.c src/eap.h src/eap-private.h \
@@ -1249,7 +1254,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 
 @WIRED_TRUE@wired_ead_LDADD = $(ell_ldadd)
 @WIRED_TRUE@wired_ead_DEPENDENCIES = $(ell_dependencies) \
-@WIRED_TRUE@	$(am__append_17)
+@WIRED_TRUE@	$(am__append_18)
 @HWSIM_TRUE@tools_hwsim_SOURCES = tools/hwsim.c src/mpdu.h \
 @HWSIM_TRUE@					src/util.h src/util.c \
 @HWSIM_TRUE@					src/storage.h src/storage.c \
@@ -1263,7 +1268,7 @@ unit_tests = unit/test-cmac-aes unit/test-hmac-md5 unit/test-hmac-sha1 \
 	unit/test-crypto unit/test-eapol unit/test-mpdu unit/test-ie \
 	unit/test-util unit/test-ssid-security unit/test-arc4 \
 	unit/test-wsc unit/test-eap-mschapv2 unit/test-eap-sim \
-	unit/test-sae unit/test-p2p $(am__append_25)
+	unit/test-sae unit/test-p2p $(am__append_26)
 unit_test_eap_sim_SOURCES = unit/test-eap-sim.c \
 		src/crypto.h src/crypto.c src/simutil.h src/simutil.c \
 		src/ie.h src/ie.c \
@@ -1395,14 +1400,14 @@ unit_test_p2p_SOURCES = unit/test-p2p.c src/wscutil.h src/wscutil.c \
 unit_test_p2p_LDADD = $(ell_ldadd)
 EXTRA_DIST = src/genbuiltin src/iwd.service.in src/net.connman.iwd.service \
 			wired/ead.service.in wired/net.connman.ead.service \
-			src/pkcs8.conf doc/main.conf unit/gencerts.cnf \
+			src/80-iwd.link src/pkcs8.conf unit/gencerts.cnf \
 			$(manual_pages) $(patsubst %.1,%.rst, \
 					$(patsubst %.5,%.rst, \
 					$(patsubst %.8,%.rst,$(manual_pages))))
 
 AM_CFLAGS = $(ell_cflags) -fvisibility=hidden \
 	-DUNITDIR=\""$(top_srcdir)/unit/"\" \
-	-DCERTDIR=\""$(top_builddir)/unit/"\" $(am__append_27)
+	-DCERTDIR=\""$(top_builddir)/unit/"\" $(am__append_28)
 CLEANFILES = src/iwd.service wired/ead.service
 DISTCHECK_CONFIGURE_FLAGS = --disable-dbus-policy --disable-systemd-service \
 				--enable-sim-hardcoded \
@@ -2408,6 +2413,27 @@ uninstall-systemd_modloadDATA:
 	@list='$(systemd_modload_DATA)'; test -n "$(systemd_modloaddir)" || list=; \
 	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
 	dir='$(DESTDIR)$(systemd_modloaddir)'; $(am__uninstall_files_from_dir)
+install-systemd_networkDATA: $(systemd_network_DATA)
+	@$(NORMAL_INSTALL)
+	@list='$(systemd_network_DATA)'; test -n "$(systemd_networkdir)" || list=; \
+	if test -n "$$list"; then \
+	  echo " $(MKDIR_P) '$(DESTDIR)$(systemd_networkdir)'"; \
+	  $(MKDIR_P) "$(DESTDIR)$(systemd_networkdir)" || exit 1; \
+	fi; \
+	for p in $$list; do \
+	  if test -f "$$p"; then d=; else d="$(srcdir)/"; fi; \
+	  echo "$$d$$p"; \
+	done | $(am__base_list) | \
+	while read files; do \
+	  echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(systemd_networkdir)'"; \
+	  $(INSTALL_DATA) $$files "$(DESTDIR)$(systemd_networkdir)" || exit $$?; \
+	done
+
+uninstall-systemd_networkDATA:
+	@$(NORMAL_UNINSTALL)
+	@list='$(systemd_network_DATA)'; test -n "$(systemd_networkdir)" || list=; \
+	files=`for p in $$list; do echo $$p; done | sed -e 's|^.*/||'`; \
+	dir='$(DESTDIR)$(systemd_networkdir)'; $(am__uninstall_files_from_dir)
 install-systemd_unitDATA: $(systemd_unit_DATA)
 	@$(NORMAL_INSTALL)
 	@list='$(systemd_unit_DATA)'; test -n "$(systemd_unitdir)" || list=; \
@@ -2949,7 +2975,7 @@ check: $(BUILT_SOURCES)
 	$(MAKE) $(AM_MAKEFLAGS) check-am
 all-am: Makefile $(PROGRAMS) $(LTLIBRARIES) $(MANS) $(DATA) config.h
 installdirs:
-	for dir in "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libexecdir)" "$(DESTDIR)$(man1dir)" "$(DESTDIR)$(man5dir)" "$(DESTDIR)$(man8dir)" "$(DESTDIR)$(dbus_busdir)" "$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_modloaddir)" "$(DESTDIR)$(systemd_unitdir)"; do \
+	for dir in "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libexecdir)" "$(DESTDIR)$(man1dir)" "$(DESTDIR)$(man5dir)" "$(DESTDIR)$(man8dir)" "$(DESTDIR)$(dbus_busdir)" "$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_modloaddir)" "$(DESTDIR)$(systemd_networkdir)" "$(DESTDIR)$(systemd_unitdir)"; do \
 	  test -z "$$dir" || $(MKDIR_P) "$$dir"; \
 	done
 install: $(BUILT_SOURCES)
@@ -3190,7 +3216,8 @@ info-am:
 
 install-data-am: install-data-local install-dbus_busDATA \
 	install-dist_dbus_dataDATA install-man \
-	install-systemd_modloadDATA install-systemd_unitDATA
+	install-systemd_modloadDATA install-systemd_networkDATA \
+	install-systemd_unitDATA
 
 install-dvi: install-dvi-am
 
@@ -3399,7 +3426,7 @@ ps-am:
 uninstall-am: uninstall-binPROGRAMS uninstall-dbus_busDATA \
 	uninstall-dist_dbus_dataDATA uninstall-libexecPROGRAMS \
 	uninstall-man uninstall-systemd_modloadDATA \
-	uninstall-systemd_unitDATA
+	uninstall-systemd_networkDATA uninstall-systemd_unitDATA
 
 uninstall-man: uninstall-man1 uninstall-man5 uninstall-man8
 
@@ -3421,15 +3448,17 @@ uninstall-man: uninstall-man1 uninstall-man5 uninstall-man8
 	install-info install-info-am install-libexecPROGRAMS \
 	install-man install-man1 install-man5 install-man8 install-pdf \
 	install-pdf-am install-ps install-ps-am install-strip \
-	install-systemd_modloadDATA install-systemd_unitDATA \
-	installcheck installcheck-am installdirs maintainer-clean \
-	maintainer-clean-generic maintainer-clean-local mostlyclean \
-	mostlyclean-compile mostlyclean-generic mostlyclean-libtool \
-	pdf pdf-am ps ps-am recheck tags tags-am uninstall \
-	uninstall-am uninstall-binPROGRAMS uninstall-dbus_busDATA \
+	install-systemd_modloadDATA install-systemd_networkDATA \
+	install-systemd_unitDATA installcheck installcheck-am \
+	installdirs maintainer-clean maintainer-clean-generic \
+	maintainer-clean-local mostlyclean mostlyclean-compile \
+	mostlyclean-generic mostlyclean-libtool pdf pdf-am ps ps-am \
+	recheck tags tags-am uninstall uninstall-am \
+	uninstall-binPROGRAMS uninstall-dbus_busDATA \
 	uninstall-dist_dbus_dataDATA uninstall-libexecPROGRAMS \
 	uninstall-man uninstall-man1 uninstall-man5 uninstall-man8 \
-	uninstall-systemd_modloadDATA uninstall-systemd_unitDATA
+	uninstall-systemd_modloadDATA uninstall-systemd_networkDATA \
+	uninstall-systemd_unitDATA
 
 .PRECIOUS: Makefile
 

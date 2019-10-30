@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2017-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -23,7 +23,7 @@
 #define COMMAND_OPTION_USERNAME		"username"
 #define COMMAND_OPTION_PASSWORD		"password"
 #define COMMAND_OPTION_PASSPHRASE	"passphrase"
-#define COMMAND_OPTION_DONTASK		"dontask"
+#define COMMAND_OPTION_DONTASK		"dont-ask"
 
 typedef char *(*command_completion_func_t) (const char *text, int state);
 

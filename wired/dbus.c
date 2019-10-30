@@ -2,7 +2,7 @@
  *
  *  Ethernet daemon for Linux
  *
- *  Copyright (C) 2017-2018  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2017-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -71,7 +71,7 @@ static void request_name_callback(struct l_dbus *dbus, bool success,
 		return;
 	}
 
-	if (!l_dbus_object_manager_enable(dbus))
+	if (!l_dbus_object_manager_enable(dbus, "/"))
 		l_warn("Unable to register ObjectManager interface");
 
 	if (info->app->ready)

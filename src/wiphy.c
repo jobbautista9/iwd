@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2013-2018  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2013-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -267,9 +267,12 @@ check_blacklist:
 
 const char *wiphy_get_path(struct wiphy *wiphy)
 {
-	static char path[15];
+	static char path[256];
 
-	snprintf(path, sizeof(path), "/%d", wiphy->id);
+	L_WARN_ON(snprintf(path, sizeof(path), "%s/%d", IWD_BASE_PATH,
+				wiphy->id) >= (int) sizeof(path));
+	path[sizeof(path) - 1] = '\0';
+
 	return path;
 }
 
@@ -931,7 +934,7 @@ static void wiphy_set_station_capability_bits(struct wiphy *wiphy)
 
 	ext_capa = wiphy->iftype_extended_capabilities[NL80211_IFTYPE_STATION];
 
-	if (!l_settings_get_bool(iwd_get_config(), "General", "disable_anqp",
+	if (!l_settings_get_bool(iwd_get_config(), "General", "DisableANQP",
 				&anqp_disabled))
 		anqp_disabled = true;
 
@@ -1166,15 +1169,11 @@ static int wiphy_init(void)
 {
 	struct l_genl *genl = iwd_get_genl();
 	const struct l_settings *config = iwd_get_config();
-	const char *s = l_settings_get_value(config, "General",
-							"mac_randomize_bytes");
 	const char *whitelist = iwd_get_phy_whitelist();
 	const char *blacklist = iwd_get_phy_blacklist();
+	const char *s;
 
 	nl80211 = l_genl_family_new(genl, NL80211_GENL_NAME);
-
-	if (s && !strcmp(s, "nic"))
-		mac_randomize_bytes = 3;
 
 	/*
 	 * This is an extra sanity check so that no memory is leaked
@@ -1203,6 +1202,18 @@ static int wiphy_init(void)
 
 	if (blacklist)
 		blacklist_filter = l_strsplit(blacklist, ',');
+
+	s = l_settings_get_value(config, "General",
+						"AddressRandomizationRange");
+	if (s) {
+		if (!strcmp(s, "nic"))
+			mac_randomize_bytes = 3;
+		else if (!strcmp(s, "full"))
+			mac_randomize_bytes = 6;
+		else
+			l_warn("Invalid [General].AddressRandomizationRange"
+				" value: %s", s);
+	}
 
 	return 0;
 }

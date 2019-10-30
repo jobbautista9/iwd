@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2015-2018  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2015-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -271,7 +271,7 @@ static bool scan_mac_address_randomization_is_disabled(void)
 	bool disabled;
 
 	if (!l_settings_get_bool(config, "Scan",
-					"disable_mac_address_randomization",
+					"DisableMacAddressRandomization",
 					&disabled))
 		return false;
 
@@ -641,7 +641,7 @@ static bool scan_periodic_is_disabled(void)
 	const struct l_settings *config = iwd_get_config();
 	bool disabled;
 
-	if (!l_settings_get_bool(config, "Scan", "disable_periodic_scan",
+	if (!l_settings_get_bool(config, "Scan", "DisablePeriodicScan",
 								&disabled))
 		return false;
 
@@ -1928,7 +1928,7 @@ static int scan_init(void)
 
 	scan_contexts = l_queue_new();
 
-	if (!l_settings_get_double(config, "Rank", "rank_5g_factor",
+	if (!l_settings_get_double(config, "Rank", "BandModifier5Ghz",
 					&RANK_5G_FACTOR))
 		RANK_5G_FACTOR = 1.0;
 

@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2017-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -397,7 +397,7 @@ static void display_completion_matches(char **matches, int num_matches,
 
 static struct masked_input {
 	bool use_mask;
-	char passphrase[MAX_PASSPHRASE_LEN];
+	char passphrase[MAX_PASSPHRASE_LEN + 1];
 	uint8_t point;
 	uint8_t end;
 } masked_input;
@@ -408,7 +408,9 @@ static void mask_input(void)
 		return;
 
 	if (rl_end > MAX_PASSPHRASE_LEN) {
-		rl_point = rl_end = MAX_PASSPHRASE_LEN;
+		rl_end = MAX_PASSPHRASE_LEN;
+		rl_point = masked_input.point;
+
 		goto set_mask;
 	}
 
@@ -453,7 +455,7 @@ done:
 
 static void reset_masked_input(void)
 {
-	memset(masked_input.passphrase, 0, MAX_PASSPHRASE_LEN);
+	memset(masked_input.passphrase, 0, MAX_PASSPHRASE_LEN + 1);
 	masked_input.point = 0;
 	masked_input.end = 0;
 }
@@ -465,6 +467,10 @@ static void readline_callback(char *prompt)
 
 	HIST_ENTRY *previous_prompt;
 
+	if (agent_prompt(masked_input.use_mask ?
+					masked_input.passphrase : prompt))
+		goto done;
+
 	if (!prompt) {
 		display_quit();
 
@@ -472,10 +478,6 @@ static void readline_callback(char *prompt)
 
 		return;
 	}
-
-	if (agent_prompt(masked_input.use_mask ?
-					masked_input.passphrase : prompt))
-		goto done;
 
 	if (!strlen(prompt))
 		goto done;

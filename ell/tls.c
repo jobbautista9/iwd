@@ -92,7 +92,7 @@ bool tls12_prf(enum l_checksum_type type,
 {
 	struct l_checksum *hmac = l_checksum_new_hmac(type, secret, secret_len);
 	size_t a_len, chunk_len, prfseed_len = strlen(label) + seed_len;
-	uint8_t a[128], prfseed[prfseed_len];
+	uint8_t a[64 + prfseed_len], prfseed[prfseed_len];
 
 	if (!hmac)
 		return false;
@@ -2847,7 +2847,7 @@ LIB_EXPORT bool l_tls_set_auth_data(struct l_tls *tls,
 					L_CHECKSUM_NONE, &tls->priv_key_size,
 					&is_public) || is_public) {
 			TLS_DEBUG("Not a private key or l_key_get_info failed");
-			l_key_free(tls->priv_key);
+			tls->cert = NULL;
 			tls->priv_key = NULL;
 			tls->priv_key_size = 0;
 			return false;

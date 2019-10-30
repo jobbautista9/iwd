@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2013-2018  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2013-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -679,7 +679,7 @@ int eap_unregister_method(struct eap_method *method)
 
 void __eap_set_config(struct l_settings *config)
 {
-	if (!l_settings_get_uint(config, "EAP", "mtu", &default_mtu))
+	if (!l_settings_get_uint(config, "EAP", "MTU", &default_mtu))
 		default_mtu = 1400; /* on WiFi the real MTU is around 2304 */
 }
 
