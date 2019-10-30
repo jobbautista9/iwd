@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2013-2014  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2013-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -184,7 +184,7 @@ static void request_name_callback(struct l_dbus *dbus, bool success,
 		goto fail_exit;
 	}
 
-	if (!l_dbus_object_manager_enable(dbus))
+	if (!l_dbus_object_manager_enable(dbus, "/"))
 		l_warn("Unable to register the ObjectManager");
 
 	/* TODO: Always request nl80211 for now, ignoring auto-loading */

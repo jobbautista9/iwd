@@ -77,7 +77,8 @@ static const char *known_network_get_path(const struct network_info *network)
 	static char path[256];
 	unsigned int pos = 0, i;
 
-	path[pos++] = '/';
+	L_WARN_ON((pos = snprintf(path, sizeof(path), "%s/",
+					IWD_BASE_PATH)) >= (int) sizeof(path));
 
 	for (i = 0; network->ssid[i] && pos < sizeof(path); i++)
 		pos += snprintf(path + pos, sizeof(path) - pos, "%02x",
@@ -85,6 +86,7 @@ static const char *known_network_get_path(const struct network_info *network)
 
 	snprintf(path + pos, sizeof(path) - pos, "_%s",
 			security_to_str(network->type));
+	path[sizeof(path) - 1] = '\0';
 
 	return path;
 }
@@ -140,7 +142,7 @@ static void known_network_set_autoconnect(struct network_info *network,
 	network->is_autoconnectable = autoconnect;
 
 	l_dbus_property_changed(dbus_get_bus(), known_network_get_path(network),
-				IWD_KNOWN_NETWORK_INTERFACE, "Autoconnect");
+				IWD_KNOWN_NETWORK_INTERFACE, "AutoConnect");
 }
 
 static int known_network_touch(struct network_info *info)
@@ -368,10 +370,17 @@ void known_network_update(struct network_info *network,
 
 	network->is_hidden = is_hidden;
 
-	if (!l_settings_get_bool(settings, "Settings", "Autoconnect",
-							&is_autoconnectable))
-		/* If no entry, default to Autoconnectable=True */
+	if (!l_settings_get_bool(settings, "Settings", "AutoConnect",
+							&is_autoconnectable)) {
+		/* If no entry, default to AutoConnectable=True */
 		is_autoconnectable = true;
+
+		/* Try legacy property name just in case */
+		if (l_settings_get_bool(settings, "Settings", "Autoconnect",
+							&is_autoconnectable))
+			l_warn("Autoconnect setting is deprecated, use"
+					" AutoConnect instead");
+	}
 
 	known_network_set_autoconnect(network, is_autoconnectable);
 }
@@ -576,7 +585,7 @@ static struct l_dbus_message *known_network_property_set_autoconnect(
 	if (!settings)
 		return dbus_error_failed(message);
 
-	l_settings_set_bool(settings, "Settings", "Autoconnect", autoconnect);
+	l_settings_set_bool(settings, "Settings", "AutoConnect", autoconnect);
 
 	network->ops->sync(network, settings);
 	l_settings_free(settings);
@@ -619,7 +628,7 @@ static void setup_known_network_interface(struct l_dbus_interface *interface)
 	l_dbus_interface_property(interface, "Hidden", 0, "b",
 					known_network_property_get_hidden,
 					NULL);
-	l_dbus_interface_property(interface, "Autoconnect", 0, "b",
+	l_dbus_interface_property(interface, "AutoConnect", 0, "b",
 					known_network_property_get_autoconnect,
 					known_network_property_set_autoconnect);
 	l_dbus_interface_property(interface, "LastConnectedTime", 0, "s",
@@ -679,9 +688,16 @@ static void known_network_new(const char *ssid, enum security security,
 					&is_hidden))
 		is_hidden = false;
 
-	if (!l_settings_get_bool(settings, "Settings", "Autoconnect",
-						&is_autoconnectable))
+	if (!l_settings_get_bool(settings, "Settings", "AutoConnect",
+						&is_autoconnectable)) {
 		is_autoconnectable = true;
+
+		/* Try legacy property name just in case */
+		if (l_settings_get_bool(settings, "Settings", "Autoconnect",
+							&is_autoconnectable))
+			l_warn("Autoconnect setting is deprecated, use"
+					" AutoConnect instead");
+	}
 
 	if (is_hidden)
 		num_known_hidden_networks++;

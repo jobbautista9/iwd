@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2013-2015  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2013-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -1375,6 +1375,8 @@ void network_rank_update(struct network *network, bool connected)
 
 	if (network->info->connected_time != 0) {
 		int n = known_network_offset(network->info);
+
+		L_WARN_ON(n < 0);
 
 		if (n >= (int) L_ARRAY_SIZE(rankmod_table))
 			n = L_ARRAY_SIZE(rankmod_table) - 1;

@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2013-2014  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2013-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -2707,7 +2707,7 @@ void __eapol_tx_packet(uint32_t ifindex, const uint8_t *dst, uint16_t proto,
 void __eapol_set_config(struct l_settings *config)
 {
 	if (!l_settings_get_uint(config, "EAPoL",
-			"max_4way_handshake_time", &eapol_4way_handshake_time))
+			"MaxHandshakeTime", &eapol_4way_handshake_time))
 		eapol_4way_handshake_time = 5;
 }
 

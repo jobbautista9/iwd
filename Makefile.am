@@ -148,6 +148,9 @@ systemd_unit_DATA =
 dbus_busdir = @DBUS_BUSDIR@
 dbus_bus_DATA =
 
+systemd_networkdir = @SYSTEMD_NETWORKDIR@
+systemd_network_DATA =
+
 systemd_modloaddir = @SYSTEMD_MODLOADDIR@
 systemd_modload_DATA = src/pkcs8.conf
 endif
@@ -156,7 +159,7 @@ if MANUAL_PAGES
 man_MANS =
 endif
 
-manual_pages = src/iwd.8 src/iwd.conf.5 src/iwd.network.5 \
+manual_pages = src/iwd.8 src/iwd.config.5 src/iwd.network.5 \
 		client/iwctl.1 monitor/iwmon.1 wired/ead.8 tools/hwsim.1
 
 eap_sources = src/eap.c src/eap.h src/eap-private.h \
@@ -248,10 +251,12 @@ src_iwd_DEPENDENCIES += src/iwd.service
 
 systemd_unit_DATA += src/iwd.service
 dbus_bus_DATA += src/net.connman.iwd.service
+
+systemd_network_DATA += src/80-iwd.link
 endif
 
 if MANUAL_PAGES
-man_MANS += src/iwd.8 src/iwd.conf.5 src/iwd.network.5
+man_MANS += src/iwd.8 src/iwd.config.5 src/iwd.network.5
 endif
 endif
 
@@ -507,7 +512,7 @@ TESTS = $(unit_tests)
 
 EXTRA_DIST = src/genbuiltin src/iwd.service.in src/net.connman.iwd.service \
 			wired/ead.service.in wired/net.connman.ead.service \
-			src/pkcs8.conf doc/main.conf unit/gencerts.cnf \
+			src/80-iwd.link src/pkcs8.conf unit/gencerts.cnf \
 			$(manual_pages) $(patsubst %.1,%.rst, \
 					$(patsubst %.5,%.rst, \
 					$(patsubst %.8,%.rst,$(manual_pages))))

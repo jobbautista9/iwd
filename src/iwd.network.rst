@@ -10,6 +10,7 @@ Network configuration for wireless daemon
 :Author: Denis Kenzior <denkenz@gmail.com>
 :Author: Andrew Zaborowski <andrew.zaborowski@intel.com>
 :Author: Tim Kourt <tim.a.kourt@linux.intel.com>
+:Author: James Prestwood <prestwoj@gmail.com>
 :Copyright: 2013-2019 Intel Corporation
 :Version: iwd
 :Date: 22 September 2019
@@ -94,14 +95,12 @@ General Settings
 The group ``[General]`` contains general settings.
 
 .. list-table::
-   :header-rows: 1
+   :header-rows: 0
    :stub-columns: 0
    :widths: 20 80
    :align: left
 
-   * - Key
-     - Description
-   * - Autoconnect
+   * - AutoConnect
      - Values: **true**, false
 
        Whether the network can be connected to automatically
@@ -118,13 +117,11 @@ The group ``[Security]`` contains settings for Wi-Fi security and
 authentication configuration.
 
 .. list-table::
-   :header-rows: 1
+   :header-rows: 0
    :stub-columns: 0
    :widths: 20 80
    :align: left
 
-   * - Key
-     - Description
    * - Passphrase
      - 8..63 character string
 
@@ -217,7 +214,7 @@ authentication configuration.
        non-EAP methods is used.
    * - | EAP-TTLS-Phase2-Identity
      - The secure identity/username string for the TTLS non-EAP Phase 2
-       methods.  If not provided IWD will request a username at connection
+       methods.  If not provided **iwd** will request a username at connection
        time.
    * - | EAP-TTLS-Phase2-Password
      - Password string for the TTLS non-EAP Phase 2 methods. If not provided
@@ -235,7 +232,105 @@ authentication configuration.
        method's negotiation is encrypted, a secure identity string can be
        provided.
 
+Embedded PEMs
+-------------
+
+Rather than including an absolute path to a PEM file (for certificates and
+keys), the PEM itself can be included inside the settings file and referenced
+directly. This allows IEEE 802.1x network provisioning using a single file
+without any references to certificates or keys on the system.
+
+An embedded PEM can appear anywhere in the settings file using the following
+format (this example the PEM is named 'my_ca_cert'):
+
+.. code-block::
+
+  [@pem@my_ca_cert]
+  ----- BEGIN CERTIFICATE -----
+  <PEM data>
+  ----- END CERTIFICATE -----
+
+After this special group tag its as simple as pasting in a PEM file including
+the BEGIN/END tags. Now 'my_ca_cert' can be used to reference the certificate
+elsewhere in the settings file by prefixing the value with 'embed:'
+
+EAP-TLS-CACert=embed:my_ca_cert
+
+This is not limited to CA Certificates either. Client certificates, client keys
+(encrypted or not), and certificate chains can be included.
+
+EXAMPLES
+========
+
+The following are some examples of common configurations
+
+Open Network (Hidden)
+---------------------
+
+.. code-block::
+
+   [General]
+   Hidden=true
+
+Pre-Shared Key (PSK)
+--------------------
+
+.. code-block::
+
+   [Security]
+   Passphrase=secret123
+
+PWD
+---
+
+.. code-block::
+
+   [Security]
+   EAP-Method=PWD
+   EAP-Identity=user@domain.com
+   EAP-Password=secret123
+
+TLS
+---
+
+.. code-block::
+
+   [Security]
+   EAP-Method=TLS
+   EAP-TLS-ClientCert=/certs/client-cert.pem
+   EAP-TLS-ClientKey=/certs/client-key.pem
+   EAP-TLS-CACert=/certs/ca-cert.pem
+   EAP-TLS-ServerDomainMask=*.domain.com
+
+TTLS + PAP
+----------
+
+.. code-block::
+
+   [Security]
+   EAP-Method=TTLS
+   EAP-Identity=open@identity.com
+   EAP-TTLS-CACert=/certs/ca-cert.pem
+   EAP-TTLS-Phase2-Method=Tunneled-PAP
+   EAP-TTLS-Phase2-Identity=username
+   EAP-TTLS-Phase2-Password=password
+   EAP-TTLS-ServerDomainMask=*.domain.com
+
+PEAP + MSCHAPv2
+---------------
+
+.. code-block::
+
+   [Security]
+   EAP-Method=PEAP
+   EAP-Identity=open@identity.com
+   EAP-PEAP-CACert=/certs/ca-cert.pem
+   EAP-PEAP-Phase2-Method=MSCHAPV2
+   EAP-PEAP-Phase2-Identity=username
+   EAP-PEAP-Phase2-Password=password
+   EAP-PEAP-ServerDomainMask=*.domain.com
+
 SEE ALSO
 ========
 
-iwd(8), iwd.conf(5)
+iwd(8), iwd.config(5)

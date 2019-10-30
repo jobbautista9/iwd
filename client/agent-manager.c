@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2017-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -31,7 +31,7 @@
 #include "dbus-proxy.h"
 #include "agent-manager.h"
 
-#define IWD_AGENT_MANAGER_PATH		"/"
+#define IWD_AGENT_MANAGER_PATH		"/net/connman/iwd"
 
 static void check_errors_method_callback(struct l_dbus_message *message,
 								void *user_data)

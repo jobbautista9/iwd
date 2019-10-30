@@ -219,7 +219,7 @@ static bool extract_p2p_channel_list(const uint8_t *attr, size_t len,
 		l_queue_push_tail(out->channel_entries, entries);
 
 		attr += entries->n_channels;
-		len -= entries->n_channels;
+		len -= 2 + entries->n_channels;
 	}
 
 	return true;
@@ -2216,9 +2216,9 @@ static uint8_t *p2p_build_action_frame(bool public, uint8_t frame_subtype,
 	} else
 		ret[pos++] = 0x7f; /* Category: Vendor Specific */
 
-	ret[pos++] = 0x50;	/* OUI: Wi-Fi Alliance */
-	ret[pos++] = 0x6f;
-	ret[pos++] = 0x9a;
+	ret[pos++] = wifi_alliance_oui[0];
+	ret[pos++] = wifi_alliance_oui[1];
+	ret[pos++] = wifi_alliance_oui[2];
 	ret[pos++] = 0x09;	/* OUI type: Wi-Fi Alliance P2P v1.0 */
 	ret[pos++] = frame_subtype;
 	ret[pos++] = dialog_token;

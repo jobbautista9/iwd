@@ -2,7 +2,7 @@
  *
  *  Ethernet daemon for Linux
  *
- *  Copyright (C) 2017-2018  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2017-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -43,7 +43,7 @@
 #include "wired/ethdev.h"
 
 #define ADAPTER_INTERFACE	"net.connman.ead.Adapter"
-#define ADAPTER_BASEPATH	"/net/connman/ead/adapter"
+#define ADAPTER_BASEPATH	EAD_BASE_PATH "/adapter"
 
 #define PROP_NAME		"Name"
 #define PROP_ADDRESS		"Address"

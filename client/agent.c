@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2017-2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -50,7 +50,25 @@ static struct pending_op {
 	struct l_queue *saved_input;
 } pending_op;
 
-static struct l_dbus_message *agent_error(const char *text)
+static struct l_dbus_message *agent_reply_canceled(
+						struct l_dbus_message *message,
+						const char *text)
+{
+	return l_dbus_message_new_error(message,
+					IWD_AGENT_INTERFACE ".Error.Canceled",
+					"Error: %s", text);
+}
+
+static struct l_dbus_message *agent_reply_failed(struct l_dbus_message *message,
+							const char *text)
+{
+	return l_dbus_message_new_error(message,
+					IWD_AGENT_INTERFACE ".Error.Failed",
+					"Error: %s", text);
+}
+
+static struct l_dbus_message *agent_error(struct l_dbus_message *message,
+							const char *text)
 {
 	display_error(text);
 
@@ -60,7 +78,7 @@ static struct l_dbus_message *agent_error(const char *text)
 		l_main_quit();
 	}
 
-	return NULL;
+	return agent_reply_canceled(message, text);
 }
 
 static struct l_dbus_message *release_method_call(struct l_dbus *dbus,
@@ -100,25 +118,24 @@ static struct l_dbus_message *request_passphrase_method_call(
 	struct l_dbus_message *reply;
 	const char *path;
 
-	if (dbus_message_has_error(message))
-		return NULL;
-
 	reply = request_passphrase_command_option(message);
 	if (reply)
 		return reply;
 
 	if (command_option_get(COMMAND_OPTION_DONTASK, NULL))
-		return agent_error("No passphrase is provided as "
+		return agent_error(message, "No passphrase is provided as "
 					"'--"COMMAND_OPTION_PASSPHRASE"' "
 						"command-line option.\n");
 
-	l_dbus_message_get_arguments(message, "o", &path);
+	if (!l_dbus_message_get_arguments(message, "o", &path))
+		return agent_reply_failed(message, "Invalid argument");
+
 	if (!path)
-		return NULL;
+		return agent_reply_failed(message, "Invalid argument");
 
 	proxy = proxy_interface_find(IWD_NETWORK_INTERFACE, path);
 	if (!proxy)
-		return NULL;
+		return agent_reply_failed(message, "Invalid network object");
 
 	display("Type the network passphrase for %s.\n",
 				proxy_interface_get_identity_str(proxy));
@@ -141,25 +158,24 @@ static struct l_dbus_message *request_private_key_passphrase_method_call(
 	struct l_dbus_message *reply;
 	const char *path;
 
-	if (dbus_message_has_error(message))
-		return NULL;
-
 	reply = request_passphrase_command_option(message);
 	if (reply)
 		return reply;
 
 	if (command_option_get(COMMAND_OPTION_DONTASK, NULL))
-		return agent_error("No passphrase is provided as "
+		return agent_error(message, "No passphrase is provided as "
 					"'--"COMMAND_OPTION_PASSPHRASE"' "
 						"command-line option.\n");
 
-	l_dbus_message_get_arguments(message, "o", &path);
+	if (!l_dbus_message_get_arguments(message, "o", &path))
+		return agent_reply_failed(message, "Invalid argument");
+
 	if (!path)
-		return NULL;
+		return agent_reply_failed(message, "Invalid argument");
 
 	proxy = proxy_interface_find(IWD_NETWORK_INTERFACE, path);
 	if (!proxy)
-		return NULL;
+		return agent_reply_failed(message, "Invalid network object");
 
 	display("Type the passphrase for the network encrypted private key for "
 			"%s.\n", proxy_interface_get_identity_str(proxy));
@@ -203,26 +219,26 @@ static struct l_dbus_message *request_username_and_password_method_call(
 	struct l_dbus_message *reply;
 	const char *path;
 
-	if (dbus_message_has_error(message))
-		return NULL;
-
 	reply = request_username_and_password_command_option(message);
 	if (reply)
 		return reply;
 
 	if (command_option_get(COMMAND_OPTION_DONTASK, NULL))
-		return agent_error("No username or password is provided as "
+		return agent_error(message, "No username or password is "
+					"provided as "
 					"'--"COMMAND_OPTION_USERNAME"' or "
 					"'--"COMMAND_OPTION_PASSWORD"' "
 						"command-line option.\n");
 
-	l_dbus_message_get_arguments(message, "o", &path);
+	if (!l_dbus_message_get_arguments(message, "o", &path))
+		return agent_reply_failed(message, "Invalid argument");
+
 	if (!path)
-		return NULL;
+		return agent_reply_failed(message, "Invalid argument");
 
 	proxy = proxy_interface_find(IWD_NETWORK_INTERFACE, path);
 	if (!proxy)
-		return NULL;
+		return agent_reply_failed(message, "Invalid network object");
 
 	display("Type the network credentials for %s.\n",
 				proxy_interface_get_identity_str(proxy));
@@ -263,25 +279,24 @@ static struct l_dbus_message *request_user_password_method_call(
 	const char *username;
 	char *username_prompt;
 
-	if (dbus_message_has_error(message))
-		return NULL;
-
 	reply = request_user_password_command_option(message);
 	if (reply)
 		return reply;
 
 	if (command_option_get(COMMAND_OPTION_DONTASK, NULL))
-		return agent_error("No password is provided as "
+		return agent_error(message, "No password is provided as "
 					"'--"COMMAND_OPTION_PASSWORD"' "
 					"command-line option.\n");
 
-	l_dbus_message_get_arguments(message, "os", &path, &username);
+	if (!l_dbus_message_get_arguments(message, "os", &path, &username))
+		return agent_reply_failed(message, "Invalid arguments");
+
 	if (!path || !username)
-		return NULL;
+		return agent_reply_failed(message, "Invalid argument");
 
 	proxy = proxy_interface_find(IWD_NETWORK_INTERFACE, path);
 	if (!proxy)
-		return NULL;
+		return agent_reply_failed(message, "Invalid network object");
 
 	display("Type the network password for %s.\n",
 				proxy_interface_get_identity_str(proxy));
@@ -351,15 +366,17 @@ static void process_input_username_password(const char *prompt)
 	struct l_dbus_message *reply;
 	char *username;
 
+	if (!prompt || !strlen(prompt)) {
+		reply = agent_reply_canceled(pending_message,
+							"Canceled by user");
+
+		l_queue_clear(pending_op.saved_input, l_free);
+
+		goto send_reply;
+	}
+
 	if (l_queue_isempty(pending_op.saved_input)) {
 		/* received username */
-		if (!strlen(prompt)) {
-			reply = l_dbus_message_new_error(pending_message,
-					IWD_AGENT_INTERFACE ".Error.Canceled",
-					"Canceled by user");
-			goto send_reply;
-		}
-
 		l_queue_push_tail(pending_op.saved_input, l_strdup(prompt));
 
 		display_agent_prompt(PROMPT_PASSWORD, true);
@@ -383,10 +400,9 @@ static void process_input_passphrase(const char *prompt)
 {
 	struct l_dbus_message *reply;
 
-	if (!strlen(prompt)) {
-		reply = l_dbus_message_new_error(pending_message,
-					IWD_AGENT_INTERFACE ".Error.Canceled",
-					"Canceled by user");
+	if (!prompt || !strlen(prompt)) {
+		reply = agent_reply_canceled(pending_message,
+							"Canceled by user");
 		goto send_reply;
 	}
 
@@ -399,11 +415,18 @@ send_reply:
 
 static void process_input_password(const char *prompt)
 {
-	struct l_dbus_message *reply =
-			l_dbus_message_new_method_return(pending_message);
+	struct l_dbus_message *reply;
 
+	if (!prompt || !strlen(prompt)) {
+		reply = agent_reply_canceled(pending_message,
+							"Canceled by user");
+		goto send_reply;
+	}
+
+	reply = l_dbus_message_new_method_return(pending_message);
 	l_dbus_message_set_arguments(reply, "s", prompt);
 
+send_reply:
 	agent_send_reply(reply);
 }
 
