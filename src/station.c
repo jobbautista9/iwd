@@ -35,6 +35,7 @@
 
 #include "src/util.h"
 #include "src/iwd.h"
+#include "src/module.h"
 #include "src/common.h"
 #include "src/device.h"
 #include "src/watchlist.h"
@@ -650,10 +651,13 @@ static void station_reconnect(struct station *station);
 
 static void station_handshake_event(struct handshake_state *hs,
 					enum handshake_event event,
-					void *event_data, void *user_data)
+					void *user_data, ...)
 {
 	struct station *station = user_data;
 	struct network *network = station->connected_network;
+	va_list args;
+
+	va_start(args, user_data);
 
 	switch (event) {
 	case HANDSHAKE_EVENT_STARTED:
@@ -666,13 +670,14 @@ static void station_handshake_event(struct handshake_state *hs,
 		network_sync_psk(network);
 		break;
 	case HANDSHAKE_EVENT_FAILED:
-		netdev_handshake_failed(hs, l_get_u16(event_data));
+		netdev_handshake_failed(hs, va_arg(args, int));
 		break;
 	case HANDSHAKE_EVENT_REKEY_FAILED:
 		station_reconnect(station);
 		break;
 	case HANDSHAKE_EVENT_COMPLETE:
 	case HANDSHAKE_EVENT_SETTING_KEYS_FAILED:
+	case HANDSHAKE_EVENT_EAP_NOTIFY:
 		/*
 		 * currently we dont care about any other events. The
 		 * netdev_connect_cb will notify us when the connection is
@@ -680,6 +685,8 @@ static void station_handshake_event(struct handshake_state *hs,
 		 */
 		break;
 	}
+
+	va_end(args);
 }
 
 static bool station_has_erp_identity(struct network *network)
@@ -3013,6 +3020,16 @@ void station_network_foreach(struct station *station,
 	};
 
 	l_hashmap_foreach(station->networks, network_foreach, &data);
+}
+
+struct l_queue *station_get_bss_list(struct station *station)
+{
+	return station->bss_list;
+}
+
+struct scan_bss *station_get_connected_bss(struct station *station)
+{
+	return station->connected_bss;
 }
 
 static struct station *station_create(struct netdev *netdev)

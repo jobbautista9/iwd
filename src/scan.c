@@ -37,6 +37,7 @@
 
 #include "linux/nl80211.h"
 #include "src/iwd.h"
+#include "src/module.h"
 #include "src/wiphy.h"
 #include "src/ie.h"
 #include "src/common.h"
@@ -265,46 +266,27 @@ static void scan_build_attr_scan_frequencies(struct l_genl_msg *msg,
 	l_genl_msg_leave_nested(msg);
 }
 
-static bool scan_mac_address_randomization_is_disabled(void)
-{
-	const struct l_settings *config = iwd_get_config();
-	bool disabled;
-
-	if (!l_settings_get_bool(config, "Scan",
-					"DisableMacAddressRandomization",
-					&disabled))
-		return false;
-
-	return disabled;
-}
-
-static struct l_genl_msg *scan_build_cmd(struct scan_context *sc,
-					bool ignore_flush_flag, bool is_passive,
+static void scan_build_attr_ie(struct l_genl_msg *msg,
+					struct scan_context *sc,
 					const struct scan_parameters *params)
 {
-	struct l_genl_msg *msg;
-	uint32_t flags = 0;
 	struct iovec iov[3];
 	unsigned int iov_elems = 0;
 	const uint8_t *ext_capa;
 	uint8_t interworking[3];
 
-	msg = l_genl_msg_new(NL80211_CMD_TRIGGER_SCAN);
-
-	l_genl_msg_append_attr(msg, NL80211_ATTR_WDEV, 8, &sc->wdev_id);
-
 	ext_capa = wiphy_get_extended_capabilities(sc->wiphy,
 							NL80211_IFTYPE_STATION);
 	/*
-	 * XXX: If adding IE's here ensure that ordering is not broken for
-	 * probe requests (IEEE-2016 Table 9-33).
+	 * If adding IE's here ensure that ordering is not broken for
+	 * probe requests (IEEE Std 802.11-2016 Table 9-33).
 	 */
 	/* Order 9 - Extended Capabilities */
 	iov[iov_elems].iov_base = (void *) ext_capa;
 	iov[iov_elems].iov_len = ext_capa[1] + 2;
 	iov_elems++;
 
-	if (util_is_bit_set(ext_capa[3], 7)) {
+	if (util_is_bit_set(ext_capa[2 + 3], 7)) {
 		/* Order 12 - Interworking */
 		interworking[0] = IE_TYPE_INTERWORKING;
 		interworking[1] = 1;
@@ -324,6 +306,34 @@ static struct l_genl_msg *scan_build_cmd(struct scan_context *sc,
 	}
 
 	l_genl_msg_append_attrv(msg, NL80211_ATTR_IE, iov, iov_elems);
+}
+
+static bool scan_mac_address_randomization_is_disabled(void)
+{
+	const struct l_settings *config = iwd_get_config();
+	bool disabled;
+
+	if (!l_settings_get_bool(config, "Scan",
+					"DisableMacAddressRandomization",
+					&disabled))
+		return false;
+
+	return disabled;
+}
+
+static struct l_genl_msg *scan_build_cmd(struct scan_context *sc,
+					bool ignore_flush_flag, bool is_passive,
+					const struct scan_parameters *params)
+{
+	struct l_genl_msg *msg;
+	uint32_t flags = 0;
+
+	msg = l_genl_msg_new(NL80211_CMD_TRIGGER_SCAN);
+
+	l_genl_msg_append_attr(msg, NL80211_ATTR_WDEV, 8, &sc->wdev_id);
+
+	if (wiphy_get_max_scan_ie_len(sc->wiphy))
+		scan_build_attr_ie(msg, sc, params);
 
 	if (params->freqs)
 		scan_build_attr_scan_frequencies(msg, params->freqs);
@@ -347,10 +357,46 @@ static struct l_genl_msg *scan_build_cmd(struct scan_context *sc,
 	if (flags)
 		l_genl_msg_append_attr(msg, NL80211_ATTR_SCAN_FLAGS, 4, &flags);
 
-	if (params->no_cck_rates)
+	if (params->no_cck_rates) {
+		static const uint8_t b_rates[] = { 2, 4, 11, 22 };
+		uint8_t *scan_rates;
+		const uint8_t *supported;
+		unsigned int num_supported;
+		unsigned int count;
+		unsigned int i;
+
 		l_genl_msg_append_attr(msg, NL80211_ATTR_TX_NO_CCK_RATE, 0,
 					NULL);
 
+		/*
+		 * Assume if we're sending the probe requests at OFDM bit
+		 * rates we don't want to advertise support for 802.11b rates.
+		 */
+		if (L_WARN_ON(!(supported = wiphy_get_supported_rates(sc->wiphy,
+							NL80211_BAND_2GHZ,
+							&num_supported))))
+			goto done;
+
+		scan_rates = l_malloc(num_supported);
+
+		for (count = 0, i = 0; i < num_supported; i++)
+			if (!memchr(b_rates, supported[i],
+						L_ARRAY_SIZE(b_rates)))
+				scan_rates[count++] = supported[i];
+
+		if (L_WARN_ON(!count)) {
+			l_free(scan_rates);
+			goto done;
+		}
+
+		l_genl_msg_enter_nested(msg, NL80211_ATTR_SCAN_SUPP_RATES);
+		l_genl_msg_append_attr(msg, NL80211_BAND_2GHZ,
+							count, scan_rates);
+		l_genl_msg_leave_nested(msg);
+		l_free(scan_rates);
+	}
+
+done:
 	return msg;
 }
 

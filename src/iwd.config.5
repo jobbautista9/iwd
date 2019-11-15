@@ -1,8 +1,8 @@
 .\" Man page generated from reStructuredText.
 .
-.TH IWD 5 "22 September 2019" "iwd" "Linux Connectivity"
+.TH IWD.CONFIG 5 "22 September 2019" "iwd" "Linux Connectivity"
 .SH NAME
-iwd \- Configuration file for wireless daemon
+iwd.config \- Configuration file for wireless daemon
 .
 .nr rst2man-indent-level 0
 .
@@ -193,6 +193,17 @@ This configuration option must be used in conjunction with
 resolver integration.
 .sp
 If not specified, \fBsystemd\fP is used as default.
+T}
+_
+T{
+RoutePriorityOffset
+T}	T{
+Values: uint32 value (default: \fB300\fP)
+.sp
+Configures a route priority offset used by the system to prioritize
+the default routes. The route with lower priority offset is preferred.
+.sp
+If not specified, \fB300\fP is used as default.
 T}
 _
 .TE

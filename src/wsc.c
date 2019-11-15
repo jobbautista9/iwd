@@ -29,6 +29,7 @@
 #include <ell/ell.h>
 
 #include "src/missing.h"
+#include "src/module.h"
 #include "src/dbus.h"
 #include "src/netdev.h"
 #include "src/wiphy.h"
@@ -360,21 +361,6 @@ static void wsc_credential_obtained(struct wsc *wsc,
 	wsc->n_creds += 1;
 }
 
-static void wsc_eapol_event(uint32_t event, const void *event_data,
-							void *user_data)
-{
-	struct wsc *wsc = user_data;
-
-	switch (event) {
-	case EAP_WSC_EVENT_CREDENTIAL_OBTAINED:
-		wsc_credential_obtained(wsc,
-				(const struct wsc_credential *) event_data);
-		break;
-	default:
-		l_debug("Got event: %d", event);
-	}
-}
-
 static void wsc_netdev_event(struct netdev *netdev, enum netdev_event event,
 					void *event_data, void *user_data)
 {
@@ -402,15 +388,38 @@ static void wsc_netdev_event(struct netdev *netdev, enum netdev_event event,
 }
 
 static void wsc_handshake_event(struct handshake_state *hs,
-		enum handshake_event event, void *event_data, void *user_data)
+				enum handshake_event event, void *user_data,
+				...)
 {
+	struct wsc *wsc = user_data;
+	va_list args;
+
+	va_start(args, user_data);
+
 	switch (event) {
 	case HANDSHAKE_EVENT_FAILED:
-		netdev_handshake_failed(hs, l_get_u16(event_data));
+		netdev_handshake_failed(hs, va_arg(args, int));
 		break;
+	case HANDSHAKE_EVENT_EAP_NOTIFY:
+	{
+		unsigned int eap_event = va_arg(args, unsigned int);
+
+		switch (eap_event) {
+		case EAP_WSC_EVENT_CREDENTIAL_OBTAINED:
+			wsc_credential_obtained(wsc,
+				va_arg(args, const struct wsc_credential *));
+			break;
+		default:
+			l_debug("Got event: %d", eap_event);
+		}
+
+		break;
+	}
 	default:
 		break;
 	}
+
+	va_end(args);
 }
 
 static inline enum wsc_rf_band freq_to_rf_band(uint32_t freq)
@@ -434,6 +443,11 @@ static void wsc_connect(struct wsc *wsc)
 	struct handshake_state *hs;
 	struct l_settings *settings = l_settings_new();
 	struct scan_bss *bss = wsc->target;
+	int r;
+	struct wsc_association_request request;
+	uint8_t *pdu;
+	size_t pdu_len;
+	struct iovec ie_iov;
 
 	wsc->target = NULL;
 
@@ -476,16 +490,37 @@ static void wsc_connect(struct wsc *wsc)
 	handshake_state_set_8021x_config(hs, settings);
 	wsc->eap_settings = settings;
 
-	if (netdev_connect_wsc(wsc->netdev, bss, hs,
-					wsc_netdev_event, wsc_connect_cb,
-					wsc_eapol_event, wsc) < 0) {
-		dbus_pending_reply(&wsc->pending,
-					dbus_error_failed(wsc->pending));
-		handshake_state_free(hs);
-		return;
+	request.version2 = true;
+	request.request_type = WSC_REQUEST_TYPE_ENROLLEE_OPEN_8021X;
+
+	pdu = wsc_build_association_request(&request, &pdu_len);
+	if (!pdu) {
+		r = -ENOMEM;
+		goto error;
 	}
 
+	ie_iov.iov_base = ie_tlv_encapsulate_wsc_payload(pdu, pdu_len,
+							&ie_iov.iov_len);
+	l_free(pdu);
+
+	if (!ie_iov.iov_base) {
+		r = -ENOMEM;
+		goto error;
+	}
+
+	r = netdev_connect(wsc->netdev, bss, hs, &ie_iov, 1, wsc_netdev_event,
+				wsc_connect_cb, wsc);
+	l_free(ie_iov.iov_base);
+
+	if (r < 0)
+		goto error;
+
 	wsc->wsc_association = true;
+	return;
+error:
+	handshake_state_free(hs);
+	dbus_pending_reply(&wsc->pending,
+				dbus_error_failed(wsc->pending));
 }
 
 static void station_state_watch(enum station_state state, void *userdata)
@@ -1073,6 +1108,13 @@ static void wsc_add_interface(struct netdev *netdev)
 {
 	struct l_dbus *dbus = dbus_get_bus();
 	struct wsc *wsc;
+
+	if (!wiphy_get_max_scan_ie_len(netdev_get_wiphy(netdev))) {
+		l_debug("Simple Configuration isn't supported by ifindex %u",
+						netdev_get_ifindex(netdev));
+
+		return;
+	}
 
 	wsc = l_new(struct wsc, 1);
 	wsc->netdev = netdev;

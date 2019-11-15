@@ -29,6 +29,7 @@
 #include "linux/nl80211.h"
 
 #include "src/iwd.h"
+#include "src/module.h"
 #include "src/device.h"
 #include "src/netdev.h"
 #include "src/wiphy.h"
@@ -159,7 +160,7 @@ static bool ap_sta_match_addr(const void *a, const void *b)
 }
 
 static void adhoc_handshake_event(struct handshake_state *hs,
-		enum handshake_event event, void *event_data, void *user_data)
+		enum handshake_event event, void *user_data, ...)
 {
 	struct sta_state *sta = user_data;
 	struct adhoc_state *adhoc = sta->adhoc;

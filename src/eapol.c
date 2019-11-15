@@ -31,6 +31,7 @@
 #include <ell/ell.h>
 
 #include "src/missing.h"
+#include "src/module.h"
 #include "src/crypto.h"
 #include "src/eapol.h"
 #include "src/ie.h"
@@ -823,7 +824,6 @@ struct eapol_sm {
 	struct handshake_state *handshake;
 	enum eapol_protocol_version protocol_version;
 	uint64_t replay_counter;
-	eapol_sm_event_func_t event_func;
 	void *user_data;
 	struct l_timeout *timeout;
 	struct l_timeout *eapol_start_timeout;
@@ -901,11 +901,6 @@ void eapol_sm_set_user_data(struct eapol_sm *sm, void *user_data)
 	sm->user_data = user_data;
 }
 
-void eapol_sm_set_event_func(struct eapol_sm *sm, eapol_sm_event_func_t func)
-{
-	sm->event_func = func;
-}
-
 static void eapol_sm_write(struct eapol_sm *sm, const struct eapol_frame *ef,
 				bool noencrypt)
 {
@@ -915,7 +910,7 @@ static void eapol_sm_write(struct eapol_sm *sm, const struct eapol_frame *ef,
 
 static inline void handshake_failed(struct eapol_sm *sm, uint16_t reason_code)
 {
-	handshake_event(sm->handshake, HANDSHAKE_EVENT_FAILED, &reason_code);
+	handshake_event(sm->handshake, HANDSHAKE_EVENT_FAILED, reason_code);
 
 	eapol_sm_free(sm);
 }
@@ -970,7 +965,7 @@ static void __send_eapol_start(struct eapol_sm *sm, bool noencrypt)
 	uint8_t buf[sizeof(struct eapol_frame)];
 	struct eapol_frame *frame = (struct eapol_frame *) buf;
 
-	handshake_event(sm->handshake, HANDSHAKE_EVENT_STARTED, NULL);
+	handshake_event(sm->handshake, HANDSHAKE_EVENT_STARTED);
 
 	frame->header.protocol_version = EAPOL_PROTOCOL_VERSION_2001;
 	frame->header.packet_type = 1;
@@ -1181,7 +1176,7 @@ static void eapol_handle_ptk_1_of_4(struct eapol_sm *sm,
 			 * layers that we need to do a full reauth
 			 */
 			handshake_event(sm->handshake,
-					HANDSHAKE_EVENT_REKEY_FAILED, NULL);
+					HANDSHAKE_EVENT_REKEY_FAILED);
 			return;
 		}
 
@@ -2167,10 +2162,8 @@ static void eapol_eap_event_cb(unsigned int event,
 {
 	struct eapol_sm *sm = user_data;
 
-	if (!sm->event_func)
-		return;
-
-	sm->event_func(event, event_data, sm->user_data);
+	handshake_event(sm->handshake, HANDSHAKE_EVENT_EAP_NOTIFY, event,
+			event_data);
 }
 
 void eapol_sm_set_use_eapol_start(struct eapol_sm *sm, bool enabled)

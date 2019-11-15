@@ -1,6 +1,6 @@
-=====
- iwd
-=====
+=============
+ iwd.network
+=============
 
 -----------------------------------------
 Network configuration for wireless daemon
@@ -92,7 +92,7 @@ following the group definition.
 General Settings
 ----------------
 
-The group ``[General]`` contains general settings.
+The group ``[Settings]`` contains general settings.
 
 .. list-table::
    :header-rows: 0
@@ -269,7 +269,7 @@ Open Network (Hidden)
 
 .. code-block::
 
-   [General]
+   [Settings]
    Hidden=true
 
 Pre-Shared Key (PSK)
