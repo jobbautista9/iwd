@@ -42,6 +42,7 @@
 #include "linux/nl80211.h"
 
 #include "src/iwd.h"
+#include "src/module.h"
 #include "src/wiphy.h"
 #include "src/ie.h"
 #include "src/mpdu.h"
@@ -51,7 +52,6 @@
 #include "src/device.h"
 #include "src/scan.h"
 #include "src/netdev.h"
-#include "src/wscutil.h"
 #include "src/ft.h"
 #include "src/util.h"
 #include "src/watchlist.h"
@@ -1094,7 +1094,7 @@ static void try_handshake_complete(struct netdev_handshake_state *nhs)
 	if (nhs->ptk_installed && nhs->gtk_installed && nhs->igtk_installed &&
 			!nhs->complete) {
 		nhs->complete = true;
-		handshake_event(&nhs->super, HANDSHAKE_EVENT_COMPLETE, NULL);
+		handshake_event(&nhs->super, HANDSHAKE_EVENT_COMPLETE);
 
 		netdev_connect_ok(nhs->netdev);
 	}
@@ -1388,7 +1388,7 @@ static void netdev_group_timeout_cb(struct l_timeout *timeout, void *user_data)
 			nhs->netdev->index);
 
 	nhs->complete = true;
-	handshake_event(&nhs->super, HANDSHAKE_EVENT_COMPLETE, NULL);
+	handshake_event(&nhs->super, HANDSHAKE_EVENT_COMPLETE);
 
 	netdev_connect_ok(nhs->netdev);
 }
@@ -2502,66 +2502,12 @@ int netdev_connect(struct netdev *netdev, struct scan_bss *bss,
 		if (!cmd_connect)
 			return -EINVAL;
 
-		if (is_rsn)
+		if (is_rsn || hs->settings_8021x)
 			sm = eapol_sm_new(hs);
 	}
 
 	return netdev_connect_common(netdev, cmd_connect, bss, hs, sm,
 						event_filter, cb, user_data);
-}
-
-int netdev_connect_wsc(struct netdev *netdev, struct scan_bss *bss,
-				struct handshake_state *hs,
-				netdev_event_func_t event_filter,
-				netdev_connect_cb_t cb,
-				netdev_eapol_event_func_t eapol_cb,
-				void *user_data)
-{
-	struct l_genl_msg *cmd_connect;
-	struct wsc_association_request request;
-	uint8_t *pdu;
-	size_t pdu_len;
-	void *ie;
-	size_t ie_len;
-	struct eapol_sm *sm;
-
-	if (netdev->type != NL80211_IFTYPE_STATION &&
-			netdev->type != NL80211_IFTYPE_P2P_CLIENT)
-		return -ENOTSUP;
-
-	if (netdev->connected)
-		return -EISCONN;
-
-	cmd_connect = netdev_build_cmd_connect(netdev, bss, hs, NULL, NULL, 0);
-	if (!cmd_connect)
-		return -EINVAL;
-
-	request.version2 = true;
-	request.request_type = WSC_REQUEST_TYPE_ENROLLEE_OPEN_8021X;
-
-	pdu = wsc_build_association_request(&request, &pdu_len);
-	if (!pdu)
-		goto error;
-
-	ie = ie_tlv_encapsulate_wsc_payload(pdu, pdu_len, &ie_len);
-	l_free(pdu);
-
-	if (!ie)
-		goto error;
-
-	l_genl_msg_append_attr(cmd_connect, NL80211_ATTR_IE, ie_len, ie);
-	l_free(ie);
-
-	sm = eapol_sm_new(hs);
-	eapol_sm_set_user_data(sm, user_data);
-	eapol_sm_set_event_func(sm, eapol_cb);
-
-	return netdev_connect_common(netdev, cmd_connect, bss, hs, sm,
-						event_filter, cb, user_data);
-
-error:
-	l_genl_msg_unref(cmd_connect);
-	return -ENOMEM;
 }
 
 int netdev_disconnect(struct netdev *netdev,

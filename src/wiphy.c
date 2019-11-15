@@ -38,6 +38,7 @@
 #include "linux/nl80211.h"
 
 #include "src/iwd.h"
+#include "src/module.h"
 #include "src/ie.h"
 #include "src/crypto.h"
 #include "src/scan.h"
@@ -67,6 +68,7 @@ struct wiphy {
 	uint8_t ext_features[(NUM_NL80211_EXT_FEATURES + 7) / 8];
 	uint8_t max_num_ssids_per_scan;
 	uint32_t max_roc_duration;
+	uint16_t max_scan_ie_len;
 	uint16_t supported_iftypes;
 	uint16_t supported_ciphers;
 	struct scan_freq_set *supported_freqs;
@@ -76,6 +78,7 @@ struct wiphy {
 	struct watchlist state_watches;
 	uint8_t extended_capabilities[EXT_CAP_LEN + 2]; /* max bitmap size + IE header */
 	uint8_t *iftype_extended_capabilities[NUM_NL80211_IFTYPES];
+	uint8_t *supported_rates[NUM_NL80211_BANDS];
 	uint8_t rm_enabled_capabilities[7]; /* 5 size max + header */
 
 	bool support_scheduled_scan:1;
@@ -211,6 +214,9 @@ static void wiphy_free(void *data)
 
 	for (i = 0; i < NUM_NL80211_IFTYPES; i++)
 		l_free(wiphy->iftype_extended_capabilities[i]);
+
+	for (i = 0; i < NUM_NL80211_BANDS; i++)
+		l_free(wiphy->supported_rates[i]);
 
 	scan_freq_set_free(wiphy->supported_freqs);
 	watchlist_destroy(&wiphy->state_watches);
@@ -359,6 +365,11 @@ uint8_t wiphy_get_max_num_ssids_per_scan(struct wiphy *wiphy)
 	return wiphy->max_num_ssids_per_scan;
 }
 
+uint16_t wiphy_get_max_scan_ie_len(struct wiphy *wiphy)
+{
+	return wiphy->max_scan_ie_len;
+}
+
 uint32_t wiphy_get_max_roc_duration(struct wiphy *wiphy)
 {
 	return wiphy->max_roc_duration;
@@ -479,6 +490,20 @@ bool wiphy_supports_iftype(struct wiphy *wiphy, uint32_t iftype)
 		return false;
 
 	return wiphy->supported_iftypes & (1 << (iftype - 1));
+}
+
+const uint8_t *wiphy_get_supported_rates(struct wiphy *wiphy, unsigned int band,
+						unsigned int *out_num)
+{
+	if (band >= L_ARRAY_SIZE(wiphy->supported_rates))
+		return NULL;
+
+	if (out_num)
+		*out_num =
+			(uint8_t *) rawmemchr(wiphy->supported_rates[band], 0) -
+			wiphy->supported_rates[band];
+
+	return wiphy->supported_rates[band];
 }
 
 uint32_t wiphy_state_watch_add(struct wiphy *wiphy,
@@ -625,20 +650,70 @@ static void parse_supported_frequencies(struct wiphy *wiphy,
 	}
 }
 
+static uint8_t *parse_supported_rates(struct l_genl_attr *attr)
+{
+	uint16_t type;
+	uint16_t len;
+	const void *data;
+	struct l_genl_attr nested;
+	int count = 0;
+	uint8_t *ret;
+
+	if (!l_genl_attr_recurse(attr, &nested))
+		return NULL;
+
+	while (l_genl_attr_next(&nested, NULL, NULL, NULL))
+		count++;
+
+	if (!l_genl_attr_recurse(attr, &nested))
+		return NULL;
+
+	ret = l_malloc(count + 1);
+	ret[count] = 0;
+
+	count = 0;
+
+	while (l_genl_attr_next(&nested, NULL, NULL, NULL)) {
+		struct l_genl_attr nested2;
+
+		if (!l_genl_attr_recurse(&nested, &nested2)) {
+			l_free(ret);
+			return NULL;
+		}
+
+		while (l_genl_attr_next(&nested2, &type, &len, &data)) {
+			if (type != NL80211_BITRATE_ATTR_RATE || len != 4)
+				continue;
+
+			/*
+			 * Convert from the 100kb/s units reported by the
+			 * kernel to the 500kb/s used in 802.11 IEs.
+			 */
+			ret[count++] = *(const uint32_t *) data / 5;
+		}
+	}
+
+	return ret;
+}
+
 static void parse_supported_bands(struct wiphy *wiphy,
 						struct l_genl_attr *bands)
 {
-	uint16_t type, len;
-	const void *data;
+	uint16_t type;
 	struct l_genl_attr attr;
 
 	l_debug("");
 
-	while (l_genl_attr_next(bands, NULL, NULL, NULL)) {
+	while (l_genl_attr_next(bands, &type, NULL, NULL)) {
+		enum nl80211_band band = type;
+
+		if (band != NL80211_BAND_2GHZ && band != NL80211_BAND_5GHZ)
+			continue;
+
 		if (!l_genl_attr_recurse(bands, &attr))
 			continue;
 
-		while (l_genl_attr_next(&attr, &type, &len, &data)) {
+		while (l_genl_attr_next(&attr, &type, NULL, NULL)) {
 			struct l_genl_attr freqs;
 
 			switch (type) {
@@ -647,6 +722,14 @@ static void parse_supported_bands(struct wiphy *wiphy,
 					continue;
 
 				parse_supported_frequencies(wiphy, &freqs);
+				break;
+
+			case NL80211_BAND_ATTR_RATES:
+				if (wiphy->supported_rates[band])
+					continue;
+
+				wiphy->supported_rates[band] =
+					parse_supported_rates(&attr);
 				break;
 			}
 		}
@@ -757,6 +840,12 @@ static void wiphy_parse_attributes(struct wiphy *wiphy,
 			else
 				wiphy->max_num_ssids_per_scan =
 							*((uint8_t *) data);
+			break;
+		case NL80211_ATTR_MAX_SCAN_IE_LEN:
+			if (len != sizeof(uint16_t))
+				l_warn("Invalid MAX_SCAN_IE_LEN attribute");
+			else
+				wiphy->max_scan_ie_len = *((uint16_t *) data);
 			break;
 		case NL80211_ATTR_SUPPORT_IBSS_RSN:
 			wiphy->support_adhoc_rsn = true;
@@ -961,6 +1050,8 @@ static void wiphy_setup_rm_enabled_capabilities(struct wiphy *wiphy)
 
 	wiphy->rm_enabled_capabilities[0] = IE_TYPE_RM_ENABLED_CAPABILITIES;
 	wiphy->rm_enabled_capabilities[1] = 5;
+	/* Bits: Passive (4), Active (5), and Beacon Table (6) capabilities */
+	wiphy->rm_enabled_capabilities[2] = 0x70;
 
 	/*
 	 * TODO: Support at least Link Measurement if TX_POWER_INSERTION is

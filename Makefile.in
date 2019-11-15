@@ -103,7 +103,7 @@ noinst_PROGRAMS = $(am__EXEEXT_6) $(am__EXEEXT_9)
 @DAEMON_TRUE@@SYSTEMD_SERVICE_TRUE@am__append_8 = src/iwd.service
 @DAEMON_TRUE@@SYSTEMD_SERVICE_TRUE@am__append_9 = src/net.connman.iwd.service
 @DAEMON_TRUE@@SYSTEMD_SERVICE_TRUE@am__append_10 = src/80-iwd.link
-@DAEMON_TRUE@@MANUAL_PAGES_TRUE@am__append_11 = src/iwd.8 src/iwd.config.5 src/iwd.network.5
+@DAEMON_TRUE@@MANUAL_PAGES_TRUE@am__append_11 = src/iwd.8 src/iwd.debug.7 src/iwd.config.5 src/iwd.network.5
 @CLIENT_TRUE@am__append_12 = client/iwctl
 @CLIENT_TRUE@@MANUAL_PAGES_TRUE@am__append_13 = client/iwctl.1
 @MONITOR_TRUE@am__append_14 = monitor/iwmon
@@ -146,8 +146,9 @@ CONFIG_CLEAN_VPATH_FILES =
 @HWSIM_TRUE@am__EXEEXT_3 = tools/hwsim$(EXEEXT)
 am__installdirs = "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libexecdir)" \
 	"$(DESTDIR)$(man1dir)" "$(DESTDIR)$(man5dir)" \
-	"$(DESTDIR)$(man8dir)" "$(DESTDIR)$(dbus_busdir)" \
-	"$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_modloaddir)" \
+	"$(DESTDIR)$(man7dir)" "$(DESTDIR)$(man8dir)" \
+	"$(DESTDIR)$(dbus_busdir)" "$(DESTDIR)$(dbus_datadir)" \
+	"$(DESTDIR)$(systemd_modloaddir)" \
 	"$(DESTDIR)$(systemd_networkdir)" \
 	"$(DESTDIR)$(systemd_unitdir)"
 @DAEMON_TRUE@am__EXEEXT_4 = src/iwd$(EXEEXT)
@@ -284,14 +285,14 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/fils.c src/rtnlutil.h src/rtnlutil.c src/auth-proto.h \
 	src/anqp.h src/anqp.c src/anqputil.h src/anqputil.c \
 	src/netconfig.h src/netconfig.c src/resolve.h src/resolve.c \
-	src/hotspot.c src/p2putil.h src/p2putil.c src/module.c \
-	src/eap.c src/eap.h src/eap-private.h src/eap-wsc.c \
-	src/eap-wsc.h src/eap-md5.c src/eap-tls.c src/eap-ttls.c \
-	src/eap-mschapv2.c src/eap-mschapv2.h src/eap-sim.c \
-	src/eap-aka.c src/eap-peap.c src/eap-gtc.c src/eap-pwd.c \
-	src/util.h src/util.c src/crypto.h src/crypto.c src/wscutil.h \
-	src/wscutil.c src/simutil.h src/simutil.c src/simauth.h \
-	src/simauth.c src/watchlist.h src/watchlist.c \
+	src/hotspot.c src/p2putil.h src/p2putil.c src/module.h \
+	src/module.c src/rrm.c src/eap.c src/eap.h src/eap-private.h \
+	src/eap-wsc.c src/eap-wsc.h src/eap-md5.c src/eap-tls.c \
+	src/eap-ttls.c src/eap-mschapv2.c src/eap-mschapv2.h \
+	src/eap-sim.c src/eap-aka.c src/eap-peap.c src/eap-gtc.c \
+	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
+	src/wscutil.h src/wscutil.c src/simutil.h src/simutil.c \
+	src/simauth.h src/simauth.c src/watchlist.h src/watchlist.c \
 	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
 	src/mschaputil.c plugins/sim_hardcoded.c plugins/ofono.c
 am__objects_3 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
@@ -327,7 +328,8 @@ am__objects_6 = $(am__objects_4) $(am__objects_5)
 @DAEMON_TRUE@	src/anqputil.$(OBJEXT) src/netconfig.$(OBJEXT) \
 @DAEMON_TRUE@	src/resolve.$(OBJEXT) src/hotspot.$(OBJEXT) \
 @DAEMON_TRUE@	src/p2putil.$(OBJEXT) src/module.$(OBJEXT) \
-@DAEMON_TRUE@	$(am__objects_3) $(am__objects_6)
+@DAEMON_TRUE@	src/rrm.$(OBJEXT) $(am__objects_3) \
+@DAEMON_TRUE@	$(am__objects_6)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am__tools_hwsim_SOURCES_DIST = tools/hwsim.c src/mpdu.h src/util.h \
 	src/util.c src/storage.h src/storage.c src/common.h \
@@ -448,18 +450,19 @@ unit_test_wsc_OBJECTS = $(am_unit_test_wsc_OBJECTS)
 unit_test_wsc_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am__wired_ead_SOURCES_DIST = wired/main.c wired/ethdev.h \
 	wired/ethdev.c wired/network.h wired/network.c wired/dbus.h \
-	wired/dbus.c src/eap.c src/eap.h src/eap-private.h \
-	src/eap-wsc.c src/eap-wsc.h src/eap-md5.c src/eap-tls.c \
-	src/eap-ttls.c src/eap-mschapv2.c src/eap-mschapv2.h \
-	src/eap-sim.c src/eap-aka.c src/eap-peap.c src/eap-gtc.c \
-	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
-	src/wscutil.h src/wscutil.c src/simutil.h src/simutil.c \
-	src/simauth.h src/simauth.c src/watchlist.h src/watchlist.c \
-	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
-	src/mschaputil.c
+	wired/dbus.c src/module.h src/module.c src/eap.c src/eap.h \
+	src/eap-private.h src/eap-wsc.c src/eap-wsc.h src/eap-md5.c \
+	src/eap-tls.c src/eap-ttls.c src/eap-mschapv2.c \
+	src/eap-mschapv2.h src/eap-sim.c src/eap-aka.c src/eap-peap.c \
+	src/eap-gtc.c src/eap-pwd.c src/util.h src/util.c src/crypto.h \
+	src/crypto.c src/wscutil.h src/wscutil.c src/simutil.h \
+	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
+	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c \
+	src/mschaputil.h src/mschaputil.c
 @WIRED_TRUE@am_wired_ead_OBJECTS = wired/main.$(OBJEXT) \
 @WIRED_TRUE@	wired/ethdev.$(OBJEXT) wired/network.$(OBJEXT) \
-@WIRED_TRUE@	wired/dbus.$(OBJEXT) $(am__objects_3)
+@WIRED_TRUE@	wired/dbus.$(OBJEXT) src/module.$(OBJEXT) \
+@WIRED_TRUE@	$(am__objects_3)
 wired_ead_OBJECTS = $(am_wired_ead_OBJECTS)
 AM_V_P = $(am__v_P_@AM_V@)
 am__v_P_ = $(am__v_P_@AM_DEFAULT_V@)
@@ -537,16 +540,16 @@ am__depfiles_remade = client/$(DEPDIR)/ad-hoc.Po \
 	src/$(DEPDIR)/nl80211cmd.Po src/$(DEPDIR)/nl80211util.Po \
 	src/$(DEPDIR)/owe.Po src/$(DEPDIR)/p2putil.Po \
 	src/$(DEPDIR)/plugin.Po src/$(DEPDIR)/resolve.Po \
-	src/$(DEPDIR)/rfkill.Po src/$(DEPDIR)/rtnlutil.Po \
-	src/$(DEPDIR)/sae.Po src/$(DEPDIR)/scan.Po \
-	src/$(DEPDIR)/simauth.Po src/$(DEPDIR)/simutil.Po \
-	src/$(DEPDIR)/station.Po src/$(DEPDIR)/storage.Po \
-	src/$(DEPDIR)/util.Po src/$(DEPDIR)/watchlist.Po \
-	src/$(DEPDIR)/wiphy.Po src/$(DEPDIR)/wsc.Po \
-	src/$(DEPDIR)/wscutil.Po tools/$(DEPDIR)/hwsim.Po \
-	tools/$(DEPDIR)/test-runner.Po unit/$(DEPDIR)/test-arc4.Po \
-	unit/$(DEPDIR)/test-client.Po unit/$(DEPDIR)/test-cmac-aes.Po \
-	unit/$(DEPDIR)/test-crypto.Po \
+	src/$(DEPDIR)/rfkill.Po src/$(DEPDIR)/rrm.Po \
+	src/$(DEPDIR)/rtnlutil.Po src/$(DEPDIR)/sae.Po \
+	src/$(DEPDIR)/scan.Po src/$(DEPDIR)/simauth.Po \
+	src/$(DEPDIR)/simutil.Po src/$(DEPDIR)/station.Po \
+	src/$(DEPDIR)/storage.Po src/$(DEPDIR)/util.Po \
+	src/$(DEPDIR)/watchlist.Po src/$(DEPDIR)/wiphy.Po \
+	src/$(DEPDIR)/wsc.Po src/$(DEPDIR)/wscutil.Po \
+	tools/$(DEPDIR)/hwsim.Po tools/$(DEPDIR)/test-runner.Po \
+	unit/$(DEPDIR)/test-arc4.Po unit/$(DEPDIR)/test-client.Po \
+	unit/$(DEPDIR)/test-cmac-aes.Po unit/$(DEPDIR)/test-crypto.Po \
 	unit/$(DEPDIR)/test-eap-mschapv2.Po \
 	unit/$(DEPDIR)/test-eap-sim.Po unit/$(DEPDIR)/test-eapol.Po \
 	unit/$(DEPDIR)/test-hmac-md5.Po \
@@ -642,6 +645,7 @@ am__uninstall_files_from_dir = { \
   }
 man1dir = $(mandir)/man1
 man5dir = $(mandir)/man5
+man7dir = $(mandir)/man7
 man8dir = $(mandir)/man8
 NROFF = nroff
 MANS = $(man_MANS)
@@ -1145,7 +1149,7 @@ builtin_sources = $(am__append_3) $(am__append_5)
 @MANUAL_PAGES_TRUE@man_MANS = $(am__append_11) $(am__append_13) \
 @MANUAL_PAGES_TRUE@	$(am__append_15) $(am__append_21) \
 @MANUAL_PAGES_TRUE@	$(am__append_24)
-manual_pages = src/iwd.8 src/iwd.config.5 src/iwd.network.5 \
+manual_pages = src/iwd.8 src/iwd.debug.7 src/iwd.config.5 src/iwd.network.5 \
 		client/iwctl.1 monitor/iwmon.1 wired/ead.8 tools/hwsim.1
 
 eap_sources = src/eap.c src/eap.h src/eap-private.h \
@@ -1208,7 +1212,8 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/resolve.h src/resolve.c\
 @DAEMON_TRUE@					src/hotspot.c \
 @DAEMON_TRUE@					src/p2putil.h src/p2putil.c \
-@DAEMON_TRUE@					src/module.c \
+@DAEMON_TRUE@					src/module.h src/module.c \
+@DAEMON_TRUE@					src/rrm.c \
 @DAEMON_TRUE@					$(eap_sources) \
 @DAEMON_TRUE@					$(builtin_sources)
 
@@ -1250,7 +1255,9 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @MONITOR_TRUE@monitor_iwmon_LDADD = $(ell_ldadd)
 @WIRED_TRUE@wired_ead_SOURCES = wired/main.c wired/ethdev.h wired/ethdev.c \
 @WIRED_TRUE@				wired/network.h wired/network.c \
-@WIRED_TRUE@				wired/dbus.h wired/dbus.c $(eap_sources)
+@WIRED_TRUE@				wired/dbus.h wired/dbus.c \
+@WIRED_TRUE@				src/module.h src/module.c \
+@WIRED_TRUE@				$(eap_sources)
 
 @WIRED_TRUE@wired_ead_LDADD = $(ell_ldadd)
 @WIRED_TRUE@wired_ead_DEPENDENCIES = $(ell_dependencies) \
@@ -1429,7 +1436,7 @@ SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && $(SED) \
 @RUN_RST2MAN_FALSE@		{ echo "Generated manual page $@ does not exist"; false; }
 
 @RUN_RST2MAN_TRUE@RST2MAN_PROCESS = $(AM_V_GEN)$(RST2MAN) --strict --no-raw --no-generator \
-@RUN_RST2MAN_TRUE@			--no-datestamp < $< > $@
+@RUN_RST2MAN_TRUE@			--no-datestamp $< $@
 
 all: $(BUILT_SOURCES) config.h
 	$(MAKE) $(AM_MAKEFLAGS) all-am
@@ -1802,6 +1809,7 @@ src/hotspot.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/module.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
+src/rrm.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/eap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/eap-wsc.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
@@ -2138,6 +2146,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/plugin.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/resolve.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/rfkill.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/rrm.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/rtnlutil.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/sae.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/scan.Po@am__quote@ # am--include-marker
@@ -2307,6 +2316,49 @@ uninstall-man5:
 	} | sed -e 's,.*/,,;h;s,.*\.,,;s,^[^5][0-9a-z]*$$,5,;x' \
 	      -e 's,\.[0-9a-z]*$$,,;$(transform);G;s,\n,.,'`; \
 	dir='$(DESTDIR)$(man5dir)'; $(am__uninstall_files_from_dir)
+install-man7: $(man_MANS)
+	@$(NORMAL_INSTALL)
+	@list1=''; \
+	list2='$(man_MANS)'; \
+	test -n "$(man7dir)" \
+	  && test -n "`echo $$list1$$list2`" \
+	  || exit 0; \
+	echo " $(MKDIR_P) '$(DESTDIR)$(man7dir)'"; \
+	$(MKDIR_P) "$(DESTDIR)$(man7dir)" || exit 1; \
+	{ for i in $$list1; do echo "$$i"; done;  \
+	if test -n "$$list2"; then \
+	  for i in $$list2; do echo "$$i"; done \
+	    | sed -n '/\.7[a-z]*$$/p'; \
+	fi; \
+	} | while read p; do \
+	  if test -f $$p; then d=; else d="$(srcdir)/"; fi; \
+	  echo "$$d$$p"; echo "$$p"; \
+	done | \
+	sed -e 'n;s,.*/,,;p;h;s,.*\.,,;s,^[^7][0-9a-z]*$$,7,;x' \
+	      -e 's,\.[0-9a-z]*$$,,;$(transform);G;s,\n,.,' | \
+	sed 'N;N;s,\n, ,g' | { \
+	list=; while read file base inst; do \
+	  if test "$$base" = "$$inst"; then list="$$list $$file"; else \
+	    echo " $(INSTALL_DATA) '$$file' '$(DESTDIR)$(man7dir)/$$inst'"; \
+	    $(INSTALL_DATA) "$$file" "$(DESTDIR)$(man7dir)/$$inst" || exit $$?; \
+	  fi; \
+	done; \
+	for i in $$list; do echo "$$i"; done | $(am__base_list) | \
+	while read files; do \
+	  test -z "$$files" || { \
+	    echo " $(INSTALL_DATA) $$files '$(DESTDIR)$(man7dir)'"; \
+	    $(INSTALL_DATA) $$files "$(DESTDIR)$(man7dir)" || exit $$?; }; \
+	done; }
+
+uninstall-man7:
+	@$(NORMAL_UNINSTALL)
+	@list=''; test -n "$(man7dir)" || exit 0; \
+	files=`{ for i in $$list; do echo "$$i"; done; \
+	l2='$(man_MANS)'; for i in $$l2; do echo "$$i"; done | \
+	  sed -n '/\.7[a-z]*$$/p'; \
+	} | sed -e 's,.*/,,;h;s,.*\.,,;s,^[^7][0-9a-z]*$$,7,;x' \
+	      -e 's,\.[0-9a-z]*$$,,;$(transform);G;s,\n,.,'`; \
+	dir='$(DESTDIR)$(man7dir)'; $(am__uninstall_files_from_dir)
 install-man8: $(man_MANS)
 	@$(NORMAL_INSTALL)
 	@list1=''; \
@@ -2975,7 +3027,7 @@ check: $(BUILT_SOURCES)
 	$(MAKE) $(AM_MAKEFLAGS) check-am
 all-am: Makefile $(PROGRAMS) $(LTLIBRARIES) $(MANS) $(DATA) config.h
 installdirs:
-	for dir in "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libexecdir)" "$(DESTDIR)$(man1dir)" "$(DESTDIR)$(man5dir)" "$(DESTDIR)$(man8dir)" "$(DESTDIR)$(dbus_busdir)" "$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_modloaddir)" "$(DESTDIR)$(systemd_networkdir)" "$(DESTDIR)$(systemd_unitdir)"; do \
+	for dir in "$(DESTDIR)$(bindir)" "$(DESTDIR)$(libexecdir)" "$(DESTDIR)$(man1dir)" "$(DESTDIR)$(man5dir)" "$(DESTDIR)$(man7dir)" "$(DESTDIR)$(man8dir)" "$(DESTDIR)$(dbus_busdir)" "$(DESTDIR)$(dbus_datadir)" "$(DESTDIR)$(systemd_modloaddir)" "$(DESTDIR)$(systemd_networkdir)" "$(DESTDIR)$(systemd_unitdir)"; do \
 	  test -z "$$dir" || $(MKDIR_P) "$$dir"; \
 	done
 install: $(BUILT_SOURCES)
@@ -3161,6 +3213,7 @@ distclean: distclean-am
 	-rm -f src/$(DEPDIR)/plugin.Po
 	-rm -f src/$(DEPDIR)/resolve.Po
 	-rm -f src/$(DEPDIR)/rfkill.Po
+	-rm -f src/$(DEPDIR)/rrm.Po
 	-rm -f src/$(DEPDIR)/rtnlutil.Po
 	-rm -f src/$(DEPDIR)/sae.Po
 	-rm -f src/$(DEPDIR)/scan.Po
@@ -3233,7 +3286,7 @@ install-info: install-info-am
 
 install-info-am:
 
-install-man: install-man1 install-man5 install-man8
+install-man: install-man1 install-man5 install-man7 install-man8
 
 install-pdf: install-pdf-am
 
@@ -3369,6 +3422,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f src/$(DEPDIR)/plugin.Po
 	-rm -f src/$(DEPDIR)/resolve.Po
 	-rm -f src/$(DEPDIR)/rfkill.Po
+	-rm -f src/$(DEPDIR)/rrm.Po
 	-rm -f src/$(DEPDIR)/rtnlutil.Po
 	-rm -f src/$(DEPDIR)/sae.Po
 	-rm -f src/$(DEPDIR)/scan.Po
@@ -3428,7 +3482,8 @@ uninstall-am: uninstall-binPROGRAMS uninstall-dbus_busDATA \
 	uninstall-man uninstall-systemd_modloadDATA \
 	uninstall-systemd_networkDATA uninstall-systemd_unitDATA
 
-uninstall-man: uninstall-man1 uninstall-man5 uninstall-man8
+uninstall-man: uninstall-man1 uninstall-man5 uninstall-man7 \
+	uninstall-man8
 
 .MAKE: all check check-am install install-am install-strip
 
@@ -3446,19 +3501,19 @@ uninstall-man: uninstall-man1 uninstall-man5 uninstall-man8
 	install-dist_dbus_dataDATA install-dvi install-dvi-am \
 	install-exec install-exec-am install-html install-html-am \
 	install-info install-info-am install-libexecPROGRAMS \
-	install-man install-man1 install-man5 install-man8 install-pdf \
-	install-pdf-am install-ps install-ps-am install-strip \
-	install-systemd_modloadDATA install-systemd_networkDATA \
-	install-systemd_unitDATA installcheck installcheck-am \
-	installdirs maintainer-clean maintainer-clean-generic \
-	maintainer-clean-local mostlyclean mostlyclean-compile \
-	mostlyclean-generic mostlyclean-libtool pdf pdf-am ps ps-am \
-	recheck tags tags-am uninstall uninstall-am \
-	uninstall-binPROGRAMS uninstall-dbus_busDATA \
+	install-man install-man1 install-man5 install-man7 \
+	install-man8 install-pdf install-pdf-am install-ps \
+	install-ps-am install-strip install-systemd_modloadDATA \
+	install-systemd_networkDATA install-systemd_unitDATA \
+	installcheck installcheck-am installdirs maintainer-clean \
+	maintainer-clean-generic maintainer-clean-local mostlyclean \
+	mostlyclean-compile mostlyclean-generic mostlyclean-libtool \
+	pdf pdf-am ps ps-am recheck tags tags-am uninstall \
+	uninstall-am uninstall-binPROGRAMS uninstall-dbus_busDATA \
 	uninstall-dist_dbus_dataDATA uninstall-libexecPROGRAMS \
-	uninstall-man uninstall-man1 uninstall-man5 uninstall-man8 \
-	uninstall-systemd_modloadDATA uninstall-systemd_networkDATA \
-	uninstall-systemd_unitDATA
+	uninstall-man uninstall-man1 uninstall-man5 uninstall-man7 \
+	uninstall-man8 uninstall-systemd_modloadDATA \
+	uninstall-systemd_networkDATA uninstall-systemd_unitDATA
 
 .PRECIOUS: Makefile
 
@@ -3548,6 +3603,9 @@ ell/ell.h: Makefile
 	$(RST2MAN_PROCESS)
 
 %.5: %.rst Makefile
+	$(RST2MAN_PROCESS)
+
+%.7: %.rst Makefile
 	$(RST2MAN_PROCESS)
 
 %.8: %.rst Makefile

@@ -159,7 +159,7 @@ if MANUAL_PAGES
 man_MANS =
 endif
 
-manual_pages = src/iwd.8 src/iwd.config.5 src/iwd.network.5 \
+manual_pages = src/iwd.8 src/iwd.debug.7 src/iwd.config.5 src/iwd.network.5 \
 		client/iwctl.1 monitor/iwmon.1 wired/ead.8 tools/hwsim.1
 
 eap_sources = src/eap.c src/eap.h src/eap-private.h \
@@ -225,7 +225,8 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h src/missing.h \
 					src/resolve.h src/resolve.c\
 					src/hotspot.c \
 					src/p2putil.h src/p2putil.c \
-					src/module.c \
+					src/module.h src/module.c \
+					src/rrm.c \
 					$(eap_sources) \
 					$(builtin_sources)
 
@@ -256,7 +257,7 @@ systemd_network_DATA += src/80-iwd.link
 endif
 
 if MANUAL_PAGES
-man_MANS += src/iwd.8 src/iwd.config.5 src/iwd.network.5
+man_MANS += src/iwd.8 src/iwd.debug.7 src/iwd.config.5 src/iwd.network.5
 endif
 endif
 
@@ -314,7 +315,9 @@ libexec_PROGRAMS += wired/ead
 
 wired_ead_SOURCES = wired/main.c wired/ethdev.h wired/ethdev.c \
 				wired/network.h wired/network.c \
-				wired/dbus.h wired/dbus.c $(eap_sources)
+				wired/dbus.h wired/dbus.c \
+				src/module.h src/module.c \
+				$(eap_sources)
 wired_ead_LDADD = $(ell_ldadd)
 wired_ead_DEPENDENCIES = $(ell_dependencies)
 
@@ -627,7 +630,7 @@ SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && $(SED) \
 
 if RUN_RST2MAN
 RST2MAN_PROCESS = $(AM_V_GEN)$(RST2MAN) --strict --no-raw --no-generator \
-			--no-datestamp < $< > $@
+			--no-datestamp $< $@
 else
 RST2MAN_PROCESS = $(AM_V_GEN)test -f $@ || \
 		{ echo "Generated manual page $@ does not exist"; false; }
@@ -640,6 +643,9 @@ endif
 	$(RST2MAN_PROCESS)
 
 %.5: %.rst Makefile
+	$(RST2MAN_PROCESS)
+
+%.7: %.rst Makefile
 	$(RST2MAN_PROCESS)
 
 %.8: %.rst Makefile

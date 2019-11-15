@@ -26,7 +26,7 @@
 #include <errno.h>
 #include <ell/ell.h>
 
-#include "src/iwd.h"
+#include "src/module.h"
 
 struct dependency {
 	struct dependency *next;
@@ -173,7 +173,7 @@ void iwd_modules_exit()
 		return;
 
 	for (i = 0; i < n_modules; i++) {
-		desc = modules_sorted[i];
+		desc = modules_sorted[n_modules - 1 - i];
 		if (!desc->active)
 			continue;
 

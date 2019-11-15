@@ -55,24 +55,18 @@ Show help message and exit.
 .UNINDENT
 .SH ENVIRONMENT
 .sp
-\fI$STATE_DIRECTORY\fP is used for network configuration files.  See section
-\fIiwd.network\fP for details.
+\fI$STATE_DIRECTORY\fP is used for network configuration files.  See \fIiwd.network\fP
+for details.
 .sp
 \fI$CONFIGURATION_DIRECTORY\fP is used for daemon configuration settings.  Only
 the file \fBmain.conf\fP is currently read from this directory.  See \fIiwd.config\fP
 for details.
 .sp
-\fI$IWD_RTNL_DEBUG\fP set to \fB1\fP enables RTNL debugging.
-.sp
-\fI$IWD_DHCP_DEBUG\fP set to \fB1\fP enables DHCP debugging.
-.sp
-\fI$IWD_TLS_DEBUG\fP set to \fB1\fP enables TLS debugging.
-.sp
-\fI$IWD_WSC_DEBUG_KEYS\fP set to \fB1\fP enables WSC debug keys.
+See \fIiwd.debug\fP for further environment variables for debugging.
 .SH SEE ALSO
 .sp
-iwd.config(5), iwd.network(5), iwctl(1), iwmon(1), hwsim(1), ead(8),
-systemd.exec(5)
+iwd.config(5), iwd.network(5), iwd.debug(7), iwctl(1), iwmon(1), hwsim(1),
+ead(8), systemd.exec(5)
 .sp
 \fI\%http://iwd.wiki.kernel.org\fP
 .SH AUTHOR
