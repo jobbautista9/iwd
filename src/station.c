@@ -37,7 +37,6 @@
 #include "src/iwd.h"
 #include "src/module.h"
 #include "src/common.h"
-#include "src/device.h"
 #include "src/watchlist.h"
 #include "src/scan.h"
 #include "src/netdev.h"
@@ -2749,6 +2748,9 @@ static struct l_dbus_message *station_dbus_scan(struct l_dbus *dbus,
 	l_debug("Scan called from DBus");
 
 	if (station->dbus_scan_id)
+		return dbus_error_busy(message);
+
+	if (station->state == STATION_STATE_CONNECTING)
 		return dbus_error_busy(message);
 
 	station->dbus_scan_id = station_scan_trigger(station, NULL,

@@ -269,7 +269,7 @@ monitor_iwmon_OBJECTS = $(am_monitor_iwmon_OBJECTS)
 @MONITOR_TRUE@monitor_iwmon_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/missing.h src/plugin.h src/plugin.c src/netdev.h \
-	src/netdev.c src/wiphy.h src/wiphy.c src/device.h src/device.c \
+	src/netdev.c src/wiphy.h src/wiphy.c src/device.c \
 	src/station.h src/station.c src/ie.h src/ie.c src/dbus.h \
 	src/dbus.c src/mpdu.h src/mpdu.c src/eapol.h src/eapol.c \
 	src/eapolutil.h src/eapolutil.c src/handshake.h \
@@ -1176,7 +1176,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/plugin.h src/plugin.c \
 @DAEMON_TRUE@					src/netdev.h src/netdev.c \
 @DAEMON_TRUE@					src/wiphy.h src/wiphy.c \
-@DAEMON_TRUE@					src/device.h src/device.c \
+@DAEMON_TRUE@					src/device.c \
 @DAEMON_TRUE@					src/station.h src/station.c \
 @DAEMON_TRUE@					src/ie.h src/ie.c \
 @DAEMON_TRUE@					src/dbus.h src/dbus.c \
