@@ -49,7 +49,6 @@
 #include "src/eapol.h"
 #include "src/handshake.h"
 #include "src/crypto.h"
-#include "src/device.h"
 #include "src/scan.h"
 #include "src/netdev.h"
 #include "src/ft.h"
@@ -88,7 +87,6 @@ struct netdev {
 	char name[IFNAMSIZ];
 	uint32_t type;
 	uint8_t addr[ETH_ALEN];
-	struct device *device;
 	struct wiphy *wiphy;
 	unsigned int ifi_flags;
 	uint32_t frequency;
@@ -149,6 +147,7 @@ struct netdev {
 	bool expect_connect_failure : 1;
 	bool aborting : 1;
 	bool mac_randomize_once : 1;
+	bool events_ready : 1;
 };
 
 struct netdev_preauth_state {
@@ -303,11 +302,6 @@ struct handshake_state *netdev_get_handshake(struct netdev *netdev)
 	return netdev->handshake;
 }
 
-struct device *netdev_get_device(struct netdev *netdev)
-{
-	return netdev->device;
-}
-
 const char *netdev_get_path(struct netdev *netdev)
 {
 	static char path[256];
@@ -346,31 +340,6 @@ static void netdev_set_powered_destroy(void *user_data)
 	netdev->set_powered_user_data = NULL;
 }
 
-static uint32_t rtnl_set_powered(int ifindex, bool powered,
-				l_netlink_command_func_t cb, void *user_data,
-				l_netlink_destroy_func_t destroy)
-{
-	struct ifinfomsg *rtmmsg;
-	size_t bufsize;
-	uint32_t id;
-
-	bufsize = NLMSG_ALIGN(sizeof(struct ifinfomsg));
-
-	rtmmsg = l_malloc(bufsize);
-	memset(rtmmsg, 0, bufsize);
-
-	rtmmsg->ifi_family = AF_UNSPEC;
-	rtmmsg->ifi_index = ifindex;
-	rtmmsg->ifi_change = IFF_UP;
-	rtmmsg->ifi_flags = powered ? IFF_UP : 0;
-
-	id = l_netlink_send(rtnl, RTM_SETLINK, 0, rtmmsg, bufsize,
-					cb, user_data, destroy);
-
-	l_free(rtmmsg);
-	return id;
-}
-
 int netdev_set_powered(struct netdev *netdev, bool powered,
 			netdev_command_cb_t callback, void *user_data,
 			netdev_destroy_func_t destroy)
@@ -380,7 +349,7 @@ int netdev_set_powered(struct netdev *netdev, bool powered,
 		return -EBUSY;
 
 	netdev->set_powered_cmd_id =
-		rtnl_set_powered(netdev->index, powered,
+		rtnl_set_powered(rtnl, netdev->index, powered,
 					netdev_set_powered_result, netdev,
 					netdev_set_powered_destroy);
 	if (!netdev->set_powered_cmd_id)
@@ -653,11 +622,9 @@ static void netdev_free(void *data)
 		netdev->qos_map_cmd_id = 0;
 	}
 
-	if (netdev->device) {
+	if (netdev->events_ready)
 		WATCHLIST_NOTIFY(&netdev_watches, netdev_watch_func_t,
 					netdev, NETDEV_WATCH_EVENT_DEL);
-		device_remove(netdev->device);
-	}
 
 	watchlist_destroy(&netdev->frame_watches);
 	watchlist_destroy(&netdev->station_watches);
@@ -672,7 +639,7 @@ static void netdev_shutdown_one(void *data, void *user_data)
 	struct netdev *netdev = data;
 
 	if (netdev_get_is_up(netdev))
-		rtnl_set_powered(netdev->index, false, NULL, NULL, NULL);
+		rtnl_set_powered(rtnl, netdev->index, false, NULL, NULL, NULL);
 }
 
 static bool netdev_match(const void *a, const void *b)
@@ -3925,7 +3892,7 @@ static void netdev_set_iftype_cb(struct l_genl_msg *msg, void *user_data)
 		goto done;
 
 	netdev->set_powered_cmd_id =
-			rtnl_set_powered(netdev->index, true,
+			rtnl_set_powered(rtnl, netdev->index, true,
 					netdev_set_iftype_up_cb, req,
 					netdev_set_iftype_request_destroy);
 	if (!netdev->set_powered_cmd_id) {
@@ -4021,7 +3988,7 @@ int netdev_set_iftype(struct netdev *netdev, enum netdev_iftype type,
 		l_genl_msg_unref(msg);
 	} else {
 		netdev->set_powered_cmd_id =
-			rtnl_set_powered(netdev->index, false,
+			rtnl_set_powered(rtnl, netdev->index, false,
 					netdev_set_iftype_down_cb, req,
 					netdev_set_iftype_request_destroy);
 		if (netdev->set_powered_cmd_id)
@@ -4171,7 +4138,7 @@ static void netdev_newlink_notify(const struct ifinfomsg *ifi, int bytes)
 		}
 	}
 
-	if (!netdev->device) /* Did we send NETDEV_WATCH_EVENT_NEW yet? */
+	if (!netdev->events_ready) /* Did we send NETDEV_WATCH_EVENT_NEW yet? */
 		return;
 
 	new_up = netdev_get_is_up(netdev);
@@ -4237,9 +4204,9 @@ static void netdev_initial_up_cb(int error, uint16_t type, const void *data,
 
 	l_debug("Interface %i initialized", netdev->index);
 
-	netdev->device = device_create(netdev->wiphy, netdev);
 	WATCHLIST_NOTIFY(&netdev_watches, netdev_watch_func_t,
 				netdev, NETDEV_WATCH_EVENT_NEW);
+	netdev->events_ready = true;
 }
 
 static void netdev_set_mac_cb(int error, uint16_t type, const void *data,
@@ -4252,8 +4219,8 @@ static void netdev_set_mac_cb(int error, uint16_t type, const void *data,
 			strerror(-error));
 
 	netdev->set_powered_cmd_id =
-		rtnl_set_powered(netdev->index, true, netdev_initial_up_cb,
-					netdev, NULL);
+		rtnl_set_powered(rtnl, netdev->index, true,
+					netdev_initial_up_cb, netdev, NULL);
 }
 
 static void netdev_initial_down_cb(int error, uint16_t type, const void *data,
@@ -4284,8 +4251,8 @@ static void netdev_initial_down_cb(int error, uint16_t type, const void *data,
 	}
 
 	netdev->set_powered_cmd_id =
-		rtnl_set_powered(netdev->index, true, netdev_initial_up_cb,
-					netdev, NULL);
+		rtnl_set_powered(rtnl, netdev->index, true,
+					netdev_initial_up_cb, netdev, NULL);
 }
 
 static void netdev_getlink_cb(int error, uint16_t type, const void *data,
@@ -4316,11 +4283,6 @@ static void netdev_getlink_cb(int error, uint16_t type, const void *data,
 
 	netdev_newlink_notify(ifi, bytes);
 
-	/* Don't do anything automatically for P2P interfaces */
-	if (netdev->type == NL80211_IFTYPE_P2P_CLIENT ||
-			netdev->type == NL80211_IFTYPE_P2P_GO)
-		return;
-
 	/*
 	 * If the interface is UP, reset it to ensure a clean state.
 	 * Otherwise, if we need to set a random mac, do so.  If not, just
@@ -4343,7 +4305,8 @@ static void netdev_getlink_cb(int error, uint16_t type, const void *data,
 	cb = powered ? netdev_initial_down_cb : netdev_initial_up_cb;
 
 	netdev->set_powered_cmd_id =
-		rtnl_set_powered(ifi->ifi_index, !powered, cb, netdev, NULL);
+		rtnl_set_powered(rtnl, ifi->ifi_index, !powered, cb, netdev,
+					NULL);
 }
 
 static void netdev_frame_watch_free(struct watchlist_item *item)
@@ -4660,6 +4623,8 @@ static void netdev_link_notify(uint16_t type, const void *data, uint32_t len,
 
 	if (ifi->ifi_type != ARPHRD_ETHER)
 		return;
+
+	l_debug("event %u on ifindex %u", type, ifi->ifi_index);
 
 	bytes = len - NLMSG_ALIGN(sizeof(struct ifinfomsg));
 

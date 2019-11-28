@@ -25,7 +25,6 @@
 #endif
 
 #include <stdint.h>
-#include <math.h>
 #include <linux/if_ether.h>
 
 #include <ell/ell.h>
@@ -39,6 +38,7 @@
 #include "src/station.h"
 #include "src/scan.h"
 #include "src/nl80211util.h"
+#include "src/wiphy.h"
 
 #include "linux/nl80211.h"
 
@@ -104,10 +104,12 @@ struct rrm_beacon_req_info {
 	struct rrm_request_info info;
 	uint8_t oper_class;
 	uint8_t channel;	/* The single channel provided in request */
+	uint16_t duration;
 	uint8_t bssid[6];	/* Request filtered by BSSID */
 	char ssid[33];		/* Request filtered by SSID */
 	bool has_ssid;
 	uint32_t scan_id;
+	uint64_t scan_start_time;
 };
 
 /* Per-netdev state */
@@ -119,6 +121,21 @@ struct rrm_state {
 
 	uint64_t last_request;
 };
+
+/* 802.11, Section 9.4.2.22.7 */
+struct rrm_beacon_report {
+	uint8_t oper_class;
+	uint8_t channel;
+	__le64 scan_start_time;
+	__le16 duration;
+	uint8_t frame_info;
+	uint8_t rcpi;
+	uint8_t rsni;
+	uint8_t bssid[6];
+	uint8_t antenna_id;
+	__le32 parent_tsf;
+	uint8_t subelements[0];
+} __attribute__ ((packed));
 
 static struct l_queue *states;
 static struct l_genl_family *nl80211;
@@ -196,7 +213,7 @@ static void rrm_reject_measurement_request(struct rrm_state *rrm,
 	frame[0] = 0x05; /* Category: Radio Measurement */
 	frame[1] = 0x01; /* Action: Radio Measurement Report */
 	frame[2] = info->dialog_token;
-	frame[3] = IE_TYPE_MEASUREMENT_REQUEST;
+	frame[3] = IE_TYPE_MEASUREMENT_REPORT;
 	frame[4] = 3;
 	frame[5] = info->mtoken;
 	frame[6] = mode;
@@ -223,6 +240,17 @@ static void rrm_build_measurement_report(struct rrm_request_info *info,
 		memcpy(to, report, report_len);
 }
 
+/* 802.11 Table 9-154 */
+static uint8_t mdb_to_rcpi(int32_t mdb)
+{
+	if (mdb <= 10950)
+		return 0;
+	else if (mdb >= -10950 && mdb < 0)
+		return (2 * (mdb + 11000)) / 100;
+	else
+		return 220;
+}
+
 /*
  * 802.11-2016 11.11.9.1 Beacon report
  *
@@ -244,33 +272,28 @@ static size_t build_report_for_bss(struct rrm_beacon_req_info *beacon,
 					struct scan_bss *bss,
 					uint8_t *to)
 {
-	uint8_t *start = to;
-	double dbms = bss->signal_strength / 100;
+	struct rrm_beacon_report *report = (struct rrm_beacon_report *) to;
 
-	*to++ = beacon->oper_class;
-	*to++ = scan_freq_to_channel(bss->frequency, NULL);
-	/* skip start time/duration */
-	memset(to, 0, 10);
-	to += 10;
-	*to++ = rrm_phy_type(bss);
-
-	/* 802.11 Table 9-154 - RCPI values */
-	if (dbms < -109.5)
-		*to++ = 0;
-	else if (dbms >= -109.5 && dbms < 0)
-		*to++ = (uint8_t)floor(2 * (dbms + 110));
-	else
-		*to++ = 220;
+	report->oper_class = beacon->oper_class;
+	report->channel = scan_freq_to_channel(bss->frequency, NULL);
+	report->scan_start_time = L_CPU_TO_LE64(beacon->scan_start_time);
+	report->duration = L_CPU_TO_LE16(beacon->duration);
+	report->frame_info = rrm_phy_type(bss);
+	report->rcpi = mdb_to_rcpi(bss->signal_strength);
 
 	/* RSNI not available (could get this from GET_SURVEY) */
-	*to++ = 255;
-	memcpy(to, bss->addr, 6);
-	to += 6;
+	report->rsni = 255;
+	memcpy(report->bssid, bss->addr, 6);
 	/* Antenna identifier unknown */
-	*to++ = 0;
-	/* Parent TSF - zero */
-	memset(to, 0, 4);
-	to += 4;
+	report->antenna_id = 0;
+
+	/*
+	 * 802.11 9.4.2.22.7 Beacon report
+	 *
+	 * "The Parent TSF field contains the lower 4 octets of the measuring
+	 *  STA's TSF timer value"
+	 */
+	report->parent_tsf = L_CPU_TO_LE32(bss->parent_tsf);
 
 	/*
 	 * TODO: Support optional subelements
@@ -278,7 +301,7 @@ static size_t build_report_for_bss(struct rrm_beacon_req_info *beacon,
 	 * (see "TODO: Support Reported Frame Body..." below)
 	 */
 
-	return to - start;
+	return sizeof(struct rrm_beacon_report);
 }
 
 static bool bss_in_request_range(struct rrm_beacon_req_info *beacon,
@@ -383,11 +406,18 @@ static bool rrm_scan_results(int err, struct l_queue *bss_list, void *userdata)
 static void rrm_scan_triggered(int err, void *userdata)
 {
 	struct rrm_state *rrm = userdata;
+	struct rrm_beacon_req_info *beacon = l_container_of(rrm->pending,
+						struct rrm_beacon_req_info,
+						info);
 
 	if (err < 0) {
 		l_error("Could not start RRM scan");
 		rrm_reject_measurement_request(rrm, REPORT_REJECT_INCAPABLE);
+		return;
 	}
+
+	beacon->scan_start_time = scan_get_triggered_time(rrm->wdev_id,
+							beacon->scan_id);
 }
 
 static void rrm_handle_beacon_scan(struct rrm_state *rrm,
@@ -395,7 +425,12 @@ static void rrm_handle_beacon_scan(struct rrm_state *rrm,
 					bool passive)
 {
 	struct scan_freq_set *freqs = scan_freq_set_new();
-	struct scan_parameters params = { .freqs = freqs, .flush = true };
+	struct scan_parameters params = {
+		.freqs = freqs,
+		.flush = true,
+		.duration = beacon->duration,
+		.duration_mandatory = util_is_bit_set(beacon->info.mode, 4),
+	};
 	enum scan_band band = scan_oper_class_to_band(NULL, beacon->oper_class);
 	uint32_t freq;
 
@@ -403,7 +438,7 @@ static void rrm_handle_beacon_scan(struct rrm_state *rrm,
 	scan_freq_set_add(freqs, freq);
 
 	if (passive)
-		beacon->scan_id = scan_passive(rrm->wdev_id, freqs,
+		beacon->scan_id = scan_passive_full(rrm->wdev_id, &params,
 						rrm_scan_triggered,
 						rrm_scan_results, rrm,
 						NULL);
@@ -436,11 +471,11 @@ static bool rrm_verify_beacon_request(const uint8_t *request, size_t len)
 			return false;
 
 		/*
-		 * Not handling interval/duration requests. We can omit this
+		 * Not handling random interval requests. We can omit this
 		 * check for table requests since we just return whatever we
 		 * have cached.
 		 */
-		if (!util_mem_is_zero(request + 2, 4))
+		if (!util_mem_is_zero(request + 2, 2))
 			return false;
 	}
 
@@ -455,6 +490,7 @@ static void rrm_handle_beacon_request(struct rrm_state *rrm,
 					uint8_t dialog_token,
 					const uint8_t *request, size_t len)
 {
+	struct wiphy *wiphy = station_get_wiphy(rrm->station);
 	struct rrm_beacon_req_info *beacon;
 	struct ie_tlv_iter iter;
 	/*
@@ -486,6 +522,16 @@ static void rrm_handle_beacon_request(struct rrm_state *rrm,
 	if (util_is_bit_set(beacon->info.mode, 1))
 		goto reject_refused;
 
+	/*
+	 * Some drivers (non mac80211) do not allow setting a duration/mandatory
+	 * bit in scan requests. The actual duration value can be ignored in
+	 * this case but if the requests includes the duration mandatory bit we
+	 * must reject this request.
+	 */
+	if (!wiphy_has_ext_feature(wiphy, NL80211_EXT_FEATURE_SET_SCAN_DWELL)
+			&& util_is_bit_set(beacon->info.mode, 4))
+		goto reject_incapable;
+
 	/* advance to beacon request */
 	request += 3;
 	len -= 3;
@@ -495,6 +541,7 @@ static void rrm_handle_beacon_request(struct rrm_state *rrm,
 
 	beacon->oper_class = request[0];
 	beacon->channel = request[1];
+	beacon->duration = l_get_le16(request + 4);
 	memcpy(beacon->bssid, request + 7, 6);
 
 	ie_tlv_iter_init(&iter, request + 13, len - 13);
