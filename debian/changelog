@@ -1,3 +1,10 @@
+iwd (1.2-2) unstable; urgency=medium
+
+  * Cherry-pick patch from upstream fixing crash (Closes: #946639)
+  * Add patch suggested by upstream for EOPNOTSUPP
+
+ -- Andreas Henriksson <andreas@fatal.se>  Thu, 12 Dec 2019 20:00:05 +0100
+
 iwd (1.2-1) unstable; urgency=medium
 
   * New upstream release.
