@@ -1,0 +1,24 @@
+From: Denis Kenzior <denkenz@gmail.com>
+Date: Thu, 12 Dec 2019 10:16:22 -0600
+Subject: netdev: Use -EOPNOTSUPP instead of -ENOTSUPP
+
+The kernel uses -EOPNOTSUPP in the case of change_station operation not
+being provided.  On most systems -EOPNOTSUPP is defined to be the same
+as -ENOTSUPP, but seemingly not all systems.
+---
+ src/netdev.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/netdev.c b/src/netdev.c
+index af655c8..14251aa 100644
+--- a/src/netdev.c
++++ b/src/netdev.c
+@@ -1080,7 +1080,7 @@ static void netdev_set_station_cb(struct l_genl_msg *msg, void *user_data)
+ 		return;
+ 
+ 	err = l_genl_msg_get_error(msg);
+-	if (err == -ENOTSUPP)
++	if (err == -EOPNOTSUPP)
+ 		goto done;
+ 
+ 	if (err < 0) {
