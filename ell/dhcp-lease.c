@@ -31,6 +31,8 @@
 #include "private.h"
 #include "dhcp.h"
 #include "dhcp-private.h"
+#include "utf8.h"
+#include "net.h"
 
 struct l_dhcp_lease *_dhcp_lease_new(void)
 {
@@ -45,6 +47,8 @@ void _dhcp_lease_free(struct l_dhcp_lease *lease)
 		return;
 
 	l_free(lease->dns);
+	l_free(lease->domain_name);
+
 	l_free(lease);
 }
 
@@ -99,6 +103,28 @@ struct l_dhcp_lease *_dhcp_lease_parse_options(struct dhcp_message_iter *iter)
 				}
 			}
 			break;
+		case L_DHCP_OPTION_DOMAIN_NAME:
+			if (l < 1 || l > 253)
+				goto error;
+
+			/* Disallow embedded NUL bytes. */
+			if (memchr(v, 0, l - 1))
+				goto error;
+
+			if (!l_utf8_validate(v, l, NULL))
+				goto error;
+
+			lease->domain_name = l_new(char, l + 1);
+
+			memcpy(lease->domain_name, v, l);
+
+			if (l_net_hostname_is_root(lease->domain_name))
+				goto error;
+
+			if (l_net_hostname_is_localhost(lease->domain_name))
+				goto error;
+
+			break;
 		default:
 			break;
 		}
@@ -109,6 +135,17 @@ struct l_dhcp_lease *_dhcp_lease_parse_options(struct dhcp_message_iter *iter)
 
 	if (lease->lifetime < 10)
 		goto error;
+
+	/*
+	 * RFC2131, Section 3.3:
+	 * "Throughout the protocol, times are to be represented in units of
+	 * seconds.  The time value of 0xffffffff is reserved to represent
+	 * "infinity"."
+	 *
+	 * Don't bother checking t1/t2 for infinite leases
+	 */
+	if (lease->lifetime == 0xffffffffu)
+		return lease;
 
 	if (!lease->t1)
 		lease->t1 = lease->lifetime / 2;
@@ -124,7 +161,7 @@ struct l_dhcp_lease *_dhcp_lease_parse_options(struct dhcp_message_iter *iter)
 
 	return lease;
 error:
-	l_free(lease);
+	_dhcp_lease_free(lease);
 	return NULL;
 }
 
@@ -199,6 +236,14 @@ LIB_EXPORT char **l_dhcp_lease_get_dns(const struct l_dhcp_lease *lease)
 		dns_list[i] = get_ip(lease->dns[i]);
 
 	return dns_list;
+}
+
+LIB_EXPORT char *l_dhcp_lease_get_domain_name(const struct l_dhcp_lease *lease)
+{
+	if (unlikely(!lease))
+		return NULL;
+
+	return l_strdup(lease->domain_name);
 }
 
 LIB_EXPORT uint32_t l_dhcp_lease_get_t1(const struct l_dhcp_lease *lease)

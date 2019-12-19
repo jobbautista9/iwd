@@ -779,9 +779,21 @@ error:
 	l_dhcp_client_stop(client);
 }
 
+static void dhcp_client_lease_expired(struct l_timeout *timeout,
+							void *user_data)
+{
+	struct l_dhcp_client *client = user_data;
+
+	CLIENT_DEBUG("");
+
+	l_dhcp_client_stop(client);
+	dhcp_client_event_notify(client, L_DHCP_CLIENT_EVENT_NO_LEASE);
+}
+
 static void dhcp_client_t2_expired(struct l_timeout *timeout, void *user_data)
 {
 	struct l_dhcp_client *client = user_data;
+	uint32_t next_timeout = client->lease->lifetime - client->lease->t2;
 
 	CLIENT_DEBUG("");
 
@@ -792,7 +804,10 @@ static void dhcp_client_t2_expired(struct l_timeout *timeout, void *user_data)
 	 */
 	CLIENT_ENTER_STATE(DHCP_STATE_REBINDING);
 
-	/* TODO: Start timer for the expiration time */
+	l_timeout_modify_ms(client->timeout_lease,
+				dhcp_fuzz_secs(next_timeout));
+	l_timeout_set_callback(client->timeout_lease,
+				dhcp_client_lease_expired, client, NULL);
 }
 
 static void dhcp_client_t1_expired(struct l_timeout *timeout, void *user_data)
@@ -843,8 +858,11 @@ static int dhcp_client_receive_ack(struct l_dhcp_client *client,
 		return -EINVAL;
 
 	lease = _dhcp_lease_parse_options(&iter);
-	if (!lease)
+	if (!lease) {
+		CLIENT_DEBUG("Failed to parse DHCP options.");
+
 		return -ENOMSG;
+	}
 
 	lease->address = ack->yiaddr;
 
@@ -987,11 +1005,17 @@ static void dhcp_client_rx_message(const void *data, size_t len, void *userdata)
 		 * reacquisition."
 		 */
 		l_timeout_remove(client->timeout_lease);
-		client->timeout_lease =
-			l_timeout_create_ms(dhcp_fuzz_secs(client->lease->t1),
-						dhcp_client_t1_expired,
-						client, NULL);
 
+		/* Infinite lease, no need to start t1 */
+		if (client->lease->lifetime != 0xffffffffu) {
+			uint32_t next_timeout =
+					dhcp_fuzz_secs(client->lease->t1);
+
+			client->timeout_lease =
+				l_timeout_create_ms(next_timeout,
+							dhcp_client_t1_expired,
+							client, NULL);
+		}
 		break;
 	case DHCP_STATE_INIT_REBOOT:
 	case DHCP_STATE_REBOOTING:
