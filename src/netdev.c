@@ -626,6 +626,8 @@ static void netdev_free(void *data)
 		WATCHLIST_NOTIFY(&netdev_watches, netdev_watch_func_t,
 					netdev, NETDEV_WATCH_EVENT_DEL);
 
+	scan_wdev_remove(netdev->wdev_id);
+
 	watchlist_destroy(&netdev->frame_watches);
 	watchlist_destroy(&netdev->station_watches);
 
@@ -1080,7 +1082,7 @@ static void netdev_set_station_cb(struct l_genl_msg *msg, void *user_data)
 		return;
 
 	err = l_genl_msg_get_error(msg);
-	if (err == -ENOTSUPP)
+	if (err == -EOPNOTSUPP || err == -ENOTSUPP)
 		goto done;
 
 	if (err < 0) {
@@ -4204,6 +4206,8 @@ static void netdev_initial_up_cb(int error, uint16_t type, const void *data,
 
 	l_debug("Interface %i initialized", netdev->index);
 
+	scan_wdev_add(netdev->wdev_id);
+
 	WATCHLIST_NOTIFY(&netdev_watches, netdev_watch_func_t,
 				netdev, NETDEV_WATCH_EVENT_NEW);
 	netdev->events_ready = true;
@@ -4433,14 +4437,12 @@ error:
 
 struct netdev *netdev_create_from_genl(struct l_genl_msg *msg, bool random_mac)
 {
-	struct l_genl_attr attr;
-	uint16_t type, len;
-	const void *data;
-	const char *ifname = NULL;
-	uint16_t ifname_len = 0;
-	const uint8_t *ifaddr = NULL;
-	const uint32_t *ifindex = NULL, *iftype = NULL;
-	const uint64_t *wdev = NULL;
+	const char *ifname;
+	const uint8_t *ifaddr;
+	uint32_t ifindex;
+	uint32_t iftype;
+	uint64_t wdev;
+	uint32_t wiphy_id;
 	struct netdev *netdev;
 	struct wiphy *wiphy = NULL;
 	struct ifinfomsg *rtmmsg;
@@ -4452,87 +4454,32 @@ struct netdev *netdev_create_from_genl(struct l_genl_msg *msg, bool random_mac)
 	const uint8_t action_qos_map_prefix[] = { 0x01, 0x04 };
 	struct l_io *pae_io = NULL;
 
-	if (!l_genl_attr_init(&attr, msg))
-		return NULL;
-
-	while (l_genl_attr_next(&attr, &type, &len, &data)) {
-		switch (type) {
-		case NL80211_ATTR_IFINDEX:
-			if (len != sizeof(uint32_t)) {
-				l_warn("Invalid interface index attribute");
-				return NULL;
-			}
-
-			ifindex = data;
-			break;
-
-		case NL80211_ATTR_WDEV:
-			if (len != sizeof(uint64_t)) {
-				l_warn("Invalid wdev attribute");
-				return NULL;
-			}
-
-			wdev = data;
-			break;
-
-		case NL80211_ATTR_IFNAME:
-			if (len > IFNAMSIZ) {
-				l_warn("Invalid interface name attribute");
-				return NULL;
-			}
-
-			ifname = data;
-			ifname_len = len;
-			break;
-
-		case NL80211_ATTR_WIPHY:
-			if (len != sizeof(uint32_t)) {
-				l_warn("Invalid wiphy attribute");
-				return NULL;
-			}
-
-			wiphy = wiphy_find(*((uint32_t *) data));
-			break;
-
-		case NL80211_ATTR_IFTYPE:
-			if (len != sizeof(uint32_t)) {
-				l_warn("Invalid interface type attribute");
-				return NULL;
-			}
-
-			iftype = data;
-			break;
-
-		case NL80211_ATTR_MAC:
-			if (len != ETH_ALEN) {
-				l_warn("Invalid interface address attribute");
-				return NULL;
-			}
-
-			ifaddr = data;
-			break;
-		}
-	}
-
-	if (!iftype) {
-		l_warn("Missing iftype attribute");
+	if (nl80211_parse_attrs(msg, NL80211_ATTR_IFINDEX, &ifindex,
+					NL80211_ATTR_WDEV, &wdev,
+					NL80211_ATTR_IFNAME, &ifname,
+					NL80211_ATTR_WIPHY, &wiphy_id,
+					NL80211_ATTR_IFTYPE, &iftype,
+					NL80211_ATTR_MAC, &ifaddr,
+					NL80211_ATTR_UNSPEC) < 0) {
+		l_warn("Required attributes missing");
 		return NULL;
 	}
 
-	if (!wiphy || !ifindex || !wdev || !ifaddr || !ifname) {
-		l_warn("Unable to parse interface information");
+	wiphy = wiphy_find(wiphy_id);
+	if (!wiphy) {
+		l_warn("No wiphy: %d", wiphy_id);
 		return NULL;
 	}
 
-	if (netdev_find(*ifindex)) {
-		l_debug("Skipping duplicate netdev %s[%d]", ifname, *ifindex);
+	if (netdev_find(ifindex)) {
+		l_debug("Skipping duplicate netdev %s[%d]", ifname, ifindex);
 		return NULL;
 	}
 
 	if (!wiphy_has_ext_feature(wiphy,
 			NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211) ||
 			!pae_over_nl80211) {
-		pae_io = pae_open(*ifindex);
+		pae_io = pae_open(ifindex);
 		if (!pae_io) {
 			l_error("Unable to open PAE interface");
 			return NULL;
@@ -4540,12 +4487,12 @@ struct netdev *netdev_create_from_genl(struct l_genl_msg *msg, bool random_mac)
 	}
 
 	netdev = l_new(struct netdev, 1);
-	netdev->index = *ifindex;
-	netdev->wdev_id = *wdev;
-	netdev->type = *iftype;
+	netdev->index = ifindex;
+	netdev->wdev_id = wdev;
+	netdev->type = iftype;
 	netdev->rekey_offload_support = true;
 	memcpy(netdev->addr, ifaddr, sizeof(netdev->addr));
-	memcpy(netdev->name, ifname, ifname_len);
+	l_strlcpy(netdev->name, ifname, IFNAMSIZ);
 	netdev->wiphy = wiphy;
 	netdev->pae_over_nl80211 = pae_io == NULL;
 	netdev->mac_randomize_once = random_mac;
@@ -4570,7 +4517,7 @@ struct netdev *netdev_create_from_genl(struct l_genl_msg *msg, bool random_mac)
 	memset(rtmmsg, 0, bufsize);
 
 	rtmmsg->ifi_family = AF_UNSPEC;
-	rtmmsg->ifi_index = *ifindex;
+	rtmmsg->ifi_index = ifindex;
 
 	l_netlink_send(rtnl, RTM_GETLINK, 0, rtmmsg, bufsize,
 					netdev_getlink_cb, NULL, NULL);

@@ -1,8 +1,8 @@
 /*
  *
- *  Embedded Linux library
+ *  Wireless daemon for Linux
  *
- *  Copyright (C) 2018  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2019  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,23 +20,13 @@
  *
  */
 
-#ifndef __ELL_NET_H
-#define __ELL_NET_H
-
-#include <stdbool.h>
-#include <stdint.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-bool l_net_get_mac_address(uint32_t ifindex, uint8_t *out_addr);
-char *l_net_get_name(uint32_t ifindex);
-bool l_net_hostname_is_root(const char *hostname);
-bool l_net_hostname_is_localhost(const char *hostname);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* __ELL_NET_H */
+struct wsc_credentials_info {
+	char ssid[33];
+	enum security security;
+	union {
+		uint8_t psk[32];
+		char passphrase[64];
+	};
+	uint8_t addr[6];
+	bool has_passphrase;
+};

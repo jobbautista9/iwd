@@ -316,6 +316,70 @@ provided.
 T}
 _
 .TE
+.SS Network Configuration Settings
+.sp
+The group \fB[IPv4]\fP contains settings for Internet Protocol version 4 (IPv4)
+network configuration with the static addresses.
+.TS
+center;
+|l|l|.
+_
+T{
+Address
+T}	T{
+IPv4 address string
+.sp
+The IPv4 address to assign. This field is \fIrequired\fP for the static
+configuration.
+T}
+_
+T{
+Gateway
+T}	T{
+IPv4 address string
+.sp
+The IPv4 address of the gateway (router). This field is \fIrequired\fP for
+the static configuration.
+T}
+_
+T{
+DNS
+T}	T{
+IPv4 address string
+.sp
+The IPv4 address of the Domain Name System (DNS). This field is
+\fIoptional\fP\&. DNS setting can be used to override the DNS entries received
+from the DHCP server.
+T}
+_
+T{
+Netmask
+T}	T{
+IPv4 address string
+.sp
+The IPv4 address of the subnet. This field is \fIoptional\fP\&. 255.255.255.0
+is used as default Netmask.
+T}
+_
+T{
+Broadcast
+T}	T{
+IPv4 address string
+.sp
+The IPv4 address to be used for the broadcast. This field is \fIoptional\fP\&.
+T}
+_
+T{
+DomainName
+T}	T{
+string
+.sp
+The DomainName is the name of the local Internet domain. This field is
+\fIoptional\fP\&. DomainName setting can be used to override the DomainName
+value obtained from the DHCP server.
+T}
+_
+.TE
 .SS Embedded PEMs
 .sp
 Rather than including an absolute path to a PEM file (for certificates and

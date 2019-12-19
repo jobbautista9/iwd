@@ -29,6 +29,7 @@
 #include <errno.h>
 #include <ell/ell.h>
 
+#include "src/crypto.h"
 #include "src/missing.h"
 #include "src/eap.h"
 #include "src/eap-private.h"
@@ -40,6 +41,12 @@
  * PEAPv0: draft-kamath-pppext-peapv0-00
  * PEAPv1: draft-josefsson-pppext-eap-tls-eap-05
  */
+
+struct peap_state {
+	struct eap_state *phase2;
+
+	uint8_t key[128];
+};
 
 static void eap_peap_phase2_send_response(const uint8_t *pdu, size_t pdu_len,
 								void *user_data)
@@ -62,6 +69,7 @@ static void eap_peap_phase2_send_response(const uint8_t *pdu, size_t pdu_len,
 static void eap_peap_phase2_complete(enum eap_result result, void *user_data)
 {
 	struct eap_state *eap = user_data;
+	struct peap_state *peap_state;
 
 	l_debug("result: %d", result);
 
@@ -90,6 +98,12 @@ static void eap_peap_phase2_complete(enum eap_result result, void *user_data)
 		return;
 	}
 
+	peap_state = eap_tls_common_get_variant_data(eap);
+
+	eap_set_key_material(eap, peap_state->key + 0, 64, NULL, 0, NULL,
+								0, NULL, 0);
+	explicit_bzero(peap_state->key, sizeof(peap_state->key));
+
 	eap_method_success(eap);
 }
 
@@ -97,54 +111,208 @@ static void eap_peap_phase2_complete(enum eap_result result, void *user_data)
  * PEAPv0: draft-kamath-pppext-peapv0-00, Section 2
  */
 #define EAP_EXTENSIONS_HEADER_LEN 5
-#define EAP_EXTENSIONS_AVP_HEADER_LEN 4
+#define EAP_EXTENSIONS_TLV_HEADER_LEN 4
+#define EAP_EXTENSIONS_TLV_M_BIT_MASK 0x8000
 
-enum eap_extensions_avp_type {
+enum eap_extensions_tlv_type {
 	/* Reserved = 0x0000, */
 	/* Reserved = 0x0001, */
 	/* Reserved = 0x0002, */
-	EAP_EXTENSIONS_AVP_TYPE_RESULT = 0x8003,
+	EAP_EXTENSIONS_TLV_TYPE_RESULT        = 0x8003,
+	EAP_EXTENSIONS_TLV_TYPE_CRYPTOBINDING = 0x000C,
 };
+
+enum TLV_CRYPTOBINDING_TYPE {
+	TLV_CRYPTOBINDING_TYPE_REQUEST =  0,
+	TLV_CRYPTOBINDING_TYPE_RESPONSE = 1,
+};
+
+static bool cryptobinding_tlv_generate_csk(struct eap_state *eap, uint8_t *imck)
+{
+	struct peap_state *peap_state = eap_tls_common_get_variant_data(eap);
+	static const char *label = "Session Key Generating Function";
+
+	if (!prf_plus_sha1(imck, 40, label, strlen(label), "\00", 1,
+				peap_state->key, sizeof(peap_state->key)))
+		return false;
+
+	return true;
+}
+
+static bool cryptobinding_tlv_generate_imck(struct eap_state *eap,
+							uint8_t *imck_out)
+{
+	struct peap_state *peap_state = eap_tls_common_get_variant_data(eap);
+	static const char *label = "Inner Methods Compound Keys";
+	uint8_t isk[32];
+
+	memset(isk, 0, sizeof(isk));
+
+	if (!prf_plus_sha1(peap_state->key, 40, label, strlen(label),
+					isk, sizeof(isk), imck_out, 60))
+		return false;
+
+	return true;
+}
+
+static int eap_extensions_handle_cryptobinding_tlv(struct eap_state *eap,
+							const uint8_t *data,
+							uint16_t tlv_value_len,
+							uint8_t *response)
+{
+	static const uint8_t cryptobinding_val_len = 56;
+	static const uint8_t cryptobinding_compound_mac_len = 20;
+	static const uint8_t cryptobinding_nonce_len = 32;
+	const uint8_t *nonce;
+	const uint8_t *server_compound_mac;
+	uint8_t client_compound_mac[cryptobinding_compound_mac_len];
+	const uint8_t *cryptobinding_tlv_value;
+	uint8_t buf[61];
+	uint8_t imck[60];
+
+	l_debug("");
+
+	if (tlv_value_len != cryptobinding_val_len)
+		return -EBADMSG;
+
+	cryptobinding_tlv_value = data;
+
+	/* Reserved byte: must be ignored on receipt. */
+	data += 1;
+
+	/* Version byte: must be set to 0. */
+	if (*data)
+		return -EBADMSG;
+
+	data += 1;
+
+	/* RecvVersion byte: must be set to 0. */
+	if (*data)
+		return -EBADMSG;
+
+	data += 1;
+
+	/* SubType byte: cryptobinding TLV request. */
+	if (*data != TLV_CRYPTOBINDING_TYPE_REQUEST)
+		return -EBADMSG;
+
+	data += 1;
+
+	nonce = data;
+	data += cryptobinding_nonce_len;
+
+	server_compound_mac = data;
+
+	l_put_be16(EAP_EXTENSIONS_TLV_TYPE_CRYPTOBINDING, &buf[0]);
+	l_put_be16(tlv_value_len, &buf[2]);
+	memcpy(&buf[4], cryptobinding_tlv_value,
+					4 + cryptobinding_nonce_len);
+	memset(&buf[EAP_EXTENSIONS_TLV_HEADER_LEN + 4 +
+						cryptobinding_nonce_len],
+					0, cryptobinding_compound_mac_len);
+	buf[60] = EAP_TYPE_PEAP;
+
+	if (!cryptobinding_tlv_generate_imck(eap, imck)) {
+		l_error("PEAP: Failed to generate IMCK to validate "
+						"server compound MAC.");
+
+		return -EIO;
+	}
+
+	if (!hmac_sha1(imck + 40, 20, buf, sizeof(buf), client_compound_mac,
+					cryptobinding_compound_mac_len)) {
+		l_error("PEAP: Failed to generate compound MAC to validate "
+						"server compound MAC.");
+
+		return -EIO;
+	}
+
+	if (memcmp(server_compound_mac, client_compound_mac,
+					cryptobinding_compound_mac_len)) {
+		l_error("PEAP: Generated compound MAC and server compound MAC "
+							"don't match.");
+		/*
+		 * Ignore the Crypto-Binding TLV in the case of unmatched
+		 * compound MACs.
+		 */
+		return 0;
+	}
+
+	/* Build response Crypto-Binding TLV */
+	data = response;
+
+	l_put_be16(EAP_EXTENSIONS_TLV_TYPE_CRYPTOBINDING, response);
+	response += 2;
+
+	l_put_be16(cryptobinding_val_len, response);
+	response += 2;
+
+	/* Reserved - must be set to 0. */
+	l_put_u8(0, response);
+	response += 1;
+
+	/* Version */
+	l_put_u8(EAP_TLS_VERSION_0, response);
+	response += 1;
+
+	/* Received Version */
+	l_put_u8(EAP_TLS_VERSION_0, response);
+	response += 1;
+
+	/* Sub-Type */
+	l_put_u8(TLV_CRYPTOBINDING_TYPE_RESPONSE, response);
+	response += 1;
+
+	memcpy(response, nonce, cryptobinding_nonce_len);
+	response += cryptobinding_nonce_len;
+
+	memcpy(buf, data, EAP_EXTENSIONS_TLV_HEADER_LEN + 4 +
+						cryptobinding_nonce_len);
+
+	if (!hmac_sha1(imck + 40, 20, buf, sizeof(buf), client_compound_mac,
+					cryptobinding_compound_mac_len)) {
+		l_error("PEAP: Failed to generate client compound MAC.");
+
+		return -EIO;
+	}
+
+	memcpy(response, client_compound_mac, cryptobinding_compound_mac_len);
+
+	if (!cryptobinding_tlv_generate_csk(eap, imck)) {
+		l_error("PEAP: Failed to generate Compound Session Key.");
+
+		return -EIO;
+	}
+
+	return EAP_EXTENSIONS_TLV_HEADER_LEN + cryptobinding_val_len;
+}
 
 enum eap_extensions_result {
 	EAP_EXTENSIONS_RESULT_SUCCCESS = 1,
 	EAP_EXTENSIONS_RESULT_FAILURE  = 2,
 };
 
-static int eap_extensions_handle_result_avp(struct eap_state *eap,
+static int eap_extensions_handle_result_tlv(struct eap_state *eap,
 						const uint8_t *data,
 						size_t data_len,
-						uint8_t *response)
+						uint8_t *response,
+						uint8_t *result)
 {
-	uint16_t type;
-	uint16_t len;
-	uint16_t result;
+	static const uint8_t result_tlv_len = 2;
+	struct peap_state *peap_state;
 
-	if (data_len < EAP_EXTENSIONS_AVP_HEADER_LEN + 2)
-		return -ENOENT;
+	if (data_len != result_tlv_len)
+		return -EBADMSG;
 
-	type = l_get_be16(data);
+	*result = l_get_be16(data);
 
-	if (type != EAP_EXTENSIONS_AVP_TYPE_RESULT)
-		return -ENOENT;
+	l_debug("result: %d", *result);
 
-	data += 2;
-
-	len = l_get_be16(data);
-
-	if (len != 2)
-		return -ENOENT;
-
-	data += 2;
-
-	result = l_get_be16(data);
-
-	l_debug("result: %d", result);
-
-	switch (result) {
+	switch (*result) {
 	case EAP_EXTENSIONS_RESULT_SUCCCESS:
-		result = eap_method_is_success(
-				eap_tls_common_get_variant_data(eap)) ?
+		peap_state = eap_tls_common_get_variant_data(eap);
+
+		*result = eap_method_is_success(peap_state->phase2) ?
 					EAP_EXTENSIONS_RESULT_SUCCCESS :
 					EAP_EXTENSIONS_RESULT_FAILURE;
 		/* fall through */
@@ -154,13 +322,74 @@ static int eap_extensions_handle_result_avp(struct eap_state *eap,
 		return -ENOENT;
 	}
 
-	l_put_be16(EAP_EXTENSIONS_AVP_TYPE_RESULT,
-					&response[EAP_EXTENSIONS_HEADER_LEN]);
-	l_put_be16(2, &response[EAP_EXTENSIONS_HEADER_LEN + 2]);
-	l_put_be16(result, &response[EAP_EXTENSIONS_HEADER_LEN +
-						EAP_EXTENSIONS_AVP_HEADER_LEN]);
+	/* Build response Result TLV */
 
-	return result;
+	l_put_be16(EAP_EXTENSIONS_TLV_TYPE_RESULT, response);
+	response += 2;
+
+	l_put_be16(result_tlv_len, response);
+	response += 2;
+
+	l_put_be16(*result, response);
+
+	return EAP_EXTENSIONS_TLV_HEADER_LEN + result_tlv_len;
+}
+
+static int eap_extensions_process_tlvs(struct eap_state *eap,
+						const uint8_t *data,
+						size_t data_len,
+						uint8_t *response,
+						uint8_t *result)
+{
+	int response_len = 0;
+	uint16_t tlv_type;
+	uint16_t tlv_value_len;
+
+	while (data_len >= EAP_EXTENSIONS_TLV_HEADER_LEN) {
+		int response_tlv_len = 0;
+
+		tlv_type = l_get_be16(data);
+		data += 2;
+
+		tlv_value_len = l_get_be16(data);
+		data += 2;
+
+		data_len -= EAP_EXTENSIONS_TLV_HEADER_LEN;
+
+		if (data_len < tlv_value_len)
+			return -EBADMSG;
+
+		switch (tlv_type) {
+		case EAP_EXTENSIONS_TLV_TYPE_RESULT:
+			response_tlv_len = eap_extensions_handle_result_tlv(eap,
+						data, tlv_value_len, response,
+						result);
+
+			break;
+		case EAP_EXTENSIONS_TLV_TYPE_CRYPTOBINDING:
+			response_tlv_len =
+				eap_extensions_handle_cryptobinding_tlv(eap,
+						data, tlv_value_len, response);
+
+			break;
+		default:
+			if (tlv_type & EAP_EXTENSIONS_TLV_M_BIT_MASK)
+				return -ENOENT;
+
+			break;
+		}
+
+		if (response_tlv_len < 0)
+			return response_tlv_len;
+
+		response += response_tlv_len;
+		response_len += response_tlv_len;
+
+		data += tlv_value_len;
+		data_len -= tlv_value_len;
+	}
+
+	return response_len;
 }
 
 static void eap_extensions_handle_request(struct eap_state *eap,
@@ -168,24 +397,38 @@ static void eap_extensions_handle_request(struct eap_state *eap,
 							const uint8_t *pkt,
 							size_t len)
 {
-	uint8_t response[EAP_EXTENSIONS_HEADER_LEN +
-					EAP_EXTENSIONS_AVP_HEADER_LEN + 2];
-	int r = eap_extensions_handle_result_avp(eap, pkt, len, response);
+	struct peap_state *peap_state;
+	uint8_t result = EAP_EXTENSIONS_RESULT_FAILURE;
+	/*
+	 * The buffer size is chosen to satisfy the needs of the two supported
+	 * TLVs.
+	 */
+	uint8_t response[256];
+	int response_len;
 
-	if (r < 0)
+	response_len = eap_extensions_process_tlvs(eap, pkt, len,
+					&response[EAP_EXTENSIONS_HEADER_LEN],
+					&result);
+
+	if (response_len < 0) {
+		l_debug("PEAP: Failed to process TLVs %d", response_len);
+
 		return;
+	}
+
+	response_len += EAP_EXTENSIONS_HEADER_LEN;
 
 	response[0] = EAP_CODE_RESPONSE;
 	response[1] = id;
-	l_put_be16(sizeof(response), &response[2]);
+	l_put_be16(response_len, &response[2]);
 	response[4] = EAP_TYPE_EXTENSIONS;
 
-	eap_peap_phase2_send_response(response, sizeof(response), eap);
+	eap_peap_phase2_send_response(response, response_len, eap);
 
 	eap_discard_success_and_failure(eap, false);
 	eap_tls_common_set_completed(eap);
 
-	if (r != EAP_EXTENSIONS_RESULT_SUCCCESS) {
+	if (result != EAP_EXTENSIONS_RESULT_SUCCCESS) {
 		eap_tls_common_set_phase2_failed(eap);
 
 		eap_tls_common_tunnel_close(eap);
@@ -193,13 +436,19 @@ static void eap_extensions_handle_request(struct eap_state *eap,
 		return;
 	}
 
+	peap_state = eap_tls_common_get_variant_data(eap);
+
+	eap_set_key_material(eap, peap_state->key + 0, 64, NULL, 0, NULL,
+								0, NULL, 0);
+	explicit_bzero(peap_state->key, sizeof(peap_state->key));
+
 	eap_method_success(eap);
 }
 
 static bool eap_peap_tunnel_ready(struct eap_state *eap,
 						const char *peer_identity)
 {
-	uint8_t msk_emsk[128];
+	struct peap_state *peap_state = eap_tls_common_get_variant_data(eap);
 
 	/*
 	* PEAPv1: draft-josefsson-pppext-eap-tls-eap-05, Section 2.1.1
@@ -211,10 +460,7 @@ static bool eap_peap_tunnel_ready(struct eap_state *eap,
 
 	/* MSK, EMSK and challenge derivation */
 	eap_tls_common_tunnel_prf_get_bytes(eap, true, "client EAP encryption",
-								msk_emsk, 128);
-
-	eap_set_key_material(eap, msk_emsk + 0, 64, NULL, 0, NULL, 0, NULL, 0);
-	explicit_bzero(msk_emsk, sizeof(msk_emsk));
+						peap_state->key, 128);
 
 	eap_tls_common_send_empty_response(eap);
 
@@ -225,6 +471,7 @@ static bool eap_peap_tunnel_handle_request(struct eap_state *eap,
 							const uint8_t *pkt,
 								size_t len)
 {
+	struct peap_state *peap_state;
 	uint8_t id;
 
 	if (len > 4 && pkt[4] == EAP_TYPE_EXTENSIONS) {
@@ -247,6 +494,8 @@ static bool eap_peap_tunnel_handle_request(struct eap_state *eap,
 		return true;
 	}
 
+	peap_state = eap_tls_common_get_variant_data(eap);
+
 	if (eap_tls_common_get_negotiated_version(eap) == EAP_TLS_VERSION_0) {
 		if (len < 1)
 			return false;
@@ -259,32 +508,41 @@ static bool eap_peap_tunnel_handle_request(struct eap_state *eap,
 		 */
 		eap_save_last_id(eap, &id);
 
-		__eap_handle_request(eap_tls_common_get_variant_data(eap), id,
-								pkt, len);
+		__eap_handle_request(peap_state->phase2, id, pkt, len);
 
 		return true;
 	}
 
-	eap_rx_packet(eap_tls_common_get_variant_data(eap), pkt, len);
+	eap_rx_packet(peap_state->phase2, pkt, len);
 
 	return true;
 }
 
-static void eap_peap_state_reset(void *phase2)
+static void eap_peap_state_reset(void *variant_data)
 {
-	if (!phase2)
+	struct peap_state *peap_state = variant_data;
+
+	if (!peap_state)
 		return;
 
-	eap_reset(phase2);
+	eap_reset(peap_state->phase2);
+
+	explicit_bzero(peap_state->key, sizeof(peap_state->key));
 }
 
-static void eap_peap_state_destroy(void *phase2)
+static void eap_peap_state_destroy(void *variant_data)
 {
-	if (!phase2)
+	struct peap_state *peap_state = variant_data;
+
+	if (!peap_state)
 		return;
 
-	eap_reset(phase2);
-	eap_free(phase2);
+	eap_reset(peap_state->phase2);
+	eap_free(peap_state->phase2);
+
+	explicit_bzero(peap_state->key, sizeof(peap_state->key));
+
+	l_free(peap_state);
 }
 
 static int eap_peap_settings_check(struct l_settings *settings,
@@ -323,6 +581,7 @@ static bool eap_peap_settings_load(struct eap_state *eap,
 						const char *prefix)
 {
 	char setting_key_prefix[72];
+	struct peap_state *peap_state;
 	void *phase2;
 
 	phase2 = eap_new(eap_peap_phase2_send_response,
@@ -343,11 +602,14 @@ static bool eap_peap_settings_load(struct eap_state *eap,
 		return false;
 	}
 
+	peap_state = l_new(struct peap_state, 1);
+	peap_state->phase2 = phase2;
+
 	snprintf(setting_key_prefix, sizeof(setting_key_prefix), "%sPEAP-",
 									prefix);
 
 	if (!eap_tls_common_settings_load(eap, settings, setting_key_prefix,
-							&eap_ttls_ops, phase2))
+						&eap_ttls_ops, peap_state))
 		return false;
 
 	return true;
