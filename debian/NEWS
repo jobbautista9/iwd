@@ -1,0 +1,9 @@
+iwd (1.4-1) unstable; urgency=medium
+
+  This release stores the iwctl history file according to the XDG Base
+  Directory Specification, under XDG_DATA_HOME (usually
+  ~/.local/share/iwctl/history).
+  The old file in ~/.iwctl_history is neither moved or cleaned up, so you are
+  advised to do that yourself.
+
+ -- Andreas Henriksson <andreas@fatal.se>  Thu, 19 Dec 2019 21:36:43 +0100
