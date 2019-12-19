@@ -1,2 +1,1 @@
 0001-scan-Fix-crash-when-scan-is-triggered-outside-iwd.patch
-0002-netdev-Use-EOPNOTSUPP-instead-of-ENOTSUPP.patch
