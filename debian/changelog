@@ -1,3 +1,12 @@
+iwd (1.4-1) unstable; urgency=medium
+
+  * New upstream release.
+  * Add debian/NEWS about iwctl history file non-migration.
+  * Revert "Add patch suggested by upstream for EOPNOTSUPP"
+  * Revert "Cherry-pick patch from upstream fixing crash"
+
+ -- Andreas Henriksson <andreas@fatal.se>  Thu, 19 Dec 2019 21:40:03 +0100
+
 iwd (1.2-2) unstable; urgency=medium
 
   * Cherry-pick patch from upstream fixing crash (Closes: #946639)
