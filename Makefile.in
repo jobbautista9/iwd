@@ -286,13 +286,14 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/anqp.h src/anqp.c src/anqputil.h src/anqputil.c \
 	src/netconfig.h src/netconfig.c src/resolve.h src/resolve.c \
 	src/hotspot.c src/p2putil.h src/p2putil.c src/module.h \
-	src/module.c src/rrm.c src/eap.c src/eap.h src/eap-private.h \
-	src/eap-wsc.c src/eap-wsc.h src/eap-md5.c src/eap-tls.c \
-	src/eap-ttls.c src/eap-mschapv2.c src/eap-mschapv2.h \
-	src/eap-sim.c src/eap-aka.c src/eap-peap.c src/eap-gtc.c \
-	src/eap-pwd.c src/util.h src/util.c src/crypto.h src/crypto.c \
-	src/wscutil.h src/wscutil.c src/simutil.h src/simutil.c \
-	src/simauth.h src/simauth.c src/watchlist.h src/watchlist.c \
+	src/module.c src/rrm.c src/frame-xchg.h src/frame-xchg.c \
+	src/eap.c src/eap.h src/eap-private.h src/eap-wsc.c \
+	src/eap-wsc.h src/eap-md5.c src/eap-tls.c src/eap-ttls.c \
+	src/eap-mschapv2.c src/eap-mschapv2.h src/eap-sim.c \
+	src/eap-aka.c src/eap-peap.c src/eap-gtc.c src/eap-pwd.c \
+	src/util.h src/util.c src/crypto.h src/crypto.c src/wscutil.h \
+	src/wscutil.c src/simutil.h src/simutil.c src/simauth.h \
+	src/simauth.c src/watchlist.h src/watchlist.c \
 	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
 	src/mschaputil.c plugins/sim_hardcoded.c plugins/ofono.c
 am__objects_3 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
@@ -328,8 +329,8 @@ am__objects_6 = $(am__objects_4) $(am__objects_5)
 @DAEMON_TRUE@	src/anqputil.$(OBJEXT) src/netconfig.$(OBJEXT) \
 @DAEMON_TRUE@	src/resolve.$(OBJEXT) src/hotspot.$(OBJEXT) \
 @DAEMON_TRUE@	src/p2putil.$(OBJEXT) src/module.$(OBJEXT) \
-@DAEMON_TRUE@	src/rrm.$(OBJEXT) $(am__objects_3) \
-@DAEMON_TRUE@	$(am__objects_6)
+@DAEMON_TRUE@	src/rrm.$(OBJEXT) src/frame-xchg.$(OBJEXT) \
+@DAEMON_TRUE@	$(am__objects_3) $(am__objects_6)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am__tools_hwsim_SOURCES_DIST = tools/hwsim.c src/mpdu.h src/util.h \
 	src/util.c src/storage.h src/storage.c src/common.h \
@@ -530,7 +531,8 @@ am__depfiles_remade = client/$(DEPDIR)/ad-hoc.Po \
 	src/$(DEPDIR)/eap-tls.Po src/$(DEPDIR)/eap-ttls.Po \
 	src/$(DEPDIR)/eap-wsc.Po src/$(DEPDIR)/eap.Po \
 	src/$(DEPDIR)/eapol.Po src/$(DEPDIR)/eapolutil.Po \
-	src/$(DEPDIR)/erp.Po src/$(DEPDIR)/fils.Po src/$(DEPDIR)/ft.Po \
+	src/$(DEPDIR)/erp.Po src/$(DEPDIR)/fils.Po \
+	src/$(DEPDIR)/frame-xchg.Po src/$(DEPDIR)/ft.Po \
 	src/$(DEPDIR)/handshake.Po src/$(DEPDIR)/hotspot.Po \
 	src/$(DEPDIR)/ie.Po src/$(DEPDIR)/knownnetworks.Po \
 	src/$(DEPDIR)/main.Po src/$(DEPDIR)/manager.Po \
@@ -1214,6 +1216,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/p2putil.h src/p2putil.c \
 @DAEMON_TRUE@					src/module.h src/module.c \
 @DAEMON_TRUE@					src/rrm.c \
+@DAEMON_TRUE@					src/frame-xchg.h src/frame-xchg.c \
 @DAEMON_TRUE@					$(eap_sources) \
 @DAEMON_TRUE@					$(builtin_sources)
 
@@ -1810,6 +1813,8 @@ src/hotspot.$(OBJEXT): src/$(am__dirstamp) \
 src/module.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/rrm.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
+src/frame-xchg.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
 src/eap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/eap-wsc.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
@@ -2126,6 +2131,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eapolutil.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/erp.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/fils.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/frame-xchg.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/ft.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/handshake.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/hotspot.Po@am__quote@ # am--include-marker
@@ -3193,6 +3199,7 @@ distclean: distclean-am
 	-rm -f src/$(DEPDIR)/eapolutil.Po
 	-rm -f src/$(DEPDIR)/erp.Po
 	-rm -f src/$(DEPDIR)/fils.Po
+	-rm -f src/$(DEPDIR)/frame-xchg.Po
 	-rm -f src/$(DEPDIR)/ft.Po
 	-rm -f src/$(DEPDIR)/handshake.Po
 	-rm -f src/$(DEPDIR)/hotspot.Po
@@ -3402,6 +3409,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f src/$(DEPDIR)/eapolutil.Po
 	-rm -f src/$(DEPDIR)/erp.Po
 	-rm -f src/$(DEPDIR)/fils.Po
+	-rm -f src/$(DEPDIR)/frame-xchg.Po
 	-rm -f src/$(DEPDIR)/ft.Po
 	-rm -f src/$(DEPDIR)/handshake.Po
 	-rm -f src/$(DEPDIR)/hotspot.Po

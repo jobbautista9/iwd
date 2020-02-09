@@ -602,6 +602,8 @@ int wsc_parse_wsc_nack(const uint8_t *pdu, uint32_t len, struct wsc_nack *out);
 
 int wsc_parse_wsc_done(const uint8_t *pdu, uint32_t len, struct wsc_done *out);
 
+uint8_t *wsc_build_credential(const struct wsc_credential *in, size_t *out_len);
+
 uint8_t *wsc_build_probe_request(const struct wsc_probe_request *probe_request,
 				size_t *out_len);
 uint8_t *wsc_build_association_request(
@@ -636,6 +638,10 @@ uint8_t *wsc_build_m7_encrypted_settings(
 				size_t *out_len);
 uint8_t *wsc_build_m8(const struct wsc_m8 *m8, const uint8_t *encrypted,
 			size_t encrypted_len, size_t *out_len);
+uint8_t *wsc_build_m8_encrypted_settings(
+				const struct wsc_m8_encrypted_settings *in,
+				const struct wsc_credential *creds,
+				unsigned int creds_cnt, size_t *out_len);
 
 uint8_t *wsc_build_wsc_ack(const struct wsc_ack *ack, size_t *out_len);
 uint8_t *wsc_build_wsc_nack(const struct wsc_nack *nack, size_t *out_len);

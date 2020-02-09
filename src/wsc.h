@@ -30,3 +30,29 @@ struct wsc_credentials_info {
 	uint8_t addr[6];
 	bool has_passphrase;
 };
+
+struct wsc_enrollee;
+
+typedef void (*wsc_done_cb_t)(int err, struct wsc_credentials_info *creds,
+				unsigned int n_creds, void *user_data);
+
+struct wsc_enrollee *wsc_enrollee_new(struct netdev *netdev,
+					struct scan_bss *target,
+					const char *pin,
+					struct iovec *ies, unsigned int ies_num,
+					wsc_done_cb_t done_cb, void *user_data);
+void wsc_enrollee_cancel(struct wsc_enrollee *wsce, bool defer_cb);
+void wsc_enrollee_free(struct wsc_enrollee *wsce);
+
+struct wsc_dbus {
+	struct l_dbus_message *pending_connect;
+	struct l_dbus_message *pending_cancel;
+
+	const char *(*get_path)(struct wsc_dbus *wsc);
+	void (*connect)(struct wsc_dbus *wsc, const char *pin);
+	void (*cancel)(struct wsc_dbus *wsc);
+	void (*remove)(struct wsc_dbus *wsc);
+};
+
+bool wsc_dbus_add_interface(struct wsc_dbus *wsc);
+void wsc_dbus_remove_interface(struct wsc_dbus *wsc);
