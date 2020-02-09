@@ -61,6 +61,7 @@
 #include "src/fils.h"
 #include "src/auth-proto.h"
 #include "src/rtnlutil.h"
+#include "src/frame-xchg.h"
 
 #ifndef ENOTSUPP
 #define ENOTSUPP 524
@@ -124,13 +125,12 @@ struct netdev {
 	int8_t cur_rssi;
 	struct l_timeout *rssi_poll_timeout;
 	uint32_t rssi_poll_cmd_id;
+	uint8_t set_mac_once[6];
 
 	uint32_t set_powered_cmd_id;
 	netdev_command_cb_t set_powered_cb;
 	void *set_powered_user_data;
 	netdev_destroy_func_t set_powered_destroy;
-
-	struct watchlist frame_watches;
 
 	struct watchlist station_watches;
 
@@ -146,7 +146,6 @@ struct netdev {
 	bool ignore_connect_event : 1;
 	bool expect_connect_failure : 1;
 	bool aborting : 1;
-	bool mac_randomize_once : 1;
 	bool events_ready : 1;
 };
 
@@ -160,13 +159,6 @@ struct netdev_watch {
 	uint32_t id;
 	netdev_watch_func_t callback;
 	void *user_data;
-};
-
-struct netdev_frame_watch {
-	uint16_t frame_type;
-	uint8_t *prefix;
-	size_t prefix_len;
-	struct watchlist_item super;
 };
 
 static struct l_netlink *rtnl = NULL;
@@ -235,7 +227,7 @@ struct handshake_state *netdev_handshake_state_new(struct netdev *netdev)
 	nhs->netdev = netdev;
 	/*
 	 * Since GTK/IGTK are optional (NO_GROUP_TRAFFIC), we set them as
-	 * 'installed' upon initalization. If/When the gtk/igtk callback is
+	 * 'installed' upon initialization. If/When the gtk/igtk callback is
 	 * called they will get set to false until we have received a successful
 	 * callback from nl80211. From these callbacks we can check that all
 	 * the keys have been installed, and only then trigger the handshake
@@ -628,7 +620,6 @@ static void netdev_free(void *data)
 
 	scan_wdev_remove(netdev->wdev_id);
 
-	watchlist_destroy(&netdev->frame_watches);
 	watchlist_destroy(&netdev->station_watches);
 
 	l_io_destroy(netdev->pae_io);
@@ -1545,7 +1536,7 @@ static void netdev_qos_map_cb(struct l_genl_msg *msg, void *user_data)
  * to let the kernel know is to receive the IE, then give it right back...
  *
  * The kernel/driver/firmware *could* simply obtain this information as the
- * frame comes in and not require userspace to forward it back... but thats a
+ * frame comes in and not require userspace to forward it back... but that's a
  * battle for another day.
  */
 static void netdev_send_qos_map_set(struct netdev *netdev,
@@ -2410,7 +2401,7 @@ static int netdev_connect_common(struct netdev *netdev,
 	netdev->handshake = hs;
 	netdev->sm = sm;
 	netdev->frequency = bss->frequency;
-	netdev->cur_rssi_low = false; /* Gets udpated on the 1st CQM event */
+	netdev->cur_rssi_low = false; /* Gets updated on the 1st CQM event */
 	netdev->cur_rssi = bss->signal_strength / 100;
 	netdev_rssi_level_init(netdev);
 
@@ -2814,13 +2805,13 @@ static void netdev_ft_request_cb(struct l_genl_msg *msg, void *user_data)
 	}
 }
 
-static void netdev_ft_response_frame_event(struct netdev *netdev,
-					const struct mmpdu_header *hdr,
+static void netdev_ft_response_frame_event(const struct mmpdu_header *hdr,
 					const void *body, size_t body_len,
-					void *user_data)
+					int rssi, void *user_data)
 {
 	int ret;
 	uint16_t status_code = MMPDU_STATUS_CODE_UNSPECIFIED;
+	struct netdev *netdev = user_data;
 
 	if (!netdev->ap || !netdev->in_ft)
 		return;
@@ -2841,11 +2832,12 @@ ft_error:
 	return;
 }
 
-static void netdev_qos_map_frame_event(struct netdev *netdev,
-					const struct mmpdu_header *hdr,
+static void netdev_qos_map_frame_event(const struct mmpdu_header *hdr,
 					const void *body, size_t body_len,
-					void *user_data)
+					int rssi, void *user_data)
 {
+	struct netdev *netdev = user_data;
+
 	/* No point telling the kernel */
 	if (!netdev->connected)
 		return;
@@ -3090,11 +3082,12 @@ int netdev_neighbor_report_req(struct netdev *netdev,
 	return 0;
 }
 
-static void netdev_neighbor_report_frame_event(struct netdev *netdev,
-					const struct mmpdu_header *hdr,
+static void netdev_neighbor_report_frame_event(const struct mmpdu_header *hdr,
 					const void *body, size_t body_len,
-					void *user_data)
+					int rssi, void *user_data)
 {
+	struct netdev *netdev = user_data;
+
 	if (body_len < 3) {
 		l_debug("Neighbor Report frame too short");
 		return;
@@ -3125,13 +3118,13 @@ static void netdev_sa_query_resp_cb(struct l_genl_msg *msg,
 		l_debug("error sending SA Query request");
 }
 
-static void netdev_sa_query_req_frame_event(struct netdev *netdev,
-		const struct mmpdu_header *hdr,
-		const void *body, size_t body_len,
-		void *user_data)
+static void netdev_sa_query_req_frame_event(const struct mmpdu_header *hdr,
+					const void *body, size_t body_len,
+					int rssi, void *user_data)
 {
 	uint8_t sa_resp[4];
 	uint16_t transaction;
+	struct netdev *netdev = user_data;
 
 	if (body_len < 4) {
 		l_debug("SA Query request too short");
@@ -3163,11 +3156,12 @@ static void netdev_sa_query_req_frame_event(struct netdev *netdev,
 	}
 }
 
-static void netdev_sa_query_resp_frame_event(struct netdev *netdev,
-		const struct mmpdu_header *hdr,
-		const void *body, size_t body_len,
-		void *user_data)
+static void netdev_sa_query_resp_frame_event(const struct mmpdu_header *hdr,
+					const void *body, size_t body_len,
+					int rssi, void *user_data)
 {
+	struct netdev *netdev = user_data;
+
 	if (body_len < 4) {
 		l_debug("SA Query frame too short");
 		return;
@@ -3400,74 +3394,6 @@ static void netdev_mlme_notify(struct l_genl_msg *msg, void *user_data)
 	}
 }
 
-struct frame_prefix_info {
-	uint16_t frame_type;
-	const uint8_t *body;
-	size_t body_len;
-};
-
-static bool netdev_frame_watch_match_prefix(const void *a, const void *b)
-{
-	const struct watchlist_item *item = a;
-	const struct netdev_frame_watch *fw =
-		l_container_of(item, struct netdev_frame_watch, super);
-	const struct frame_prefix_info *info = b;
-
-	return fw->frame_type == info->frame_type &&
-		fw->prefix_len <= info->body_len &&
-		(fw->prefix_len == 0 ||
-		 !memcmp(fw->prefix, info->body, fw->prefix_len));
-}
-
-static void netdev_mgmt_frame_event(struct l_genl_msg *msg,
-					struct netdev *netdev)
-{
-	struct l_genl_attr attr;
-	uint16_t type, len, frame_len;
-	const void *data;
-	const struct mmpdu_header *mpdu = NULL;
-	const uint8_t *body;
-	struct frame_prefix_info info;
-
-	if (!l_genl_attr_init(&attr, msg))
-		return;
-
-	while (l_genl_attr_next(&attr, &type, &len, &data)) {
-		switch (type) {
-		case NL80211_ATTR_FRAME:
-			if (mpdu)
-				return;
-
-			mpdu = mpdu_validate(data, len);
-			if (!mpdu)
-				l_error("Frame didn't validate as MMPDU");
-
-			frame_len = len;
-			break;
-		}
-	}
-
-	if (!mpdu)
-		return;
-
-	body = mmpdu_body(mpdu);
-
-	if (memcmp(mpdu->address_1, netdev->addr, 6) &&
-			!util_is_broadcast_address(mpdu->address_1))
-		return;
-
-	/* Only match the frame type and subtype like the kernel does */
-#define FC_FTYPE_STYPE_MASK 0x00fc
-	info.frame_type = l_get_le16(mpdu) & FC_FTYPE_STYPE_MASK;
-	info.body = (const uint8_t *) body;
-	info.body_len = (const uint8_t *) mpdu + frame_len - body;
-
-	WATCHLIST_NOTIFY_MATCHES(&netdev->frame_watches,
-					netdev_frame_watch_match_prefix, &info,
-					netdev_frame_watch_func_t,
-					netdev, mpdu, body, info.body_len);
-}
-
 static void netdev_pae_destroy(void *user_data)
 {
 	struct netdev *netdev = user_data;
@@ -3688,9 +3614,6 @@ static void netdev_unicast_notify(struct l_genl_msg *msg, void *user_data)
 		return;
 
 	switch (cmd) {
-	case NL80211_CMD_FRAME:
-		netdev_mgmt_frame_event(msg, netdev);
-		break;
 	case NL80211_CMD_CONTROL_PORT_FRAME:
 		netdev_control_port_frame_event(msg, netdev);
 		break;
@@ -4227,6 +4150,20 @@ static void netdev_set_mac_cb(int error, uint16_t type, const void *data,
 					netdev_initial_up_cb, netdev, NULL);
 }
 
+static bool netdev_check_set_mac(struct netdev *netdev)
+{
+	if (util_mem_is_zero(netdev->set_mac_once, 6))
+		return false;
+
+	l_debug("Setting initial address on ifindex: %d to: " MAC,
+		netdev->index, MAC_STR(netdev->set_mac_once));
+	netdev->set_powered_cmd_id =
+		rtnl_set_mac(rtnl, netdev->index, netdev->set_mac_once,
+				netdev_set_mac_cb, netdev, NULL);
+	memset(netdev->set_mac_once, 0, 6);
+	return true;
+}
+
 static void netdev_initial_down_cb(int error, uint16_t type, const void *data,
 					uint32_t len, void *user_data)
 {
@@ -4242,17 +4179,8 @@ static void netdev_initial_down_cb(int error, uint16_t type, const void *data,
 		return;
 	}
 
-	if (netdev->mac_randomize_once) {
-		uint8_t addr[ETH_ALEN];
-
-		wiphy_generate_random_address(netdev->wiphy, addr);
-		l_debug("Setting initial random address on "
-			"ifindex: %d to: "MAC, netdev->index, MAC_STR(addr));
-		netdev->set_powered_cmd_id =
-			rtnl_set_mac(rtnl, netdev->index, addr,
-					netdev_set_mac_cb, netdev, NULL);
+	if (netdev_check_set_mac(netdev))
 		return;
-	}
 
 	netdev->set_powered_cmd_id =
 		rtnl_set_powered(rtnl, netdev->index, true,
@@ -4294,91 +4222,14 @@ static void netdev_getlink_cb(int error, uint16_t type, const void *data,
 	 */
 	powered = netdev_get_is_up(netdev);
 
-	if (!powered && netdev->mac_randomize_once) {
-		uint8_t addr[ETH_ALEN];
-
-		wiphy_generate_random_address(netdev->wiphy, addr);
-		l_debug("Setting initial random address on "
-			"ifindex: %d to: "MAC, netdev->index, MAC_STR(addr));
-		netdev->set_powered_cmd_id =
-			rtnl_set_mac(rtnl, netdev->index, addr,
-					netdev_set_mac_cb, netdev, NULL);
+	if (!powered && netdev_check_set_mac(netdev))
 		return;
-	}
 
 	cb = powered ? netdev_initial_down_cb : netdev_initial_up_cb;
 
 	netdev->set_powered_cmd_id =
 		rtnl_set_powered(rtnl, ifi->ifi_index, !powered, cb, netdev,
 					NULL);
-}
-
-static void netdev_frame_watch_free(struct watchlist_item *item)
-{
-	struct netdev_frame_watch *fw =
-		l_container_of(item, struct netdev_frame_watch, super);
-
-	l_free(fw->prefix);
-	l_free(fw);
-}
-
-static const struct watchlist_ops netdev_frame_watch_ops = {
-	.item_free = netdev_frame_watch_free,
-};
-
-static void netdev_frame_cb(struct l_genl_msg *msg, void *user_data)
-{
-	if (l_genl_msg_get_error(msg) < 0)
-		l_error("Could not register frame watch type %04x: %i",
-			L_PTR_TO_UINT(user_data), l_genl_msg_get_error(msg));
-}
-
-uint32_t netdev_frame_watch_add(struct netdev *netdev, uint16_t frame_type,
-				const uint8_t *prefix, size_t prefix_len,
-				netdev_frame_watch_func_t handler,
-				void *user_data)
-{
-	struct netdev_frame_watch *fw;
-	struct l_genl_msg *msg;
-	struct frame_prefix_info info = { frame_type, prefix, prefix_len };
-	bool registered;
-	uint32_t id;
-
-	registered = l_queue_find(netdev->frame_watches.items,
-					netdev_frame_watch_match_prefix,
-					&info);
-
-	fw = l_new(struct netdev_frame_watch, 1);
-	fw->frame_type = frame_type;
-	fw->prefix = prefix_len ? l_memdup(prefix, prefix_len) : NULL;
-	fw->prefix_len = prefix_len;
-	id = watchlist_link(&netdev->frame_watches, &fw->super,
-						handler, user_data, NULL);
-
-	if (registered)
-		return id;
-
-	msg = l_genl_msg_new_sized(NL80211_CMD_REGISTER_FRAME, 32 + prefix_len);
-
-	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &netdev->index);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_FRAME_TYPE, 2, &frame_type);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_FRAME_MATCH,
-				prefix_len, prefix);
-
-	l_genl_family_send(nl80211, msg, netdev_frame_cb,
-			L_UINT_TO_PTR(frame_type), NULL);
-
-	return id;
-}
-
-bool netdev_frame_watch_remove(struct netdev *netdev, uint32_t id)
-{
-	/*
-	 * There's no way to unregister from notifications but that's not a
-	 * problem, we leave them active in the kernel but
-	 * netdev_mgmt_frame_event will ignore these events.
-	 */
-	return watchlist_remove(&netdev->frame_watches, id);
 }
 
 static struct l_io *pae_open(uint32_t ifindex)
@@ -4435,7 +4286,8 @@ error:
 	return NULL;
 }
 
-struct netdev *netdev_create_from_genl(struct l_genl_msg *msg, bool random_mac)
+struct netdev *netdev_create_from_genl(struct l_genl_msg *msg,
+					const uint8_t *set_mac)
 {
 	const char *ifname;
 	const uint8_t *ifaddr;
@@ -4495,7 +4347,9 @@ struct netdev *netdev_create_from_genl(struct l_genl_msg *msg, bool random_mac)
 	l_strlcpy(netdev->name, ifname, IFNAMSIZ);
 	netdev->wiphy = wiphy;
 	netdev->pae_over_nl80211 = pae_io == NULL;
-	netdev->mac_randomize_once = random_mac;
+
+	if (set_mac)
+		memcpy(netdev->set_mac_once, set_mac, 6);
 
 	if (pae_io) {
 		netdev->pae_io = pae_io;
@@ -4503,7 +4357,6 @@ struct netdev *netdev_create_from_genl(struct l_genl_msg *msg, bool random_mac)
 							netdev_pae_destroy);
 	}
 
-	watchlist_init(&netdev->frame_watches, &netdev_frame_watch_ops);
 	watchlist_init(&netdev->station_watches, NULL);
 
 	l_queue_push_tail(netdev_list, netdev);
@@ -4525,26 +4378,26 @@ struct netdev *netdev_create_from_genl(struct l_genl_msg *msg, bool random_mac)
 	l_free(rtmmsg);
 
 	/* Subscribe to Management -> Action -> RM -> Neighbor Report frames */
-	netdev_frame_watch_add(netdev, 0x00d0, action_neighbor_report_prefix,
-				sizeof(action_neighbor_report_prefix),
-				netdev_neighbor_report_frame_event, NULL);
+	frame_watch_add(wdev, 0, 0x00d0, action_neighbor_report_prefix,
+			sizeof(action_neighbor_report_prefix),
+			netdev_neighbor_report_frame_event, netdev, NULL);
 
-	netdev_frame_watch_add(netdev, 0x00d0, action_sa_query_resp_prefix,
-				sizeof(action_sa_query_resp_prefix),
-				netdev_sa_query_resp_frame_event, NULL);
+	frame_watch_add(wdev, 0, 0x00d0, action_sa_query_resp_prefix,
+			sizeof(action_sa_query_resp_prefix),
+			netdev_sa_query_resp_frame_event, netdev, NULL);
 
-	netdev_frame_watch_add(netdev, 0x00d0, action_sa_query_req_prefix,
-				sizeof(action_sa_query_req_prefix),
-				netdev_sa_query_req_frame_event, NULL);
+	frame_watch_add(wdev, 0, 0x00d0, action_sa_query_req_prefix,
+			sizeof(action_sa_query_req_prefix),
+			netdev_sa_query_req_frame_event, netdev, NULL);
 
-	netdev_frame_watch_add(netdev, 0x00d0, action_ft_response_prefix,
-				sizeof(action_ft_response_prefix),
-				netdev_ft_response_frame_event, NULL);
+	frame_watch_add(wdev, 0, 0x00d0, action_ft_response_prefix,
+			sizeof(action_ft_response_prefix),
+			netdev_ft_response_frame_event, netdev, NULL);
 
 	if (wiphy_supports_qos_set_map(netdev->wiphy))
-		netdev_frame_watch_add(netdev, 0x00d0, action_qos_map_prefix,
-					sizeof(action_qos_map_prefix),
-					netdev_qos_map_frame_event, NULL);
+		frame_watch_add(wdev, 0, 0x00d0, action_qos_map_prefix,
+				sizeof(action_qos_map_prefix),
+				netdev_qos_map_frame_event, netdev, NULL);
 
 	/* Set RSSI threshold for CQM notifications */
 	if (netdev->type == NL80211_IFTYPE_STATION)

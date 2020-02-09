@@ -51,22 +51,14 @@
 
 static uint32_t netdev_watch = 0;
 
-struct wsc {
+struct wsc_enrollee {
 	struct netdev *netdev;
-	struct station *station;
-	struct l_dbus_message *pending;
-	struct l_dbus_message *pending_cancel;
-	uint8_t *wsc_ies;
-	size_t wsc_ies_size;
-	struct l_timeout *walk_timer;
-	uint32_t scan_id;
-	struct scan_bss *target;
-	uint32_t station_state_watch;
 	struct wsc_credentials_info creds[3];
 	uint32_t n_creds;
 	struct l_settings *eap_settings;
-
-	bool wsc_association : 1;
+	wsc_done_cb_t done_cb;
+	void *done_data;
+	bool disconnecting : 1;
 };
 
 static struct l_dbus_message *wsc_error_session_overlap(
@@ -98,7 +90,7 @@ static struct l_dbus_message *wsc_error_walk_time_expired(
 	return l_dbus_message_new_error(msg,
 					IWD_WSC_INTERFACE ".WalkTimeExpired",
 					"No APs in PushButton mode found in "
-					"the alloted time");
+					"the allotted time");
 }
 
 static struct l_dbus_message *wsc_error_time_expired(struct l_dbus_message *msg)
@@ -106,154 +98,45 @@ static struct l_dbus_message *wsc_error_time_expired(struct l_dbus_message *msg)
 	return l_dbus_message_new_error(msg,
 					IWD_WSC_INTERFACE ".TimeExpired",
 					"No APs in PIN mode found in "
-					"the alloted time");
-}
-static void wsc_try_credentials(struct wsc *wsc)
-{
-	unsigned int i;
-	struct network *network;
-	struct scan_bss *bss;
-
-	for (i = 0; i < wsc->n_creds; i++) {
-		network = station_network_find(wsc->station,
-						wsc->creds[i].ssid,
-						wsc->creds[i].security);
-		if (!network)
-			continue;
-
-		bss = network_bss_find_by_addr(network, wsc->creds[i].addr);
-
-		if (!bss)
-			bss = network_bss_select(network, true);
-
-		if (!bss)
-			continue;
-
-		if (wsc->creds[i].security == SECURITY_PSK) {
-			bool ret;
-
-			/*
-			 * Prefer setting passphrase, this will work for both
-			 * WPA2 and WPA3 since the PSK can always be generated
-			 * if needed
-			 */
-			if (wsc->creds[i].has_passphrase)
-				ret = network_set_passphrase(network,
-						wsc->creds[i].passphrase);
-			else
-				ret = network_set_psk(network,
-						wsc->creds[i].psk);
-
-			if (!ret)
-				continue;
-		}
-
-		station_connect_network(wsc->station, network, bss,
-								wsc->pending);
-		l_dbus_message_unref(wsc->pending);
-		wsc->pending = NULL;
-
-		goto done;
-	}
-
-	dbus_pending_reply(&wsc->pending,
-					wsc_error_not_reachable(wsc->pending));
-	station_set_autoconnect(wsc->station, true);
-done:
-	memset(wsc->creds, 0, sizeof(wsc->creds));
-	wsc->n_creds = 0;
+					"the allotted time");
 }
 
-static void wsc_store_credentials(struct wsc *wsc)
-{
-	unsigned int i;
-
-	for (i = 0; i < wsc->n_creds; i++) {
-		enum security security = wsc->creds[i].security;
-		const char *ssid = wsc->creds[i].ssid;
-		struct l_settings *settings = l_settings_new();
-
-		l_debug("Storing credential for '%s(%s)'", ssid,
-						security_to_str(security));
-
-		if (security == SECURITY_PSK) {
-			char *hex = l_util_hexstring(wsc->creds[i].psk,
-						sizeof(wsc->creds[i].psk));
-
-			l_settings_set_value(settings, "Security",
-							"PreSharedKey", hex);
-			explicit_bzero(hex, strlen(hex));
-			l_free(hex);
-		}
-
-		storage_network_sync(security, ssid, settings);
-		l_settings_free(settings);
-
-		/*
-		 * TODO: Mark this network as known.  We might be getting
-		 * multiple credentials from WSC, so there is a possibility
-		 * that the network is not known and / or not in scan results.
-		 * In both cases, the network should be considered for
-		 * auto-connect.  Note, since we sync the settings, the next
-		 * reboot will put the network on the known list.
-		 */
-	}
-}
-
-static void wsc_disconnect_cb(struct netdev *netdev, bool success,
-							void *user_data)
-{
-	struct wsc *wsc = user_data;
-	struct l_dbus_message *reply;
-
-	l_debug("%p, success: %d", wsc, success);
-
-	wsc->wsc_association = false;
-
-	reply = l_dbus_message_new_method_return(wsc->pending_cancel);
-	l_dbus_message_set_arguments(reply, "");
-	dbus_pending_reply(&wsc->pending_cancel, reply);
-
-	station_set_autoconnect(wsc->station, true);
-}
-
-static void wsc_connect_cb(struct netdev *netdev, enum netdev_result result,
+static void wsc_enrollee_connect_cb(struct netdev *netdev,
+					enum netdev_result result,
 					void *event_data, void *user_data)
 {
-	struct wsc *wsc = user_data;
+	struct wsc_enrollee *wsce = user_data;
 
-	l_debug("%d, result: %d", netdev_get_ifindex(wsc->netdev), result);
+	l_debug("%d, result: %d", netdev_get_ifindex(wsce->netdev), result);
 
-	wsc->wsc_association = false;
+	if (wsce->disconnecting)
+		return;	/* Free the state in the disconnect callback */
 
-	l_settings_free(wsc->eap_settings);
-	wsc->eap_settings = NULL;
+	if (!wsce->done_cb)
+		goto done;
 
-	if (result == NETDEV_RESULT_HANDSHAKE_FAILED && wsc->n_creds > 0) {
-		wsc_store_credentials(wsc);
-		wsc_try_credentials(wsc);
-		return;
+	if (result == NETDEV_RESULT_HANDSHAKE_FAILED && wsce->n_creds > 0) {
+		wsce->done_cb(0, wsce->creds, wsce->n_creds, wsce->done_data);
+		goto done;
 	}
 
 	switch (result) {
 	case NETDEV_RESULT_ABORTED:
-		dbus_pending_reply(&wsc->pending,
-					dbus_error_aborted(wsc->pending));
-		return;
+		wsce->done_cb(-ECANCELED, NULL, 0, wsce->done_data);
+		break;
 	case NETDEV_RESULT_HANDSHAKE_FAILED:
-		dbus_pending_reply(&wsc->pending,
-					wsc_error_no_credentials(wsc->pending));
+		wsce->done_cb(-ENOKEY, NULL, 0, wsce->done_data);
 		break;
 	default:
-		dbus_pending_reply(&wsc->pending,
-					dbus_error_failed(wsc->pending));
+		wsce->done_cb(-EIO, NULL, 0, wsce->done_data);
 		break;
 	}
 
-	station_set_autoconnect(wsc->station, true);
+done:
+	wsc_enrollee_free(wsce);
 }
 
-static void wsc_credential_obtained(struct wsc *wsc,
+static void wsc_enrollee_credential_obtained(struct wsc_enrollee *wsce,
 					const struct wsc_credential *cred)
 {
 	uint16_t auth_mask;
@@ -270,7 +153,7 @@ static void wsc_credential_obtained(struct wsc *wsc,
 		l_debug("Key (%u): %.*s", cred->network_key_len,
 				cred->network_key_len, cred->network_key);
 
-	if (wsc->n_creds == L_ARRAY_SIZE(wsc->creds)) {
+	if (wsce->n_creds == L_ARRAY_SIZE(wsce->creds)) {
 		l_warn("Maximum number of credentials obtained, ignoring...");
 		return;
 	}
@@ -280,8 +163,8 @@ static void wsc_credential_obtained(struct wsc *wsc,
 		return;
 	}
 
-	memcpy(wsc->creds[wsc->n_creds].ssid, cred->ssid, cred->ssid_len);
-	wsc->creds[wsc->n_creds].ssid[cred->ssid_len] = '\0';
+	memcpy(wsce->creds[wsce->n_creds].ssid, cred->ssid, cred->ssid_len);
+	wsce->creds[wsce->n_creds].ssid[cred->ssid_len] = '\0';
 
 	/* We only support open/personal wpa/personal wpa2 */
 	auth_mask = WSC_AUTHENTICATION_TYPE_OPEN |
@@ -300,11 +183,11 @@ static void wsc_credential_obtained(struct wsc *wsc,
 			return;
 		}
 
-		wsc->creds[wsc->n_creds].security = SECURITY_NONE;
+		wsce->creds[wsce->n_creds].security = SECURITY_NONE;
 	} else
-		wsc->creds[wsc->n_creds].security = SECURITY_PSK;
+		wsce->creds[wsce->n_creds].security = SECURITY_PSK;
 
-	switch (wsc->creds[wsc->n_creds].security) {
+	switch (wsce->creds[wsce->n_creds].security) {
 	case SECURITY_NONE:
 		if (cred->network_key_len != 0) {
 			l_warn("ignoring invalid open key length");
@@ -323,14 +206,14 @@ static void wsc_credential_obtained(struct wsc *wsc,
 				return;
 			}
 
-			memcpy(wsc->creds[wsc->n_creds].psk, decoded, 32);
+			memcpy(wsce->creds[wsce->n_creds].psk, decoded, 32);
 			explicit_bzero(decoded, 32);
 			l_free(decoded);
 		} else {
-			strncpy(wsc->creds[wsc->n_creds].passphrase,
+			strncpy(wsce->creds[wsce->n_creds].passphrase,
 					(const char *) cred->network_key,
 					cred->network_key_len);
-			wsc->creds[wsc->n_creds].has_passphrase = true;
+			wsce->creds[wsce->n_creds].has_passphrase = true;
 		}
 
 		break;
@@ -338,25 +221,27 @@ static void wsc_credential_obtained(struct wsc *wsc,
 		return;
 	}
 
-	for (i = 0; i < wsc->n_creds; i++) {
-		if (strcmp(wsc->creds[i].ssid, wsc->creds[wsc->n_creds].ssid))
+	for (i = 0; i < wsce->n_creds; i++) {
+		if (strcmp(wsce->creds[i].ssid,
+				wsce->creds[wsce->n_creds].ssid))
 			continue;
 
 		l_warn("Found duplicate credentials for SSID: %s",
-				wsc->creds[i].ssid);
-		explicit_bzero(&wsc->creds[wsc->n_creds],
-				sizeof(wsc->creds[wsc->n_creds]));
+				wsce->creds[i].ssid);
+		explicit_bzero(&wsce->creds[wsce->n_creds],
+				sizeof(wsce->creds[wsce->n_creds]));
 		return;
 	}
 
-	memcpy(wsc->creds[wsc->n_creds].addr, cred->addr, 6);
-	wsc->n_creds += 1;
+	memcpy(wsce->creds[wsce->n_creds].addr, cred->addr, 6);
+	wsce->n_creds += 1;
 }
 
-static void wsc_netdev_event(struct netdev *netdev, enum netdev_event event,
+static void wsc_enrollee_netdev_event(struct netdev *netdev,
+					enum netdev_event event,
 					void *event_data, void *user_data)
 {
-	struct wsc *wsc = user_data;
+	struct wsc_enrollee *wsce = user_data;
 
 	switch (event) {
 	case NETDEV_EVENT_AUTHENTICATING:
@@ -367,8 +252,9 @@ static void wsc_netdev_event(struct netdev *netdev, enum netdev_event event,
 		break;
 	case NETDEV_EVENT_DISCONNECT_BY_AP:
 		l_debug("Disconnect by AP");
-		wsc_connect_cb(wsc->netdev, NETDEV_RESULT_HANDSHAKE_FAILED,
-				event_data, wsc);
+		wsc_enrollee_connect_cb(wsce->netdev,
+					NETDEV_RESULT_HANDSHAKE_FAILED,
+					event_data, wsce);
 		break;
 	case NETDEV_EVENT_RSSI_THRESHOLD_LOW:
 	case NETDEV_EVENT_RSSI_THRESHOLD_HIGH:
@@ -379,11 +265,11 @@ static void wsc_netdev_event(struct netdev *netdev, enum netdev_event event,
 	};
 }
 
-static void wsc_handshake_event(struct handshake_state *hs,
-				enum handshake_event event, void *user_data,
-				...)
+static void wsc_enrollee_handshake_event(struct handshake_state *hs,
+						enum handshake_event event,
+						void *user_data, ...)
 {
-	struct wsc *wsc = user_data;
+	struct wsc_enrollee *wsce = user_data;
 	va_list args;
 
 	va_start(args, user_data);
@@ -398,7 +284,7 @@ static void wsc_handshake_event(struct handshake_state *hs,
 
 		switch (eap_event) {
 		case EAP_WSC_EVENT_CREDENTIAL_OBTAINED:
-			wsc_credential_obtained(wsc,
+			wsc_enrollee_credential_obtained(wsce,
 				va_arg(args, const struct wsc_credential *));
 			break;
 		default:
@@ -430,20 +316,19 @@ static inline enum wsc_rf_band freq_to_rf_band(uint32_t freq)
 	return WSC_RF_BAND_2_4_GHZ;
 }
 
-static void wsc_connect(struct wsc *wsc)
+static int wsc_enrollee_connect(struct wsc_enrollee *wsce, struct scan_bss *bss,
+					const char *pin, struct iovec *ies,
+					unsigned int ies_num)
 {
 	struct handshake_state *hs;
 	struct l_settings *settings = l_settings_new();
-	struct scan_bss *bss = wsc->target;
 	int r;
 	struct wsc_association_request request;
 	uint8_t *pdu;
 	size_t pdu_len;
-	struct iovec ie_iov;
+	struct iovec ie_iov[1 + ies_num];
 
-	wsc->target = NULL;
-
-	hs = netdev_handshake_state_new(wsc->netdev);
+	hs = netdev_handshake_state_new(wsce->netdev);
 
 	l_settings_set_string(settings, "Security", "EAP-Identity",
 					"WFA-SimpleConfig-Enrollee-1-0");
@@ -458,29 +343,23 @@ static void wsc_connect(struct wsc *wsc)
 	l_settings_set_string(settings, "WSC", "PrimaryDeviceType",
 					"0-00000000-0");
 	l_settings_set_string(settings, "WSC", "EnrolleeMAC",
-		util_address_to_string(netdev_get_address(wsc->netdev)));
+		util_address_to_string(netdev_get_address(wsce->netdev)));
 
-	if (!strcmp(l_dbus_message_get_member(wsc->pending), "StartPin")) {
-		const char *pin;
+	if (pin) {
+		enum wsc_device_password_id dpid;
 
-		if (l_dbus_message_get_arguments(wsc->pending, "s", &pin)) {
-			enum wsc_device_password_id dpid;
+		if (strlen(pin) == 4 || wsc_pin_is_checksum_valid(pin))
+			dpid = WSC_DEVICE_PASSWORD_ID_DEFAULT;
+		else
+			dpid = WSC_DEVICE_PASSWORD_ID_USER_SPECIFIED;
 
-			if (strlen(pin) == 4 || wsc_pin_is_checksum_valid(pin))
-				dpid = WSC_DEVICE_PASSWORD_ID_DEFAULT;
-			else
-				dpid = WSC_DEVICE_PASSWORD_ID_USER_SPECIFIED;
-
-			l_settings_set_uint(settings, "WSC",
-						"DevicePasswordId", dpid);
-			l_settings_set_string(settings, "WSC",
-						"DevicePassword", pin);
-		}
+		l_settings_set_uint(settings, "WSC", "DevicePasswordId", dpid);
+		l_settings_set_string(settings, "WSC", "DevicePassword", pin);
 	}
 
-	handshake_state_set_event_func(hs, wsc_handshake_event, wsc);
+	handshake_state_set_event_func(hs, wsc_enrollee_handshake_event, wsce);
 	handshake_state_set_8021x_config(hs, settings);
-	wsc->eap_settings = settings;
+	wsce->eap_settings = settings;
 
 	request.version2 = true;
 	request.request_type = WSC_REQUEST_TYPE_ENROLLEE_OPEN_8021X;
@@ -491,33 +370,243 @@ static void wsc_connect(struct wsc *wsc)
 		goto error;
 	}
 
-	ie_iov.iov_base = ie_tlv_encapsulate_wsc_payload(pdu, pdu_len,
-							&ie_iov.iov_len);
+	ie_iov[0].iov_base = ie_tlv_encapsulate_wsc_payload(pdu, pdu_len,
+							&ie_iov[0].iov_len);
 	l_free(pdu);
 
-	if (!ie_iov.iov_base) {
+	if (!ie_iov[0].iov_base) {
 		r = -ENOMEM;
 		goto error;
 	}
 
-	r = netdev_connect(wsc->netdev, bss, hs, &ie_iov, 1, wsc_netdev_event,
-				wsc_connect_cb, wsc);
-	l_free(ie_iov.iov_base);
+	if (ies_num)
+		memcpy(ie_iov + 1, ies, sizeof(struct iovec) * ies_num);
 
-	if (r < 0)
-		goto error;
+	r = netdev_connect(wsce->netdev, bss, hs, ie_iov, 1 + ies_num,
+				wsc_enrollee_netdev_event,
+				wsc_enrollee_connect_cb, wsce);
+	l_free(ie_iov[0].iov_base);
 
-	wsc->wsc_association = true;
-	return;
+	if (r == 0)
+		return 0;
+
 error:
 	handshake_state_free(hs);
-	dbus_pending_reply(&wsc->pending,
-				dbus_error_failed(wsc->pending));
+	return r;
+}
+
+struct wsc_enrollee *wsc_enrollee_new(struct netdev *netdev,
+					struct scan_bss *target,
+					const char *pin,
+					struct iovec *ies, unsigned int ies_num,
+					wsc_done_cb_t done_cb, void *user_data)
+{
+	struct wsc_enrollee *wsce;
+
+	wsce = l_new(struct wsc_enrollee, 1);
+	wsce->netdev = netdev;
+	wsce->done_cb = done_cb;
+	wsce->done_data = user_data;
+
+	if (wsc_enrollee_connect(wsce, target, pin, ies, ies_num) == 0)
+		return wsce;
+
+	wsc_enrollee_free(wsce);
+	return NULL;
+}
+
+static void wsc_enrollee_disconnect_cb(struct netdev *netdev, bool result,
+					void *user_data)
+{
+	struct wsc_enrollee *wsce = user_data;
+
+	wsce->done_cb(-ECANCELED, NULL, 0, wsce->done_data);
+	wsc_enrollee_free(wsce);
+}
+
+void wsc_enrollee_cancel(struct wsc_enrollee *wsce, bool defer_cb)
+{
+	if (defer_cb) {
+		wsce->disconnecting = true;
+		netdev_disconnect(wsce->netdev, wsc_enrollee_disconnect_cb,
+					wsce);
+	} else {
+		wsce->done_cb(-ECANCELED, NULL, 0, wsce->done_data);
+		wsce->done_cb = NULL;
+		/*
+		 * Results in a call to
+		 * wsc_enrollee_connect_cb -> wsc_enrollee_free
+		 */
+		netdev_disconnect(wsce->netdev, NULL, NULL);
+	}
+}
+
+void wsc_enrollee_free(struct wsc_enrollee *wsce)
+{
+	l_settings_free(wsce->eap_settings);
+	explicit_bzero(wsce->creds, sizeof(wsce->creds));
+	l_free(wsce);
+}
+
+struct wsc_station_dbus {
+	struct wsc_dbus super;
+	struct wsc_enrollee *enrollee;
+	struct scan_bss *target;
+	struct netdev *netdev;
+	struct station *station;
+	uint8_t *wsc_ies;
+	size_t wsc_ies_size;
+	struct l_timeout *walk_timer;
+	uint32_t scan_id;
+	uint32_t station_state_watch;
+};
+
+#define CONNECT_REPLY(wsc, message)					\
+	if ((wsc)->super.pending_connect)				\
+		dbus_pending_reply(&(wsc)->super.pending_connect,	\
+				message((wsc)->super.pending_connect))	\
+
+#define CANCEL_REPLY(wsc, message)					\
+	if ((wsc)->super.pending_cancel)				\
+		dbus_pending_reply(&(wsc)->super.pending_cancel,	\
+				message((wsc)->super.pending_cancel))	\
+
+static void wsc_try_credentials(struct wsc_station_dbus *wsc,
+				struct wsc_credentials_info *creds,
+				unsigned int n_creds)
+{
+	unsigned int i;
+	struct network *network;
+	struct scan_bss *bss;
+
+	for (i = 0; i < n_creds; i++) {
+		network = station_network_find(wsc->station, creds[i].ssid,
+						creds[i].security);
+		if (!network)
+			continue;
+
+		bss = network_bss_find_by_addr(network, creds[i].addr);
+
+		if (!bss)
+			bss = network_bss_select(network, true);
+
+		if (!bss)
+			continue;
+
+		if (creds[i].security == SECURITY_PSK) {
+			bool ret;
+
+			/*
+			 * Prefer setting passphrase, this will work for both
+			 * WPA2 and WPA3 since the PSK can always be generated
+			 * if needed
+			 */
+			if (creds[i].has_passphrase)
+				ret = network_set_passphrase(network,
+							creds[i].passphrase);
+			else
+				ret = network_set_psk(network, creds[i].psk);
+
+			if (!ret)
+				continue;
+		}
+
+		station_connect_network(wsc->station, network, bss,
+						wsc->super.pending_connect);
+		l_dbus_message_unref(wsc->super.pending_connect);
+		wsc->super.pending_connect = NULL;
+
+		return;
+	}
+
+	CONNECT_REPLY(wsc, wsc_error_not_reachable);
+	station_set_autoconnect(wsc->station, true);
+}
+
+static void wsc_store_credentials(struct wsc_credentials_info *creds,
+					unsigned int n_creds)
+{
+	unsigned int i;
+
+	for (i = 0; i < n_creds; i++) {
+		enum security security = creds[i].security;
+		const char *ssid = creds[i].ssid;
+		struct l_settings *settings = l_settings_new();
+
+		l_debug("Storing credential for '%s(%s)'", ssid,
+						security_to_str(security));
+
+		if (security == SECURITY_PSK) {
+			char *hex = l_util_hexstring(creds[i].psk,
+						sizeof(creds[i].psk));
+
+			l_settings_set_value(settings, "Security",
+							"PreSharedKey", hex);
+			explicit_bzero(hex, strlen(hex));
+			l_free(hex);
+		}
+
+		storage_network_sync(security, ssid, settings);
+		l_settings_free(settings);
+	}
+}
+
+static void wsc_dbus_done_cb(int err, struct wsc_credentials_info *creds,
+				unsigned int n_creds, void *user_data)
+{
+	struct wsc_station_dbus *wsc = user_data;
+
+	wsc->enrollee = NULL;
+	wsc->target = NULL;
+
+	l_debug("err=%i", err);
+
+	if (err && wsc->station)
+		station_set_autoconnect(wsc->station, true);
+
+	switch (err) {
+	case 0:
+		break;
+	case -ECANCELED:
+		/* Send reply if we haven't already sent one e.g. in Cancel() */
+		CONNECT_REPLY(wsc, dbus_error_aborted);
+		CANCEL_REPLY(wsc, l_dbus_message_new_method_return);
+		return;
+	case -ENOKEY:
+		CONNECT_REPLY(wsc, wsc_error_no_credentials);
+		return;
+	case -EBUSY:
+		CONNECT_REPLY(wsc, dbus_error_busy);
+		return;
+	default:
+		CONNECT_REPLY(wsc, dbus_error_failed);
+		return;
+	}
+
+	wsc_store_credentials(creds, n_creds);
+	wsc_try_credentials(wsc, creds, n_creds);
+}
+
+static void wsc_connect(struct wsc_station_dbus *wsc)
+{
+	const char *pin = NULL;
+
+	if (!strcmp(l_dbus_message_get_member(wsc->super.pending_connect),
+			"StartPin"))
+		l_dbus_message_get_arguments(wsc->super.pending_connect, "s",
+						&pin);
+
+	wsc->enrollee = wsc_enrollee_new(wsc->netdev, wsc->target, pin, NULL, 0,
+						wsc_dbus_done_cb, wsc);
+	if (wsc->enrollee)
+		return;
+
+	wsc_dbus_done_cb(-EIO, NULL, 0, wsc);
 }
 
 static void station_state_watch(enum station_state state, void *userdata)
 {
-	struct wsc *wsc = userdata;
+	struct wsc_station_dbus *wsc = userdata;
 
 	if (state != STATION_STATE_DISCONNECTED)
 		return;
@@ -530,7 +619,8 @@ static void station_state_watch(enum station_state state, void *userdata)
 	wsc_connect(wsc);
 }
 
-static void wsc_check_can_connect(struct wsc *wsc, struct scan_bss *target)
+static void wsc_check_can_connect(struct wsc_station_dbus *wsc,
+					struct scan_bss *target)
 {
 	l_debug("%p", wsc);
 
@@ -565,10 +655,10 @@ static void wsc_check_can_connect(struct wsc *wsc, struct scan_bss *target)
 	}
 error:
 	wsc->target = NULL;
-	dbus_pending_reply(&wsc->pending, dbus_error_failed(wsc->pending));
+	CONNECT_REPLY(wsc, dbus_error_failed);
 }
 
-static void wsc_cancel_scan(struct wsc *wsc)
+static void wsc_cancel_scan(struct wsc_station_dbus *wsc)
 {
 	l_free(wsc->wsc_ies);
 	wsc->wsc_ies = 0;
@@ -586,30 +676,24 @@ static void wsc_cancel_scan(struct wsc *wsc)
 
 static void walk_timeout(struct l_timeout *timeout, void *user_data)
 {
-	struct wsc *wsc = user_data;
+	struct wsc_station_dbus *wsc = user_data;
 
 	wsc_cancel_scan(wsc);
-
-	if (wsc->pending)
-		dbus_pending_reply(&wsc->pending,
-				wsc_error_walk_time_expired(wsc->pending));
+	CONNECT_REPLY(wsc, wsc_error_walk_time_expired);
 }
 
 static void pin_timeout(struct l_timeout *timeout, void *user_data)
 {
-	struct wsc *wsc = user_data;
+	struct wsc_station_dbus *wsc = user_data;
 
 	wsc_cancel_scan(wsc);
-
-	if (wsc->pending)
-		dbus_pending_reply(&wsc->pending,
-					wsc_error_time_expired(wsc->pending));
+	CONNECT_REPLY(wsc, wsc_error_time_expired);
 }
 
 static bool push_button_scan_results(int err, struct l_queue *bss_list,
 					void *userdata)
 {
-	struct wsc *wsc = userdata;
+	struct wsc_station_dbus *wsc = userdata;
 	struct scan_bss *bss_2g;
 	struct scan_bss *bss_5g;
 	struct scan_bss *target;
@@ -620,8 +704,7 @@ static bool push_button_scan_results(int err, struct l_queue *bss_list,
 
 	if (err) {
 		wsc_cancel_scan(wsc);
-		dbus_pending_reply(&wsc->pending,
-					dbus_error_failed(wsc->pending));
+		CONNECT_REPLY(wsc, dbus_error_failed);
 
 		return false;
 	}
@@ -722,8 +805,7 @@ static bool push_button_scan_results(int err, struct l_queue *bss_list,
 
 session_overlap:
 	wsc_cancel_scan(wsc);
-	dbus_pending_reply(&wsc->pending,
-				wsc_error_session_overlap(wsc->pending));
+	CONNECT_REPLY(wsc, wsc_error_session_overlap);
 
 	return false;
 }
@@ -767,15 +849,14 @@ static bool pin_scan_results(int err, struct l_queue *bss_list, void *userdata)
 {
 	static const uint8_t wildcard_address[] =
 					{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
-	struct wsc *wsc = userdata;
+	struct wsc_station_dbus *wsc = userdata;
 	struct scan_bss *target = NULL;
 	const struct l_queue_entry *bss_entry;
 	struct wsc_probe_response probe_response;
 
 	if (err) {
 		wsc_cancel_scan(wsc);
-		dbus_pending_reply(&wsc->pending,
-					dbus_error_failed(wsc->pending));
+		CONNECT_REPLY(wsc, dbus_error_failed);
 
 		return false;
 	}
@@ -867,7 +948,7 @@ static bool pin_scan_results(int err, struct l_queue *bss_list, void *userdata)
 	return true;
 }
 
-static bool wsc_initiate_scan(struct wsc *wsc,
+static bool wsc_initiate_scan(struct wsc_station_dbus *wsc,
 					enum wsc_device_password_id dpid,
 					scan_notify_func_t callback)
 {
@@ -931,28 +1012,110 @@ static bool wsc_initiate_scan(struct wsc *wsc,
 	return true;
 }
 
+static const char *wsc_station_dbus_get_path(struct wsc_dbus *super)
+{
+	struct wsc_station_dbus *wsc =
+		l_container_of(super, struct wsc_station_dbus, super);
+
+	return netdev_get_path(wsc->netdev);
+}
+
+static void wsc_station_dbus_connect(struct wsc_dbus *super,
+						const char *pin)
+{
+	struct wsc_station_dbus *wsc =
+		l_container_of(super, struct wsc_station_dbus, super);
+	scan_notify_func_t scan_callback;
+	enum wsc_device_password_id dpid;
+
+	wsc->station = station_find(netdev_get_ifindex(wsc->netdev));
+	if (!wsc->station) {
+		CONNECT_REPLY(wsc, dbus_error_not_available);
+		return;
+	}
+
+	if (pin) {
+		if (strlen(pin) == 4 || wsc_pin_is_checksum_valid(pin))
+			dpid = WSC_DEVICE_PASSWORD_ID_DEFAULT;
+		else
+			dpid = WSC_DEVICE_PASSWORD_ID_USER_SPECIFIED;
+
+		scan_callback = pin_scan_results;
+	} else {
+		dpid = WSC_DEVICE_PASSWORD_ID_PUSH_BUTTON;
+		scan_callback = push_button_scan_results;
+	}
+
+	if (!wsc_initiate_scan(wsc, dpid, scan_callback)) {
+		CONNECT_REPLY(wsc, dbus_error_failed);
+		return;
+	}
+
+	if (pin) {
+		wsc->walk_timer = l_timeout_create(60, pin_timeout, wsc, NULL);
+	} else {
+		wsc->walk_timer = l_timeout_create(WALK_TIME, walk_timeout, wsc,
+							NULL);
+	}
+}
+
+static void wsc_station_dbus_cancel(struct wsc_dbus *super)
+{
+	struct wsc_station_dbus *wsc =
+		l_container_of(super, struct wsc_station_dbus, super);
+
+	wsc_cancel_scan(wsc);
+
+	if (wsc->station_state_watch) {
+		station_remove_state_watch(wsc->station,
+						wsc->station_state_watch);
+		wsc->station_state_watch = 0;
+		wsc->target = NULL;
+	}
+
+	CONNECT_REPLY(wsc, dbus_error_aborted);
+
+	if (wsc->enrollee)
+		wsc_enrollee_cancel(wsc->enrollee, true);
+	else
+		CANCEL_REPLY(wsc, l_dbus_message_new_method_return);
+}
+
+static void wsc_station_dbus_remove(struct wsc_dbus *super)
+{
+	struct wsc_station_dbus *wsc =
+		l_container_of(super, struct wsc_station_dbus, super);
+
+	wsc_cancel_scan(wsc);
+
+	if (wsc->station_state_watch) {
+		station_remove_state_watch(wsc->station,
+						wsc->station_state_watch);
+		wsc->station_state_watch = 0;
+	}
+
+	if (wsc->enrollee)
+		wsc_enrollee_free(wsc->enrollee);
+
+	l_free(wsc);
+}
+
 static struct l_dbus_message *wsc_push_button(struct l_dbus *dbus,
 						struct l_dbus_message *message,
 						void *user_data)
 {
-	struct wsc *wsc = user_data;
+	struct wsc_dbus *wsc = user_data;
 
 	l_debug("");
 
-	if (wsc->pending)
+	if (!l_dbus_message_get_arguments(message, ""))
+		return dbus_error_invalid_args(message);
+
+	if (wsc->pending_connect)
 		return dbus_error_busy(message);
 
-	wsc->station = station_find(netdev_get_ifindex(wsc->netdev));
-	if (!wsc->station)
-		return dbus_error_not_available(message);
-
-	if (!wsc_initiate_scan(wsc, WSC_DEVICE_PASSWORD_ID_PUSH_BUTTON,
-				push_button_scan_results))
-		return dbus_error_failed(message);
-
-	wsc->walk_timer = l_timeout_create(WALK_TIME, walk_timeout, wsc, NULL);
-	wsc->pending = l_dbus_message_ref(message);
-
+	wsc->pending_connect = l_dbus_message_ref(message);
+	wsc->connect(wsc, NULL);
 	return NULL;
 }
 
@@ -960,13 +1123,13 @@ static struct l_dbus_message *wsc_generate_pin(struct l_dbus *dbus,
 						struct l_dbus_message *message,
 						void *user_data)
 {
-	struct wsc *wsc = user_data;
+	struct wsc_dbus *wsc = user_data;
 	struct l_dbus_message *reply;
 	char pin[9];
 
 	l_debug("");
 
-	if (wsc->pending)
+	if (wsc->pending_connect)
 		return dbus_error_busy(message);
 
 	if (!wsc_pin_generate(pin))
@@ -982,18 +1145,13 @@ static struct l_dbus_message *wsc_start_pin(struct l_dbus *dbus,
 						struct l_dbus_message *message,
 						void *user_data)
 {
-	struct wsc *wsc = user_data;
+	struct wsc_dbus *wsc = user_data;
 	const char *pin;
-	enum wsc_device_password_id dpid;
 
 	l_debug("");
 
-	if (wsc->pending)
+	if (wsc->pending_connect)
 		return dbus_error_busy(message);
-
-	wsc->station = station_find(netdev_get_ifindex(wsc->netdev));
-	if (!wsc->station)
-		return dbus_error_not_available(message);
 
 	if (!l_dbus_message_get_arguments(message, "s", &pin))
 		return dbus_error_invalid_args(message);
@@ -1001,17 +1159,8 @@ static struct l_dbus_message *wsc_start_pin(struct l_dbus *dbus,
 	if (!wsc_pin_is_valid(pin))
 		return dbus_error_invalid_format(message);
 
-	if (strlen(pin) == 4 || wsc_pin_is_checksum_valid(pin))
-		dpid = WSC_DEVICE_PASSWORD_ID_DEFAULT;
-	else
-		dpid = WSC_DEVICE_PASSWORD_ID_USER_SPECIFIED;
-
-	if (!wsc_initiate_scan(wsc, dpid, pin_scan_results))
-		return dbus_error_failed(message);
-
-	wsc->walk_timer = l_timeout_create(60, pin_timeout, wsc, NULL);
-	wsc->pending = l_dbus_message_ref(message);
-
+	wsc->pending_connect = l_dbus_message_ref(message);
+	wsc->connect(wsc, pin);
 	return NULL;
 }
 
@@ -1019,42 +1168,22 @@ static struct l_dbus_message *wsc_cancel(struct l_dbus *dbus,
 						struct l_dbus_message *message,
 						void *user_data)
 {
-	struct wsc *wsc = user_data;
-	struct l_dbus_message *reply;
+	struct wsc_dbus *wsc = user_data;
 
 	l_debug("");
 
-	if (!wsc->pending)
+	if (!l_dbus_message_get_arguments(message, ""))
+		return dbus_error_invalid_args(message);
+
+	if (!wsc->pending_connect)
 		return dbus_error_not_available(message);
 
-	wsc_cancel_scan(wsc);
+	if (wsc->pending_cancel)
+		return dbus_error_busy(message);
 
-	if (wsc->station_state_watch) {
-		station_remove_state_watch(wsc->station,
-						wsc->station_state_watch);
-		wsc->station_state_watch = 0;
-		wsc->target = NULL;
-	}
-
-	if (wsc->wsc_association) {
-		int r;
-
-		r = netdev_disconnect(wsc->netdev, wsc_disconnect_cb, wsc);
-		if (r == 0) {
-			wsc->pending_cancel = l_dbus_message_ref(message);
-			return NULL;
-		}
-
-		l_warn("Unable to initiate disconnect: %s", strerror(-r));
-		wsc->wsc_association = false;
-	}
-
-	dbus_pending_reply(&wsc->pending, dbus_error_aborted(wsc->pending));
-
-	reply = l_dbus_message_new_method_return(message);
-	l_dbus_message_set_arguments(reply, "");
-
-	return reply;
+	wsc->pending_cancel = l_dbus_message_ref(message);
+	wsc->cancel(wsc);
+	return NULL;
 }
 
 static void setup_wsc_interface(struct l_dbus_interface *interface)
@@ -1069,37 +1198,45 @@ static void setup_wsc_interface(struct l_dbus_interface *interface)
 				wsc_cancel, "", "");
 }
 
-static void wsc_free(void *userdata)
+bool wsc_dbus_add_interface(struct wsc_dbus *wsc)
 {
-	struct wsc *wsc = userdata;
+	struct l_dbus *dbus = dbus_get_bus();
 
-	wsc_cancel_scan(wsc);
-
-	if (wsc->station_state_watch) {
-		station_remove_state_watch(wsc->station,
-						wsc->station_state_watch);
-		wsc->station_state_watch = 0;
-		wsc->target = NULL;
+	if (!l_dbus_object_add_interface(dbus, wsc->get_path(wsc),
+						IWD_WSC_INTERFACE, wsc)) {
+		l_info("Unable to register %s interface", IWD_WSC_INTERFACE);
+		return false;
 	}
 
-	if (wsc->pending)
-		dbus_pending_reply(&wsc->pending,
-					dbus_error_not_available(wsc->pending));
+	return true;
+}
+
+void wsc_dbus_remove_interface(struct wsc_dbus *wsc)
+{
+	struct l_dbus *dbus = dbus_get_bus();
+
+	l_dbus_object_remove_interface(dbus, wsc->get_path(wsc),
+					IWD_WSC_INTERFACE);
+}
+
+static void wsc_dbus_free(void *user_data)
+{
+	struct wsc_dbus *wsc = user_data;
+
+	if (wsc->pending_connect)
+		dbus_pending_reply(&wsc->pending_connect,
+				dbus_error_not_available(wsc->pending_connect));
 
 	if (wsc->pending_cancel)
 		dbus_pending_reply(&wsc->pending_cancel,
 				dbus_error_aborted(wsc->pending_cancel));
 
-	if (wsc->eap_settings)
-		l_settings_free(wsc->eap_settings);
-
-	l_free(wsc);
+	wsc->remove(wsc);
 }
 
-static void wsc_add_interface(struct netdev *netdev)
+static void wsc_add_station(struct netdev *netdev)
 {
-	struct l_dbus *dbus = dbus_get_bus();
-	struct wsc *wsc;
+	struct wsc_station_dbus *wsc;
 
 	if (!wiphy_get_max_scan_ie_len(netdev_get_wiphy(netdev))) {
 		l_debug("Simple Configuration isn't supported by ifindex %u",
@@ -1108,18 +1245,18 @@ static void wsc_add_interface(struct netdev *netdev)
 		return;
 	}
 
-	wsc = l_new(struct wsc, 1);
+	wsc = l_new(struct wsc_station_dbus, 1);
 	wsc->netdev = netdev;
+	wsc->super.get_path = wsc_station_dbus_get_path;
+	wsc->super.connect = wsc_station_dbus_connect;
+	wsc->super.cancel = wsc_station_dbus_cancel;
+	wsc->super.remove = wsc_station_dbus_remove;
 
-	if (!l_dbus_object_add_interface(dbus, netdev_get_path(netdev),
-						IWD_WSC_INTERFACE,
-						wsc)) {
-		wsc_free(wsc);
-		l_info("Unable to register %s interface", IWD_WSC_INTERFACE);
-	}
+	if (!wsc_dbus_add_interface(&wsc->super))
+		wsc_station_dbus_remove(&wsc->super);
 }
 
-static void wsc_remove_interface(struct netdev *netdev)
+static void wsc_remove_station(struct netdev *netdev)
 {
 	struct l_dbus *dbus = dbus_get_bus();
 
@@ -1135,11 +1272,11 @@ static void wsc_netdev_watch(struct netdev *netdev,
 	case NETDEV_WATCH_EVENT_NEW:
 		if (netdev_get_iftype(netdev) == NETDEV_IFTYPE_STATION &&
 				netdev_get_is_up(netdev))
-			wsc_add_interface(netdev);
+			wsc_add_station(netdev);
 		break;
 	case NETDEV_WATCH_EVENT_DOWN:
 	case NETDEV_WATCH_EVENT_DEL:
-		wsc_remove_interface(netdev);
+		wsc_remove_station(netdev);
 		break;
 	default:
 		break;
@@ -1152,7 +1289,7 @@ static int wsc_init(void)
 	netdev_watch = netdev_watch_add(wsc_netdev_watch, NULL, NULL);
 	l_dbus_register_interface(dbus_get_bus(), IWD_WSC_INTERFACE,
 					setup_wsc_interface,
-					wsc_free, false);
+					wsc_dbus_free, false);
 	return 0;
 }
 

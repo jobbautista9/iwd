@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2013-2019  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2020  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,20 +20,16 @@
  *
  */
 
-#ifndef HAVE_EXPLICIT_BZERO
-static inline void explicit_bzero(void *s, size_t n)
-{
-        memset(s, 0, n);
-        __asm__ __volatile__ ("" : : "r"(s) : "memory");
-}
-#endif
+struct mmpdu_header;
 
-#ifndef HAVE_RAWMEMCHR
-static inline void *rawmemchr(const void *s, int c)
-{
-_Pragma("GCC diagnostic push")
-_Pragma("GCC diagnostic ignored \"-Wstringop-overflow=\"")
-	return memchr(s, c, (size_t) -1);
-_Pragma("GCC diagnostic pop")
-}
-#endif
+typedef void (*frame_watch_cb_t)(const struct mmpdu_header *frame,
+					const void *body, size_t body_len,
+					int rssi, void *user_data);
+typedef void (*frame_xchg_destroy_func_t)(void *user_data);
+
+bool frame_watch_add(uint64_t wdev_id, uint32_t group, uint16_t frame_type,
+			const uint8_t *prefix, size_t prefix_len,
+			frame_watch_cb_t handler, void *user_data,
+			frame_xchg_destroy_func_t destroy);
+bool frame_watch_group_remove(uint64_t wdev_id, uint32_t group);
+bool frame_watch_wdev_remove(uint64_t wdev_id);
