@@ -1,3 +1,9 @@
+iwd (1.5-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Andreas Henriksson <andreas@fatal.se>  Sun, 09 Feb 2020 19:01:56 +0100
+
 iwd (1.4-1) unstable; urgency=medium
 
   * New upstream release.
@@ -5,7 +11,7 @@ iwd (1.4-1) unstable; urgency=medium
   * Revert "Add patch suggested by upstream for EOPNOTSUPP"
   * Revert "Cherry-pick patch from upstream fixing crash"
 
- -- Andreas Henriksson <andreas@fatal.se>  Thu, 19 Dec 2019 21:40:03 +0100
+ -- Andreas Henriksson <andreas@fatal.se>  Sun, 09 Feb 2020 19:01:42 +0100
 
 iwd (1.2-2) unstable; urgency=medium
 
