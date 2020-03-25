@@ -58,6 +58,28 @@ bool p2p_attr_iter_next(struct p2p_attr_iter *iter)
 	return true;
 }
 
+void wfd_subelem_iter_init(struct wfd_subelem_iter *iter, const uint8_t *pdu,
+				size_t len)
+{
+	iter->pos = pdu;
+	iter->end = pdu + len;
+	iter->type = -1;
+}
+
+bool wfd_subelem_iter_next(struct wfd_subelem_iter *iter)
+{
+	if (iter->type != (enum wfd_subelem_type) -1)
+		iter->pos += 3 + iter->len;
+
+	if (iter->pos + 3 > iter->end ||
+			iter->pos + 3 + l_get_be16(iter->pos + 1) > iter->end)
+		return false;
+
+	iter->type = iter->pos[0];
+	iter->len = l_get_be16(iter->pos + 1);
+	return true;
+}
+
 enum attr_flag {
 	ATTR_FLAG_REQUIRED  = 0x1,  /* Always required */
 };
@@ -193,7 +215,12 @@ static bool extract_p2p_channel_list(const uint8_t *attr, size_t len,
 {
 	struct p2p_channel_list_attr *out = data;
 
-	if (len < 6)
+	/*
+	 * Some devices reply with an empty Channel Entry List inside the
+	 * Channel List attribute of a GO Negotiation Response (status 1),
+	 * so tolerate a length of 3.
+	 */
+	if (len < 3)
 		return false;
 
 	out->country[0] = *attr++;

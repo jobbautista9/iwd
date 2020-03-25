@@ -60,7 +60,6 @@
 #include "src/owe.h"
 #include "src/fils.h"
 #include "src/auth-proto.h"
-#include "src/rtnlutil.h"
 #include "src/frame-xchg.h"
 
 #ifndef ENOTSUPP
@@ -110,6 +109,7 @@ struct netdev {
 	uint32_t set_interface_cmd_id;
 	uint32_t rekey_offload_cmd_id;
 	uint32_t qos_map_cmd_id;
+	uint32_t mac_change_cmd_id;
 	enum netdev_result result;
 	uint16_t last_code; /* reason or status, depending on result */
 	struct l_timeout *neighbor_report_timeout;
@@ -166,6 +166,7 @@ static struct l_genl_family *nl80211;
 static struct l_queue *netdev_list;
 static struct watchlist netdev_watches;
 static bool pae_over_nl80211;
+static bool mac_per_ssid;
 
 static void do_debug(const char *str, void *user_data)
 {
@@ -286,7 +287,19 @@ const char *netdev_get_name(struct netdev *netdev)
 
 bool netdev_get_is_up(struct netdev *netdev)
 {
-	return (netdev->ifi_flags & IFF_UP) != 0;
+	bool powered = (netdev->ifi_flags & IFF_UP) != 0;
+
+	/*
+	 * If we are in the middle of changing the MAC we are in somewhat of a
+	 * no mans land. Technically the iface may be down, but since we are
+	 * not emitting any netdev DOWN events we want netdev_get_is_up to
+	 * reflect the same state. Once MAC changing finishes any pending
+	 * DOWN events will be emitted.
+	 */
+	if (netdev->mac_change_cmd_id && !powered)
+		return true;
+
+	return powered;
 }
 
 struct handshake_state *netdev_get_handshake(struct netdev *netdev)
@@ -341,7 +354,7 @@ int netdev_set_powered(struct netdev *netdev, bool powered,
 		return -EBUSY;
 
 	netdev->set_powered_cmd_id =
-		rtnl_set_powered(rtnl, netdev->index, powered,
+		l_rtnl_set_powered(rtnl, netdev->index, powered,
 					netdev_set_powered_result, netdev,
 					netdev_set_powered_destroy);
 	if (!netdev->set_powered_cmd_id)
@@ -614,6 +627,11 @@ static void netdev_free(void *data)
 		netdev->qos_map_cmd_id = 0;
 	}
 
+	if (netdev->mac_change_cmd_id) {
+		l_netlink_cancel(rtnl, netdev->mac_change_cmd_id);
+		netdev->mac_change_cmd_id = 0;
+	}
+
 	if (netdev->events_ready)
 		WATCHLIST_NOTIFY(&netdev_watches, netdev_watch_func_t,
 					netdev, NETDEV_WATCH_EVENT_DEL);
@@ -632,7 +650,8 @@ static void netdev_shutdown_one(void *data, void *user_data)
 	struct netdev *netdev = data;
 
 	if (netdev_get_is_up(netdev))
-		rtnl_set_powered(rtnl, netdev->index, false, NULL, NULL, NULL);
+		l_rtnl_set_powered(rtnl, netdev->index, false,
+					NULL, NULL, NULL);
 }
 
 static bool netdev_match(const void *a, const void *b)
@@ -986,7 +1005,7 @@ static void netdev_operstate_cb(int error, uint16_t type,
 
 static void netdev_connect_ok(struct netdev *netdev)
 {
-	rtnl_set_linkmode_and_operstate(rtnl, netdev->index,
+	l_rtnl_set_linkmode_and_operstate(rtnl, netdev->index,
 					IF_LINK_MODE_DORMANT, IF_OPER_UP,
 					netdev_operstate_cb,
 					L_UINT_TO_PTR(netdev->index), NULL);
@@ -2055,6 +2074,8 @@ static void netdev_cmd_connect_cb(struct l_genl_msg *msg, void *user_data)
 
 	/* Wait for connect event */
 	if (l_genl_msg_get_error(msg) >= 0) {
+		netdev->connected = true;
+
 		if (netdev->event_filter)
 			netdev->event_filter(netdev,
 						NETDEV_EVENT_ASSOCIATING,
@@ -2375,13 +2396,15 @@ static struct l_genl_msg *netdev_build_cmd_connect(struct netdev *netdev,
 	return msg;
 }
 
-static int netdev_connect_common(struct netdev *netdev,
-					struct l_genl_msg *cmd_connect,
-					struct scan_bss *bss,
-					struct handshake_state *hs,
-					struct eapol_sm *sm,
-					netdev_event_func_t event_filter,
-					netdev_connect_cb_t cb, void *user_data)
+struct rtnl_data {
+	struct netdev *netdev;
+	struct l_genl_msg *cmd_connect;
+	uint8_t addr[ETH_ALEN];
+	int ref;
+};
+
+static int netdev_begin_connection(struct netdev *netdev,
+					struct l_genl_msg *cmd_connect)
 {
 	if (cmd_connect) {
 		netdev->connect_cmd_id = l_genl_family_send(nl80211,
@@ -2394,10 +2417,195 @@ static int netdev_connect_common(struct netdev *netdev,
 		}
 	}
 
+	handshake_state_set_supplicant_address(netdev->handshake, netdev->addr);
+
+	/* set connected since the auth protocols cannot do so internally */
+	if (netdev->ap && auth_proto_start(netdev->ap))
+		netdev->connected = true;
+
+	return 0;
+}
+
+static void netdev_mac_change_failed(struct netdev *netdev,
+					struct rtnl_data *req, int error)
+{
+	l_error("Error setting mac address on %d: %s", netdev->index,
+			strerror(-error));
+
+	/*
+	 * If the interface is down and we failed to up it we need to notify
+	 * any watchers since we have been skipping the notification while
+	 * mac_change_cmd_id was set.
+	 */
+	if (!netdev_get_is_up(netdev)) {
+		l_genl_msg_unref(req->cmd_connect);
+
+		WATCHLIST_NOTIFY(&netdev_watches, netdev_watch_func_t,
+				netdev, NETDEV_WATCH_EVENT_DOWN);
+
+		goto failed;
+	} else {
+		/*
+		 * If the interface is up we can still try and connect. This
+		 * is a very rare case and most likely will never happen.
+		 */
+		l_info("Interface still up after failing to change the MAC, "
+			"continuing with connection");
+		if (netdev_begin_connection(netdev, req->cmd_connect) < 0)
+			goto failed;
+
+		return;
+	}
+
+failed:
+	netdev_connect_failed(netdev, NETDEV_RESULT_ABORTED,
+				MMPDU_STATUS_CODE_UNSPECIFIED);
+}
+
+static void netdev_mac_destroy(void *user_data)
+{
+	struct rtnl_data *req = user_data;
+
+	req->ref--;
+
+	/* still pending requests? */
+	if (req->ref)
+		return;
+
+	l_free(req);
+}
+
+static void netdev_mac_power_up_cb(int error, uint16_t type,
+					const void *data, uint32_t len,
+					void *user_data)
+{
+	struct rtnl_data *req = user_data;
+	struct netdev *netdev = req->netdev;
+
+	netdev->mac_change_cmd_id = 0;
+
+	if (error) {
+		l_error("Error taking interface %u up for per-network MAC "
+			"generation: %s", netdev->index, strerror(-error));
+		netdev_mac_change_failed(netdev, req, error);
+		return;
+	}
+
+	/*
+	 * Pick up where we left off in netdev_connect_commmon.
+	 */
+	if (netdev_begin_connection(netdev, req->cmd_connect) < 0) {
+		l_error("Failed to connect after changing MAC");
+		netdev_connect_failed(netdev, NETDEV_RESULT_ASSOCIATION_FAILED,
+				MMPDU_STATUS_CODE_UNSPECIFIED);
+	}
+}
+
+static void netdev_mac_power_down_cb(int error, uint16_t type,
+					const void *data, uint32_t len,
+					void *user_data)
+{
+	struct rtnl_data *req = user_data;
+	struct netdev *netdev = req->netdev;
+
+	netdev->mac_change_cmd_id = 0;
+
+	if (error) {
+		l_error("Error taking interface %u down for per-network MAC "
+			"generation: %s", netdev->index, strerror(-error));
+		netdev_mac_change_failed(netdev, req, error);
+		return;
+	}
+
+	l_debug("Setting generated address on ifindex: %d to: "MAC,
+					netdev->index, MAC_STR(req->addr));
+	netdev->mac_change_cmd_id = l_rtnl_set_mac(rtnl, netdev->index,
+					req->addr, true,
+					netdev_mac_power_up_cb, req,
+					netdev_mac_destroy);
+	if (!netdev->mac_change_cmd_id) {
+		netdev_mac_change_failed(netdev, req, -EIO);
+		return;
+	}
+
+	req->ref++;
+}
+
+/*
+ * TODO: There are some potential race conditions that are being ignored. There
+ *       is nothing that IWD itself can do to solve these, they require kernel
+ *       changes:
+ *
+ * 1. A perfectly timed ifdown could be ignored. If an external process
+ *    brings down an interface just before calling this function we would only
+ *    get a single newlink event since there is no state change doing a second
+ *    ifdown (nor an error from the kernel). This newlink event would be ignored
+ *    since IWD thinks its from our own doing. This would result in IWD changing
+ *    the MAC and bringing the interface back up which would look very strange
+ *    and unexpected to someone who just tried to ifdown an interface.
+ *
+ * 2. A perfectly timed ifup could result in a failed connection. If an external
+ *    process ifup's just after IWD ifdown's but before changing the MAC this
+ *    would cause the MAC change to fail. This failure would result in a failed
+ *    connection.
+ *
+ * Returns 0 if a MAC change procedure was started.
+ * Returns -EALREADY if the requested MAC matched our current MAC
+ * Returns -EIO if there was an IO error when powering down
+ */
+static int netdev_start_powered_mac_change(struct netdev *netdev,
+					struct scan_bss *bss,
+					struct l_genl_msg *cmd_connect)
+{
+	struct rtnl_data *req;
+	uint8_t new_addr[6];
+
+	/* No address set in handshake, use per-network MAC generation */
+	if (util_mem_is_zero(netdev->handshake->spa, ETH_ALEN))
+		wiphy_generate_address_from_ssid(netdev->wiphy,
+						(const char *)bss->ssid,
+						new_addr);
+	else
+		memcpy(new_addr, netdev->handshake->spa, ETH_ALEN);
+
+	/*
+	 * MAC has already been changed previously, no need to again
+	 */
+	if (!memcmp(new_addr, netdev->addr, sizeof(new_addr)))
+		return -EALREADY;
+
+	req = l_new(struct rtnl_data, 1);
+	req->netdev = netdev;
+	/* This message will need to be unreffed upon any error */
+	req->cmd_connect = cmd_connect;
+	req->ref++;
+	memcpy(req->addr, new_addr, sizeof(req->addr));
+
+	netdev->mac_change_cmd_id = l_rtnl_set_powered(rtnl, netdev->index,
+					false, netdev_mac_power_down_cb,
+					req, netdev_mac_destroy);
+
+	if (!netdev->mac_change_cmd_id) {
+		l_genl_msg_unref(req->cmd_connect);
+		l_free(req);
+
+		return -EIO;
+	}
+
+	return 0;
+}
+
+static int netdev_connect_common(struct netdev *netdev,
+					struct l_genl_msg *cmd_connect,
+					struct scan_bss *bss,
+					struct handshake_state *hs,
+					struct eapol_sm *sm,
+					netdev_event_func_t event_filter,
+					netdev_connect_cb_t cb, void *user_data)
+{
 	netdev->event_filter = event_filter;
 	netdev->connect_cb = cb;
 	netdev->user_data = user_data;
-	netdev->connected = true;
 	netdev->handshake = hs;
 	netdev->sm = sm;
 	netdev->frequency = bss->frequency;
@@ -2406,15 +2614,19 @@ static int netdev_connect_common(struct netdev *netdev,
 	netdev_rssi_level_init(netdev);
 
 	handshake_state_set_authenticator_address(hs, bss->addr);
-	handshake_state_set_supplicant_address(hs, netdev->addr);
 
 	if (!wiphy_has_ext_feature(netdev->wiphy,
 					NL80211_EXT_FEATURE_CAN_REPLACE_PTK0))
 		handshake_state_set_no_rekey(hs, true);
 
-	auth_proto_start(netdev->ap);
+	if (mac_per_ssid) {
+		int ret = netdev_start_powered_mac_change(netdev, bss,
+								cmd_connect);
+		if (ret != -EALREADY)
+			return ret;
+	}
 
-	return 0;
+	return netdev_begin_connection(netdev, cmd_connect);
 }
 
 int netdev_connect(struct netdev *netdev, struct scan_bss *bss,
@@ -2432,7 +2644,7 @@ int netdev_connect(struct netdev *netdev, struct scan_bss *bss,
 			netdev->type != NL80211_IFTYPE_P2P_CLIENT)
 		return -ENOTSUP;
 
-	if (netdev->connected)
+	if (netdev->connected || netdev->connect_cmd_id)
 		return -EISCONN;
 
 	switch (hs->akm_suite) {
@@ -3817,7 +4029,7 @@ static void netdev_set_iftype_cb(struct l_genl_msg *msg, void *user_data)
 		goto done;
 
 	netdev->set_powered_cmd_id =
-			rtnl_set_powered(rtnl, netdev->index, true,
+			l_rtnl_set_powered(rtnl, netdev->index, true,
 					netdev_set_iftype_up_cb, req,
 					netdev_set_iftype_request_destroy);
 	if (!netdev->set_powered_cmd_id) {
@@ -3913,7 +4125,7 @@ int netdev_set_iftype(struct netdev *netdev, enum netdev_iftype type,
 		l_genl_msg_unref(msg);
 	} else {
 		netdev->set_powered_cmd_id =
-			rtnl_set_powered(rtnl, netdev->index, false,
+			l_rtnl_set_powered(rtnl, netdev->index, false,
 					netdev_set_iftype_down_cb, req,
 					netdev_set_iftype_request_destroy);
 		if (netdev->set_powered_cmd_id)
@@ -4068,7 +4280,14 @@ static void netdev_newlink_notify(const struct ifinfomsg *ifi, int bytes)
 
 	new_up = netdev_get_is_up(netdev);
 
-	if (old_up != new_up)
+	/*
+	 * If mac_change_cmd_id is set we are in the process of changing the
+	 * MAC address and this event is a result of powering down/up. In this
+	 * case we do not want to emit a netdev DOWN/UP event as this would
+	 * cause other modules to behave as such. We do, however, want to emit
+	 * address changes so other modules get the new MAC address updated.
+	 */
+	if (old_up != new_up && !netdev->mac_change_cmd_id)
 		WATCHLIST_NOTIFY(&netdev_watches, netdev_watch_func_t,
 				netdev, new_up ? NETDEV_WATCH_EVENT_UP :
 						NETDEV_WATCH_EVENT_DOWN);
@@ -4116,7 +4335,7 @@ static void netdev_initial_up_cb(int error, uint16_t type, const void *data,
 			return;
 	}
 
-	rtnl_set_linkmode_and_operstate(rtnl, netdev->index,
+	l_rtnl_set_linkmode_and_operstate(rtnl, netdev->index,
 					IF_LINK_MODE_DORMANT, IF_OPER_DOWN,
 					netdev_operstate_cb,
 					L_UINT_TO_PTR(netdev->index), NULL);
@@ -4136,20 +4355,6 @@ static void netdev_initial_up_cb(int error, uint16_t type, const void *data,
 	netdev->events_ready = true;
 }
 
-static void netdev_set_mac_cb(int error, uint16_t type, const void *data,
-					uint32_t len, void *user_data)
-{
-	struct netdev *netdev = user_data;
-
-	if (error)
-		l_error("Error setting mac address on %d: %s", netdev->index,
-			strerror(-error));
-
-	netdev->set_powered_cmd_id =
-		rtnl_set_powered(rtnl, netdev->index, true,
-					netdev_initial_up_cb, netdev, NULL);
-}
-
 static bool netdev_check_set_mac(struct netdev *netdev)
 {
 	if (util_mem_is_zero(netdev->set_mac_once, 6))
@@ -4158,8 +4363,8 @@ static bool netdev_check_set_mac(struct netdev *netdev)
 	l_debug("Setting initial address on ifindex: %d to: " MAC,
 		netdev->index, MAC_STR(netdev->set_mac_once));
 	netdev->set_powered_cmd_id =
-		rtnl_set_mac(rtnl, netdev->index, netdev->set_mac_once,
-				netdev_set_mac_cb, netdev, NULL);
+		l_rtnl_set_mac(rtnl, netdev->index, netdev->set_mac_once, true,
+				netdev_initial_up_cb, netdev, NULL);
 	memset(netdev->set_mac_once, 0, 6);
 	return true;
 }
@@ -4183,7 +4388,7 @@ static void netdev_initial_down_cb(int error, uint16_t type, const void *data,
 		return;
 
 	netdev->set_powered_cmd_id =
-		rtnl_set_powered(rtnl, netdev->index, true,
+		l_rtnl_set_powered(rtnl, netdev->index, true,
 					netdev_initial_up_cb, netdev, NULL);
 }
 
@@ -4228,7 +4433,7 @@ static void netdev_getlink_cb(int error, uint16_t type, const void *data,
 	cb = powered ? netdev_initial_down_cb : netdev_initial_up_cb;
 
 	netdev->set_powered_cmd_id =
-		rtnl_set_powered(rtnl, ifi->ifi_index, !powered, cb, netdev,
+		l_rtnl_set_powered(rtnl, ifi->ifi_index, !powered, cb, netdev,
 					NULL);
 }
 
@@ -4464,6 +4669,7 @@ static int netdev_init(void)
 {
 	struct l_genl *genl = iwd_get_genl();
 	const struct l_settings *settings = iwd_get_config();
+	const char *rand_addr_str;
 
 	if (rtnl)
 		return -EALREADY;
@@ -4498,6 +4704,11 @@ static int netdev_init(void)
 	if (!l_settings_get_bool(settings, "General", "ControlPortOverNL80211",
 					&pae_over_nl80211))
 		pae_over_nl80211 = true;
+
+	rand_addr_str = l_settings_get_value(settings, "General",
+						"AddressRandomization");
+	if (rand_addr_str && !strcmp(rand_addr_str, "network"))
+		mac_per_ssid = true;
 
 	watchlist_init(&netdev_watches, NULL);
 	netdev_list = l_queue_new();

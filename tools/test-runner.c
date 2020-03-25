@@ -408,7 +408,7 @@ static bool start_qemu(void)
 			"mac80211_hwsim.radios=0 init=%s TESTHOME=%s "
 			"TESTVERBOUT=\'%s\' DEBUG_FILTER=\'%s\'"
 			"TEST_ACTION=%u TEST_ACTION_PARAMS=\'%s\' "
-			"TESTARGS=\'%s\' PATH=\'%s\' VALGRIND=%u"
+			"TESTARGS=\'%s\' PATH=\'%s\' VALGRIND=%u "
 			"GDB=\'%s\' HW=\'%s\' SHELL=%u "
 			"LOG_PATH=\'%s\' LOG_UID=\'%d\' LOG_GID=\'%d\'",
 			check_verbosity("kernel") ? "ignore_loglevel" : "quiet",
@@ -989,7 +989,7 @@ static void stop_ofono(pid_t pid)
 }
 
 static pid_t start_hostapd(char **config_files, struct wiphy **wiphys,
-				const char *test_name)
+				const char *test_name, const char *radius_conf)
 {
 	char **argv;
 	pid_t pid;
@@ -1028,6 +1028,9 @@ static pid_t start_hostapd(char **config_files, struct wiphy **wiphys,
 
 		argv[idx++] = config_files[i];
 	}
+
+	if (radius_conf)
+		argv[idx++] = (void *)radius_conf;
 
 	if (verbose) {
 		argv[idx++] = "-d";
@@ -1358,6 +1361,7 @@ static bool configure_hostapd_instances(struct l_settings *hw_settings,
 	int i;
 	char **hostapd_config_file_paths;
 	struct wiphy **wiphys;
+	const char *radius_config = NULL;
 
 	*phys_used = 0;
 
@@ -1373,7 +1377,7 @@ static bool configure_hostapd_instances(struct l_settings *hw_settings,
 
 	hostapd_config_file_paths = l_new(char *, i + 1);
 	wiphys = alloca(sizeof(struct wiphy *) * (i + 1));
-	wiphys[i] = NULL;
+	memset(wiphys, 0, sizeof(struct wiphy *) * (i + 1));
 
 	hostapd_pids_out[0] = -1;
 
@@ -1398,8 +1402,12 @@ static bool configure_hostapd_instances(struct l_settings *hw_settings,
 			goto done;
 		}
 
-		if (!strcmp(hostap_keys[i], "radius_server"))
+		if (!strcmp(hostap_keys[i], "radius_server")) {
+			radius_config = l_settings_get_value(hw_settings,
+						HW_CONFIG_GROUP_HOSTAPD,
+						"radius_server");
 			continue;
+		}
 
 		for (wiphy_entry = l_queue_get_entries(wiphy_list);
 					wiphy_entry;
@@ -1478,7 +1486,8 @@ hostapd_done:
 	}
 
 	hostapd_pids_out[0] = start_hostapd(hostapd_config_file_paths, wiphys,
-						basename(config_dir_path));
+						basename(config_dir_path),
+						radius_config);
 	hostapd_pids_out[1] = -1;
 
 done:
@@ -2073,7 +2082,7 @@ static void create_network_and_run_tests(void *data, void *user_data)
 	if (chdir(config_dir_path) < 0) {
 		l_error("Failed to change to test directory: %s",
 							strerror(errno));
-		goto exit_hwsim;
+		goto free_hw_settings;
 	}
 
 	tmpfs_extra_stuff =
@@ -2097,7 +2106,7 @@ static void create_network_and_run_tests(void *data, void *user_data)
 
 			if (!ofono_found || !phonesim_found) {
 				l_info("ofono or phonesim not found, skipping");
-				goto exit_hwsim;
+				goto free_tmpfs_extra;
 			}
 
 			ofono_req = true;
@@ -2194,7 +2203,7 @@ static void create_network_and_run_tests(void *data, void *user_data)
 						HW_CONFIG_GROUP_SETUP,
 						HW_CONFIG_SETUP_IWD_CONF_DIR);
 		if (!iwd_config_dir)
-			iwd_config_dir = DAEMON_CONFIGDIR;
+			iwd_config_dir = "/tmp";
 
 		iwd_pid = start_iwd(iwd_config_dir, wiphy_list,
 				iwd_ext_options, iwd_phys, test_name);
@@ -2268,7 +2277,6 @@ exit_hostapd:
 remove_abs_paths:
 	remove_absolute_path_dirs(tmpfs_extra_stuff);
 
-exit_hwsim:
 	/*
 	 * If running in hwsim mode, we want to completely free/destroy the
 	 * wiphy list since it will be re-populated on the next test. For the
@@ -2280,8 +2288,10 @@ exit_hwsim:
 	else
 		l_queue_foreach(wiphy_list, wiphy_reset, NULL);
 
-	l_settings_free(hw_settings);
+free_tmpfs_extra:
 	l_strfreev(tmpfs_extra_stuff);
+free_hw_settings:
+	l_settings_free(hw_settings);
 }
 
 struct stat_totals {
@@ -3104,7 +3114,7 @@ int main(int argc, char *argv[])
 	for (;;) {
 		int opt;
 
-		opt = getopt_long(argc, argv, "A:q:k:v:g:l:UVdh", main_options,
+		opt = getopt_long(argc, argv, "A:q:k:v:g:sl:UVdh", main_options,
 									NULL);
 		if (opt < 0)
 			break;

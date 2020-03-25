@@ -2,7 +2,7 @@
  *
  *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017-2019  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2017-2020  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -572,10 +572,10 @@ static void proxy_interface_create(const char *path,
 		proxy->path = l_strdup(path);
 		proxy->type = interface_type;
 
+		l_queue_push_tail(proxy_interfaces, proxy);
+
 		if (interface_type->ops && interface_type->ops->create)
 			proxy->data = interface_type->ops->create();
-
-		l_queue_push_tail(proxy_interfaces, proxy);
 	}
 }
 
@@ -745,14 +745,6 @@ static void get_managed_objects_callback(struct l_dbus_message *message,
 	while (l_dbus_message_iter_next_entry(&objects, &path, &object))
 		proxy_interfaces_update_properties(path, &object);
 
-	if (!command_needs_no_agent()) {
-		if (!agent_manager_register_agent()) {
-			display_error("Failed to register Agent.\n");
-
-			goto error;
-		}
-	}
-
 	if (command_is_interactive_mode())
 		display_enable_cmd_prompt();
 	else
@@ -878,8 +870,7 @@ bool dbus_proxy_exit(void)
 {
 	struct interface_type_desc *desc;
 
-	if (!command_needs_no_agent())
-		agent_manager_unregister_agent();
+	agent_manager_unregister_agent();
 
 	for (desc = __start___interface; desc < __stop___interface; desc++) {
 		if (!desc->exit)

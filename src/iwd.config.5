@@ -91,7 +91,7 @@ _
 T{
 AddressRandomization
 T}	T{
-Values: \fBdisabled\fP, once
+Values: \fBdisabled\fP, once, network
 .sp
 If \fBAddressRandomization\fP is set to \fBdisabled\fP, the default kernel
 behavior is used.  This means the kernel will assign a mac address from
@@ -102,6 +102,12 @@ is permanent.
 If \fBAddressRandomization\fP is set to \fBonce\fP, MAC address is
 randomized a single time when \fBiwd\fP starts or when the hardware is
 detected for the first time (due to hotplug, etc.)
+.sp
+If \fBAddressRandomization\fP is set to \fBnetwork\fP, the MAC address is
+randomized on each connection to a network. The MAC is generated based on
+the SSID and permanent address of the adapter. This allows the same MAC
+to be generated each time connecting to a given SSID while still hiding
+the permanent address.
 T}
 _
 T{
