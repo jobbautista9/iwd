@@ -1,8 +1,9 @@
-iwd (1.6-1) UNRELEASED; urgency=medium
+iwd (1.6-1) unstable; urgency=medium
 
   * New upstream release.
+  * Add debian/iwd.bug-presubj with instructions for bug reporting
 
- -- Andreas Henriksson <andreas@fatal.se>  Wed, 25 Mar 2020 14:47:53 +0100
+ -- Andreas Henriksson <andreas@fatal.se>  Wed, 25 Mar 2020 15:01:09 +0100
 
 iwd (1.5-1) unstable; urgency=medium
 
