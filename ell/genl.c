@@ -34,7 +34,6 @@
 #include "io.h"
 #include "netlink-private.h"
 #include "genl.h"
-#include "genl-private.h"
 #include "private.h"
 
 #define MAX_NESTING_LEVEL 4
@@ -767,7 +766,7 @@ static bool msg_grow(struct l_genl_msg *msg, uint32_t needed)
 	return true;
 }
 
-struct l_genl_msg *_genl_msg_create(const struct nlmsghdr *nlmsg)
+static struct l_genl_msg *msg_create(const struct nlmsghdr *nlmsg)
 {
 	struct l_genl_msg *msg;
 
@@ -796,6 +795,32 @@ done:
 	return l_genl_msg_ref(msg);
 }
 
+static const void *msg_as_bytes(struct l_genl_msg *msg, uint16_t type,
+				uint16_t flags, uint32_t seq, uint32_t pid,
+				size_t *out_size)
+{
+	struct nlmsghdr *nlmsg;
+	struct genlmsghdr *genlmsg;
+
+	nlmsg = msg->data;
+
+	nlmsg->nlmsg_len = msg->len;
+	nlmsg->nlmsg_type = type;
+	nlmsg->nlmsg_flags = flags;
+	nlmsg->nlmsg_seq = seq;
+	nlmsg->nlmsg_pid = pid;
+
+	genlmsg = msg->data + NLMSG_HDRLEN;
+
+	genlmsg->cmd = msg->cmd;
+	genlmsg->version = msg->version;
+
+	if (out_size)
+		*out_size = msg->len;
+
+	return msg->data;
+}
+
 static void write_watch_destroy(void *user_data)
 {
 	struct l_genl *genl = user_data;
@@ -807,8 +832,8 @@ static bool can_write_data(struct l_io *io, void *user_data)
 {
 	struct l_genl *genl = user_data;
 	struct genl_request *request;
-	struct nlmsghdr *nlmsg;
-	struct genlmsghdr *genlmsg;
+	const void *data;
+	size_t size;
 	ssize_t bytes_written;
 
 	request = l_queue_pop_head(genl->request_queue);
@@ -816,22 +841,10 @@ static bool can_write_data(struct l_io *io, void *user_data)
 		return false;
 
 	request->seq = get_next_id(&genl->next_seq);
+	data = msg_as_bytes(request->msg, request->type, request->flags,
+				request->seq, genl->pid, &size);
 
-	nlmsg = request->msg->data;
-
-	nlmsg->nlmsg_len = request->msg->len;
-	nlmsg->nlmsg_type = request->type;
-	nlmsg->nlmsg_flags = request->flags;
-	nlmsg->nlmsg_seq = request->seq;
-	nlmsg->nlmsg_pid = genl->pid;
-
-	genlmsg = request->msg->data + NLMSG_HDRLEN;
-
-	genlmsg->cmd = request->msg->cmd;
-	genlmsg->version = request->msg->version;
-
-	bytes_written = send(genl->fd, request->msg->data,
-						request->msg->len, 0);
+	bytes_written = send(genl->fd, data, size, 0);
 	if (bytes_written < 0) {
 		l_queue_push_head(genl->request_queue, request);
 		return false;
@@ -912,7 +925,7 @@ static void process_unicast(struct l_genl *genl, const struct nlmsghdr *nlmsg)
 					nlmsg->nlmsg_type == NLMSG_OVERRUN)
 		return;
 
-	msg = _genl_msg_create(nlmsg);
+	msg = msg_create(nlmsg);
 	if (!nlmsg->nlmsg_seq) {
 		if (msg)
 			dispatch_unicast_watches(genl, nlmsg->nlmsg_type, msg);
@@ -947,7 +960,7 @@ static void process_multicast(struct l_genl *genl, uint32_t group,
 						const struct nlmsghdr *nlmsg)
 {
 	const struct l_queue_entry *entry;
-	struct l_genl_msg *msg = _genl_msg_create(nlmsg);
+	struct l_genl_msg *msg = msg_create(nlmsg);
 
 	if (!msg)
 		return;
@@ -1492,33 +1505,6 @@ LIB_EXPORT bool l_genl_request_family(struct l_genl *genl, const char *name,
 	return false;
 }
 
-const void *_genl_msg_as_bytes(struct l_genl_msg *msg, uint16_t type,
-					uint16_t flags, uint32_t seq,
-					uint32_t pid,
-					size_t *out_size)
-{
-	struct nlmsghdr *nlmsg;
-	struct genlmsghdr *genlmsg;
-
-	nlmsg = msg->data;
-
-	nlmsg->nlmsg_len = msg->len;
-	nlmsg->nlmsg_type = type;
-	nlmsg->nlmsg_flags = flags;
-	nlmsg->nlmsg_seq = seq;
-	nlmsg->nlmsg_pid = pid;
-
-	genlmsg = msg->data + NLMSG_HDRLEN;
-
-	genlmsg->cmd = msg->cmd;
-	genlmsg->version = msg->version;
-
-	if (out_size)
-		*out_size = msg->len;
-
-	return msg->data;
-}
-
 LIB_EXPORT struct l_genl_msg *l_genl_msg_new(uint8_t cmd)
 {
 	return l_genl_msg_new_sized(cmd, 0);
@@ -1527,6 +1513,28 @@ LIB_EXPORT struct l_genl_msg *l_genl_msg_new(uint8_t cmd)
 LIB_EXPORT struct l_genl_msg *l_genl_msg_new_sized(uint8_t cmd, uint32_t size)
 {
 	return msg_alloc(cmd, 0x00, size);
+}
+
+LIB_EXPORT struct l_genl_msg *l_genl_msg_new_from_data(const void *data,
+							size_t size)
+{
+	const struct nlmsghdr *nlmsg = (const void *) data;
+
+	if (size < sizeof(struct nlmsghdr))
+		return NULL;
+
+	if (size < nlmsg->nlmsg_len)
+		return NULL;
+
+	return msg_create(nlmsg);
+}
+
+LIB_EXPORT const void *l_genl_msg_to_data(struct l_genl_msg *msg, uint16_t type,
+						uint16_t flags, uint32_t seq,
+						uint32_t pid,
+						size_t *out_size)
+{
+	return msg_as_bytes(msg, type, flags, seq, pid, out_size);
 }
 
 LIB_EXPORT struct l_genl_msg *l_genl_msg_ref(struct l_genl_msg *msg)
@@ -1800,7 +1808,7 @@ LIB_EXPORT struct l_genl_family *l_genl_family_new(struct l_genl *genl,
 	if (!entry)
 		return NULL;
 
-	family = family_alloc(genl, info->id);
+	family = family_alloc(l_genl_ref(genl), info->id);
 
 	return family;
 }
@@ -2059,4 +2067,5 @@ LIB_EXPORT void l_genl_family_free(struct l_genl_family *family)
 	}
 
 	l_free(family);
+	l_genl_unref(genl);
 }

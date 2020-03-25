@@ -39,6 +39,7 @@ ell_headers = ell/util.h \
 			ell/netlink.h \
 			ell/genl.h \
 			ell/dbus.h \
+			ell/rtnl.h \
 			ell/dbus-service.h \
 			ell/dbus-client.h \
 			ell/hwdb.h \
@@ -82,8 +83,8 @@ ell_sources = ell/private.h \
 			ell/checksum.c \
 			ell/netlink-private.h \
 			ell/netlink.c \
-			ell/genl-private.h \
 			ell/genl.c \
+			ell/rtnl.c \
 			ell/dbus-private.h \
 			ell/dbus.c \
 			ell/dbus-message.c \
@@ -217,7 +218,6 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h src/missing.h \
 					src/manager.c \
 					src/erp.h src/erp.c \
 					src/fils.h src/fils.c \
-					src/rtnlutil.h src/rtnlutil.c \
 					src/auth-proto.h \
 					src/anqp.h src/anqp.c \
 					src/anqputil.h src/anqputil.c \
@@ -337,6 +337,15 @@ if MANUAL_PAGES
 man_MANS += wired/ead.8
 endif
 endif
+
+noinst_PROGRAMS += tools/probe-req
+
+tools_probe_req_SOURCES = tools/probe-req.c src/mpdu.h src/mpdu.c \
+					src/ie.h src/ie.c \
+					src/nl80211util.h src/nl80211util.c \
+					src/util.h src/util.c \
+					src/common.h src/common.c
+tools_probe_req_LDADD = $(ell_ldadd)
 
 if HWSIM
 bin_PROGRAMS += tools/hwsim
@@ -630,8 +639,9 @@ SED_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && $(SED) \
 		< $< > $@
 
 if RUN_RST2MAN
-RST2MAN_PROCESS = $(AM_V_GEN)$(RST2MAN) --strict --no-raw --no-generator \
-			--no-datestamp $< $@
+RST2MAN_PROCESS = $(AM_V_GEN)$(MKDIR_P) $(dir $@) && \
+			$(RST2MAN) --strict --no-raw \
+			--no-generator --no-datestamp $< $@
 else
 RST2MAN_PROCESS = $(AM_V_GEN)test -f $@ || \
 		{ echo "Generated manual page $@ does not exist"; false; }

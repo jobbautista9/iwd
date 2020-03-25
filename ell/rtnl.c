@@ -1,6 +1,6 @@
 /*
  *
- *  Wireless daemon for Linux
+ *  Embedded Linux library
  *
  *  Copyright (C) 2019  Intel Corporation. All rights reserved.
  *
@@ -24,14 +24,15 @@
 #include <config.h>
 #endif
 
-#include <sys/socket.h>
+#define _GNU_SOURCE
 #include <linux/if.h>
-#include <linux/rtnetlink.h>
+#include <sys/socket.h>
 #include <arpa/inet.h>
 
-#include <ell/ell.h>
-
-#include "src/rtnlutil.h"
+#include "util.h"
+#include "netlink.h"
+#include "log.h"
+#include "rtnl.h"
 
 static size_t rta_add_u8(void *rta_buf, unsigned short type, uint8_t value)
 {
@@ -67,7 +68,71 @@ static size_t rta_add_data(void *rta_buf, unsigned short type, void *data,
 	return RTA_SPACE(data_len);
 }
 
-uint32_t rtnl_set_linkmode_and_operstate(struct l_netlink *rtnl, int ifindex,
+static void l_rtnl_route_extract(const struct rtmsg *rtmsg, uint32_t len,
+				int family, uint32_t *table, uint32_t *ifindex,
+				uint32_t *priority, uint8_t *pref,
+				char **dst, char **gateway, char **src)
+{
+	struct rtattr *attr;
+	char buf[INET6_ADDRSTRLEN];
+
+	/* Not extracted at the moment: RTA_CACHEINFO for IPv6 */
+	for (attr = RTM_RTA(rtmsg); RTA_OK(attr, len);
+						attr = RTA_NEXT(attr, len)) {
+		switch (attr->rta_type) {
+		case RTA_DST:
+			if (!dst)
+				break;
+
+			inet_ntop(family, RTA_DATA(attr), buf, sizeof(buf));
+			*dst = l_strdup(buf);
+
+			break;
+		case RTA_GATEWAY:
+			if (!gateway)
+				break;
+
+			inet_ntop(family, RTA_DATA(attr), buf, sizeof(buf));
+			*gateway = l_strdup(buf);
+
+			break;
+		case RTA_PREFSRC:
+			if (!src)
+				break;
+
+			inet_ntop(family, RTA_DATA(attr), buf, sizeof(buf));
+			*src = l_strdup(buf);
+
+			break;
+		case RTA_TABLE:
+			if (!table)
+				break;
+
+			*table = *((uint32_t *) RTA_DATA(attr));
+			break;
+		case RTA_PRIORITY:
+			if (!priority)
+				break;
+
+			*priority = *((uint32_t *) RTA_DATA(attr));
+			break;
+		case RTA_PREF:
+			if (!pref)
+				break;
+
+			*pref = *((uint8_t *) RTA_DATA(attr));
+			break;
+		case RTA_OIF:
+			if (!ifindex)
+				break;
+
+			*ifindex = *((uint32_t *) RTA_DATA(attr));
+			break;
+		}
+	}
+}
+
+uint32_t l_rtnl_set_linkmode_and_operstate(struct l_netlink *rtnl, int ifindex,
 					uint8_t linkmode, uint8_t operstate,
 					l_netlink_command_func_t cb,
 					void *user_data,
@@ -100,8 +165,9 @@ uint32_t rtnl_set_linkmode_and_operstate(struct l_netlink *rtnl, int ifindex,
 	return id;
 }
 
-uint32_t rtnl_set_mac(struct l_netlink *rtnl, int ifindex,
+uint32_t l_rtnl_set_mac(struct l_netlink *rtnl, int ifindex,
 					const uint8_t addr[static 6],
+					bool power_up,
 					l_netlink_command_func_t cb,
 					void *user_data,
 					l_netlink_destroy_func_t destroy)
@@ -119,6 +185,11 @@ uint32_t rtnl_set_mac(struct l_netlink *rtnl, int ifindex,
 	rtmmsg->ifi_family = AF_UNSPEC;
 	rtmmsg->ifi_index = ifindex;
 
+	if (power_up) {
+		rtmmsg->ifi_change = IFF_UP;
+		rtmmsg->ifi_flags = IFF_UP;
+	}
+
 	rta_buf = (void *) rtmmsg + NLMSG_ALIGN(sizeof(struct ifinfomsg));
 
 	rta_buf += rta_add_data(rta_buf, IFLA_ADDRESS, (void *) addr, 6);
@@ -131,7 +202,7 @@ uint32_t rtnl_set_mac(struct l_netlink *rtnl, int ifindex,
 	return id;
 }
 
-uint32_t rtnl_set_powered(struct l_netlink *rtnl, int ifindex, bool powered,
+uint32_t l_rtnl_set_powered(struct l_netlink *rtnl, int ifindex, bool powered,
 				l_netlink_command_func_t cb, void *user_data,
 				l_netlink_destroy_func_t destroy)
 {
@@ -156,7 +227,7 @@ uint32_t rtnl_set_powered(struct l_netlink *rtnl, int ifindex, bool powered,
 	return id;
 }
 
-void rtnl_ifaddr_extract(const struct ifaddrmsg *ifa, int bytes,
+void l_rtnl_ifaddr4_extract(const struct ifaddrmsg *ifa, int bytes,
 				char **label, char **ip, char **broadcast)
 {
 	struct in_addr in_addr;
@@ -191,7 +262,7 @@ void rtnl_ifaddr_extract(const struct ifaddrmsg *ifa, int bytes,
 	}
 }
 
-uint32_t rtnl_ifaddr_get(struct l_netlink *rtnl, l_netlink_command_func_t cb,
+uint32_t l_rtnl_ifaddr4_dump(struct l_netlink *rtnl, l_netlink_command_func_t cb,
 					void *user_data,
 					l_netlink_destroy_func_t destroy)
 {
@@ -212,7 +283,7 @@ uint32_t rtnl_ifaddr_get(struct l_netlink *rtnl, l_netlink_command_func_t cb,
 	return id;
 }
 
-static uint32_t rtnl_ifaddr_change(struct l_netlink *rtnl, uint16_t nlmsg_type,
+static uint32_t l_rtnl_ifaddr4_change(struct l_netlink *rtnl, uint16_t nlmsg_type,
 					int ifindex, uint8_t prefix_len,
 					const char *ip, const char *broadcast,
 					l_netlink_command_func_t
@@ -269,71 +340,35 @@ static uint32_t rtnl_ifaddr_change(struct l_netlink *rtnl, uint16_t nlmsg_type,
 	return id;
 }
 
-uint32_t rtnl_ifaddr_add(struct l_netlink *rtnl, int ifindex,
+uint32_t l_rtnl_ifaddr4_add(struct l_netlink *rtnl, int ifindex,
 				uint8_t prefix_len, const char *ip,
 				const char *broadcast,
 				l_netlink_command_func_t cb, void *user_data,
 				l_netlink_destroy_func_t destroy)
 {
-	return rtnl_ifaddr_change(rtnl, RTM_NEWADDR, ifindex, prefix_len, ip,
+	return l_rtnl_ifaddr4_change(rtnl, RTM_NEWADDR, ifindex, prefix_len, ip,
 					broadcast, cb, user_data, destroy);
 }
 
-uint32_t rtnl_ifaddr_delete(struct l_netlink *rtnl, int ifindex,
+uint32_t l_rtnl_ifaddr4_delete(struct l_netlink *rtnl, int ifindex,
 				uint8_t prefix_len, const char *ip,
 				const char *broadcast,
 				l_netlink_command_func_t cb, void *user_data,
 				l_netlink_destroy_func_t destroy)
 {
-	return rtnl_ifaddr_change(rtnl, RTM_DELADDR, ifindex, prefix_len, ip,
+	return l_rtnl_ifaddr4_change(rtnl, RTM_DELADDR, ifindex, prefix_len, ip,
 					broadcast, cb, user_data, destroy);
 }
 
-void rtnl_route_extract_ipv4(const struct rtmsg *rtmsg, uint32_t len,
-				uint32_t *ifindex, char **dst, char **gateway,
-				char **src)
+void l_rtnl_route4_extract(const struct rtmsg *rtmsg, uint32_t len,
+				uint32_t *table, uint32_t *ifindex,
+				char **dst, char **gateway, char **src)
 {
-	struct in_addr in_addr;
-	struct rtattr *attr;
-
-	for (attr = RTM_RTA(rtmsg); RTA_OK(attr, len);
-						attr = RTA_NEXT(attr, len)) {
-		switch (attr->rta_type) {
-		case RTA_DST:
-			if (!dst)
-				break;
-
-			in_addr = *((struct in_addr *) RTA_DATA(attr));
-			*dst = l_strdup(inet_ntoa(in_addr));
-
-			break;
-		case RTA_GATEWAY:
-			if (!gateway)
-				break;
-
-			in_addr = *((struct in_addr *) RTA_DATA(attr));
-			*gateway = l_strdup(inet_ntoa(in_addr));
-
-			break;
-		case RTA_PREFSRC:
-			if (!src)
-				break;
-
-			in_addr = *((struct in_addr *) RTA_DATA(attr));
-			*src = l_strdup(inet_ntoa(in_addr));
-
-			break;
-		case RTA_OIF:
-			if (!ifindex)
-				break;
-
-			*ifindex = *((uint32_t *) RTA_DATA(attr));
-			break;
-		}
-	}
+	l_rtnl_route_extract(rtmsg, len, AF_INET, table, ifindex,
+				NULL, NULL, dst, gateway, src);
 }
 
-uint32_t rtnl_route_dump_ipv4(struct l_netlink *rtnl,
+uint32_t l_rtnl_route4_dump(struct l_netlink *rtnl,
 				l_netlink_command_func_t cb, void *user_data,
 				l_netlink_destroy_func_t destroy)
 {
@@ -347,7 +382,7 @@ uint32_t rtnl_route_dump_ipv4(struct l_netlink *rtnl,
 					destroy);
 }
 
-static uint32_t rtnl_route_add(struct l_netlink *rtnl, int ifindex,
+static uint32_t l_rtnl_route4_add(struct l_netlink *rtnl, int ifindex,
 					uint8_t scope, uint8_t dst_len,
 					const char *dst, const char *gateway,
 					const char *src,
@@ -421,18 +456,18 @@ static uint32_t rtnl_route_add(struct l_netlink *rtnl, int ifindex,
 								destroy);
 }
 
-uint32_t rtnl_route_ipv4_add_connected(struct l_netlink *rtnl, int ifindex,
+uint32_t l_rtnl_route4_add_connected(struct l_netlink *rtnl, int ifindex,
 					uint8_t dst_len, const char *dst,
 					const char *src, uint8_t proto,
 					l_netlink_command_func_t cb,
 					void *user_data,
 					l_netlink_destroy_func_t destroy)
 {
-	return rtnl_route_add(rtnl, ifindex, RT_SCOPE_LINK, dst_len, dst, NULL,
+	return l_rtnl_route4_add(rtnl, ifindex, RT_SCOPE_LINK, dst_len, dst, NULL,
 				src, 0, proto, cb, user_data, destroy);
 }
 
-uint32_t rtnl_route_ipv4_add_gateway(struct l_netlink *rtnl, int ifindex,
+uint32_t l_rtnl_route4_add_gateway(struct l_netlink *rtnl, int ifindex,
 					const char *gateway, const char *src,
 					uint32_t priority_offset,
 					uint8_t proto,
@@ -440,12 +475,12 @@ uint32_t rtnl_route_ipv4_add_gateway(struct l_netlink *rtnl, int ifindex,
 					void *user_data,
 					l_netlink_destroy_func_t destroy)
 {
-	return rtnl_route_add(rtnl, ifindex, RT_SCOPE_UNIVERSE, 0, NULL,
+	return l_rtnl_route4_add(rtnl, ifindex, RT_SCOPE_UNIVERSE, 0, NULL,
 				gateway, src, priority_offset, proto, cb,
 				user_data, destroy);
 }
 
-void rtnl_ifaddr_ipv6_extract(const struct ifaddrmsg *ifa, int len, char **ip)
+void l_rtnl_ifaddr6_extract(const struct ifaddrmsg *ifa, int len, char **ip)
 {
 	struct in6_addr in6_addr;
 	struct rtattr *attr;
@@ -475,7 +510,7 @@ void rtnl_ifaddr_ipv6_extract(const struct ifaddrmsg *ifa, int len, char **ip)
 	}
 }
 
-uint32_t rtnl_ifaddr_ipv6_get(struct l_netlink *rtnl,
+uint32_t l_rtnl_ifaddr6_dump(struct l_netlink *rtnl,
 				l_netlink_command_func_t cb, void *user_data,
 				l_netlink_destroy_func_t destroy)
 {
@@ -496,7 +531,7 @@ uint32_t rtnl_ifaddr_ipv6_get(struct l_netlink *rtnl,
 	return id;
 }
 
-static uint32_t rtnl_ifaddr_ipv6_change(struct l_netlink *rtnl,
+static uint32_t l_rtnl_ifaddr6_change(struct l_netlink *rtnl,
 					uint16_t nlmsg_type,
 					int ifindex, uint8_t prefix_len,
 					const char *ip,
@@ -540,26 +575,48 @@ static uint32_t rtnl_ifaddr_ipv6_change(struct l_netlink *rtnl,
 	return id;
 }
 
-uint32_t rtnl_ifaddr_ipv6_add(struct l_netlink *rtnl, int ifindex,
+uint32_t l_rtnl_ifaddr6_add(struct l_netlink *rtnl, int ifindex,
 				uint8_t prefix_len, const char *ip,
 				l_netlink_command_func_t cb, void *user_data,
 				l_netlink_destroy_func_t destroy)
 {
-	return rtnl_ifaddr_ipv6_change(rtnl, RTM_NEWADDR, ifindex, prefix_len,
+	return l_rtnl_ifaddr6_change(rtnl, RTM_NEWADDR, ifindex, prefix_len,
 						ip, cb, user_data, destroy);
 }
 
-uint32_t rtnl_ifaddr_ipv6_delete(struct l_netlink *rtnl, int ifindex,
+uint32_t l_rtnl_ifaddr6_delete(struct l_netlink *rtnl, int ifindex,
 					uint8_t prefix_len, const char *ip,
 					l_netlink_command_func_t cb,
 					void *user_data,
 					l_netlink_destroy_func_t destroy)
 {
-	return rtnl_ifaddr_ipv6_change(rtnl, RTM_DELADDR, ifindex, prefix_len,
+	return l_rtnl_ifaddr6_change(rtnl, RTM_DELADDR, ifindex, prefix_len,
 						ip, cb, user_data, destroy);
 }
 
-static uint32_t rtnl_route_ipv6_change(struct l_netlink *rtnl,
+void l_rtnl_route6_extract(const struct rtmsg *rtmsg, uint32_t len,
+				uint32_t *table, uint32_t *ifindex,
+				char **dst, char **gateway, char **src)
+{
+	l_rtnl_route_extract(rtmsg, len, AF_INET6, table, ifindex,
+				NULL, NULL, dst, gateway, src);
+}
+
+uint32_t l_rtnl_route6_dump(struct l_netlink *rtnl,
+				l_netlink_command_func_t cb, void *user_data,
+				l_netlink_destroy_func_t destroy)
+{
+	struct rtmsg rtmsg;
+
+	memset(&rtmsg, 0, sizeof(struct rtmsg));
+	rtmsg.rtm_family = AF_INET6;
+
+	return l_netlink_send(rtnl, RTM_GETROUTE, NLM_F_DUMP, &rtmsg,
+					sizeof(struct rtmsg), cb, user_data,
+					destroy);
+}
+
+static uint32_t l_rtnl_route6_change(struct l_netlink *rtnl,
 					uint16_t nlmsg_type, int ifindex,
 					const char *gateway,
 					uint32_t priority_offset,
@@ -613,7 +670,7 @@ static uint32_t rtnl_route_ipv6_change(struct l_netlink *rtnl,
 								destroy);
 }
 
-uint32_t rtnl_route_ipv6_add_gateway(struct l_netlink *rtnl, int ifindex,
+uint32_t l_rtnl_route6_add_gateway(struct l_netlink *rtnl, int ifindex,
 					const char *gateway,
 					uint32_t priority_offset,
 					uint8_t proto,
@@ -621,12 +678,12 @@ uint32_t rtnl_route_ipv6_add_gateway(struct l_netlink *rtnl, int ifindex,
 					void *user_data,
 					l_netlink_destroy_func_t destroy)
 {
-	return rtnl_route_ipv6_change(rtnl, RTM_NEWROUTE, ifindex, gateway,
+	return l_rtnl_route6_change(rtnl, RTM_NEWROUTE, ifindex, gateway,
 					priority_offset, proto, cb,
 					user_data, destroy);
 }
 
-uint32_t rtnl_route_ipv6_delete_gateway(struct l_netlink *rtnl, int ifindex,
+uint32_t l_rtnl_route6_delete_gateway(struct l_netlink *rtnl, int ifindex,
 					const char *gateway,
 					uint32_t priority_offset,
 					uint8_t proto,
@@ -634,7 +691,7 @@ uint32_t rtnl_route_ipv6_delete_gateway(struct l_netlink *rtnl, int ifindex,
 					void *user_data,
 					l_netlink_destroy_func_t destroy)
 {
-	return rtnl_route_ipv6_change(rtnl, RTM_DELROUTE, ifindex, gateway,
+	return l_rtnl_route6_change(rtnl, RTM_DELROUTE, ifindex, gateway,
 					priority_offset, proto, cb,
 					user_data, destroy);
 }
