@@ -262,7 +262,7 @@ static void wsc_enrollee_netdev_event(struct netdev *netdev,
 	default:
 		l_debug("Unexpected event: %d", event);
 		break;
-	};
+	}
 }
 
 static void wsc_enrollee_handshake_event(struct handshake_state *hs,
@@ -1137,6 +1137,7 @@ static struct l_dbus_message *wsc_generate_pin(struct l_dbus *dbus,
 
 	reply = l_dbus_message_new_method_return(message);
 	l_dbus_message_set_arguments(reply, "s", pin);
+	explicit_bzero(pin, 9);
 
 	return reply;
 }

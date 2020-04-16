@@ -199,7 +199,7 @@ do { \
 		print_indent(4 + (level) * 4, COLOR_OFF, "", "", color, \
 								fmt, ## args)
 
-#define print_space(x) printf("%*c", (x), ' ');
+#define print_space(x) printf("%*c", (x), ' ')
 
 static void print_packet(const struct timeval *tv, char ident,
 					const char *color, const char *label,
@@ -216,8 +216,9 @@ static void print_packet(const struct timeval *tv, char ident,
 				ts_pos += n;
 		}
 
-		n = sprintf(ts_str + ts_pos, " %lu.%06lu",
-					tv->tv_sec - time_offset, tv->tv_usec);
+		n = sprintf(ts_str + ts_pos, " %" PRId64 ".%06" PRId64,
+					(int64_t)tv->tv_sec - time_offset,
+					(int64_t)tv->tv_usec);
 		if (n > 0) {
 			ts_pos += n;
 			ts_len += n;
@@ -3041,10 +3042,13 @@ static void print_p2p_status(unsigned int level, const char *label,
 }
 
 #define CHECK_CAPS_BIT(v, str)	\
-	if (caps & (v)) {	\
-		print_attr(level + 1, "%s", (str));	\
-		caps &= ~(v);	\
-	}
+	do {			\
+		if (caps & (v)) {				\
+			print_attr(level + 1, "%s", (str));	\
+			caps &= ~(v);				\
+		} 						\
+	} while(0)
+
 static void print_p2p_device_capability(unsigned int level, const char *label,
 					const void *data, uint16_t size)
 {
@@ -3177,11 +3181,13 @@ static void print_p2p_manageability(unsigned int level, const char *label,
 		return;
 	}
 
-#define CHECK_BIT(v, str)	\
-	if (val & (v)) {	\
-		print_attr(level + 1, "%s", (str));	\
-		val &= ~(v);	\
-	}
+#define CHECK_BIT(v, str)					\
+	do {							\
+		if (val & (v)) {				\
+			print_attr(level + 1, "%s", (str));	\
+			val &= ~(v);				\
+		}						\
+	} while(0)
 
 	val = *(const uint8_t *) data;
 
@@ -5238,7 +5244,7 @@ static void print_eap(unsigned int level, const void *data, uint32_t size)
 	default:
 		str = "Reserved";
 		break;
-	};
+	}
 
 	print_attr(level, "Code: %u (%s)", eap[0], str);
 	print_attr(level, "Identifier: %u", eap[1]);
