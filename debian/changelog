@@ -1,3 +1,9 @@
+iwd (1.7-1) unstable; urgency=medium
+
+  * New upstream release.
+
+ -- Andreas Henriksson <andreas@fatal.se>  Thu, 16 Apr 2020 08:17:36 +0200
+
 iwd (1.6-1) unstable; urgency=medium
 
   * New upstream release.
