@@ -28,6 +28,8 @@
 #include <stdio.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 
 #include <readline/history.h>
 #include <readline/readline.h>
@@ -40,7 +42,7 @@
 #define IWD_PROMPT COLOR_GREEN "[iwd]" COLOR_OFF "# "
 #define LINE_LEN 81
 
-static struct l_signal *resize_signal;
+static struct l_signal *window_change_signal;
 static struct l_io *io;
 static char dashed_line[LINE_LEN] = { [0 ... LINE_LEN - 2] = '-' };
 static char empty_line[LINE_LEN] = { [0 ... LINE_LEN - 2] = ' ' };
@@ -48,6 +50,7 @@ static struct l_timeout *refresh_timeout;
 static struct saved_input *agent_saved_input;
 
 static struct display_refresh {
+	bool enabled;
 	char *family;
 	char *entity;
 	const struct command *cmd;
@@ -56,7 +59,7 @@ static struct display_refresh {
 	size_t undo_lines;
 	struct l_queue *redo_entries;
 	bool recording;
-} display_refresh;
+} display_refresh = { .enabled = true };
 
 struct saved_input {
 	char *line;
@@ -221,12 +224,45 @@ void display_refresh_set_cmd(const char *family, const char *entity,
 	}
 }
 
+static void display_refresh_check_feasibility(void)
+{
+	const struct winsize ws;
+
+	ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws);
+
+	if (ws.ws_col < LINE_LEN - 1) {
+		if (display_refresh.enabled) {
+			display_refresh.recording = false;
+			display(COLOR_YELLOW "Auto-refresh is disabled. "
+				"Enlarge window width to at least %u to enable."
+				"\n" COLOR_OFF, LINE_LEN - 1);
+			display_refresh.recording = true;
+		}
+
+		display_refresh.enabled = false;
+	} else {
+		display_refresh.enabled = true;
+	}
+}
+
+static void display_refresh_check_applicability(void)
+{
+	if (display_refresh.enabled && display_refresh.cmd)
+		display_refresh_redo_lines();
+	else if (display_refresh.cmd)
+		display_refresh_timeout_set();
+}
+
 static void timeout_callback(struct l_timeout *timeout, void *user_data)
 {
 	struct saved_input *input;
 
-	if (!display_refresh.cmd)
+	if (!display_refresh.enabled || !display_refresh.cmd) {
+		if (display_refresh.cmd)
+			display_refresh_timeout_set();
+
 		return;
+	}
 
 	input = save_input();
 	display_refresh_undo_lines();
@@ -336,8 +372,7 @@ void display_table_footer(void)
 {
 	display_text("\n");
 
-	if (display_refresh.cmd)
-		display_refresh_redo_lines();
+	display_refresh_check_applicability();
 }
 
 void display_command_line(const char *command_family,
@@ -534,14 +569,21 @@ void display_enable_cmd_prompt(void)
 
 	rl_set_prompt(IWD_PROMPT);
 
-	display("");
+	/*
+	 * The following sequence of rl_* commands forces readline to properly
+	 * update its internal state and re-display the new prompt.
+	 */
+	rl_save_prompt();
+	rl_redisplay();
+	rl_restore_prompt();
+	rl_forced_update_display();
 }
 
 void display_disable_cmd_prompt(void)
 {
 	display_refresh_reset();
 
-	rl_set_prompt("Waiting to connect to IWD");
+	rl_set_prompt("Waiting for IWD to start...");
 	printf("\r");
 	rl_on_new_line();
 	rl_redisplay();
@@ -627,10 +669,9 @@ void display_quit(void)
 	rl_crlf();
 }
 
-static void signal_handler(void *user_data)
+static void window_change_signal_handler(void *user_data)
 {
-	if (display_refresh.cmd)
-		display_refresh_reset();
+	display_refresh_check_feasibility();
 }
 
 static char *history_path;
@@ -671,17 +712,21 @@ void display_init(void)
 
 	setlinebuf(stdout);
 
-	resize_signal = l_signal_create(SIGWINCH, signal_handler, NULL, NULL);
+	window_change_signal =
+		l_signal_create(SIGWINCH, window_change_signal_handler, NULL,
+									NULL);
 
 	rl_attempted_completion_function = command_completion;
 	rl_completion_display_matches_hook = display_completion_matches;
 
 	rl_completer_quote_characters = "\"";
 	rl_erase_empty_line = 1;
-	rl_callback_handler_install("Waiting for IWD to appear...",
+	rl_callback_handler_install("Waiting for IWD to start...",
 							readline_callback);
 
 	rl_redisplay();
+
+	display_refresh_check_feasibility();
 }
 
 void display_exit(void)
@@ -701,7 +746,7 @@ void display_exit(void)
 
 	l_io_destroy(io);
 
-	l_signal_remove(resize_signal);
+	l_signal_remove(window_change_signal);
 
 	if (history_path)
 		write_history(history_path);

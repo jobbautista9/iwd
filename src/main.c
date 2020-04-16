@@ -47,6 +47,7 @@
 #include "src/backtrace.h"
 
 static struct l_genl *genl;
+static struct l_netlink *rtnl;
 static struct l_settings *iwd_config;
 static struct l_timeout *timeout;
 static const char *interfaces;
@@ -101,6 +102,11 @@ const struct l_settings *iwd_get_config(void)
 struct l_genl *iwd_get_genl(void)
 {
 	return genl;
+}
+
+struct l_netlink *iwd_get_rtnl(void)
+{
+	return rtnl;
 }
 
 const char *iwd_get_iface_whitelist(void)
@@ -333,7 +339,7 @@ static int check_crypto()
 		l_hashmap_insert(options, "CONFIG_PKCS7_MESSAGE_PARSER", &r);
 		l_hashmap_insert(options,
 					"CONFIG_PKCS8_PRIVATE_KEY_PARSER", &r);
-	};
+	}
 
 	if (l_hashmap_isempty(options))
 		goto done;
@@ -450,18 +456,18 @@ int main(int argc, char *argv[])
 	iwd_config = l_settings_new();
 
 	config_dirs = l_strsplit(config_dir, ':');
-	for (i = 0; config_dirs[i]; i++) {
-		char *path = l_strdup_printf("%s/%s", config_dirs[i],
-								"main.conf");
-		bool result = l_settings_load_from_file(iwd_config, path);
-		l_free(path);
 
-		if (result) {
-			l_info("Loaded configuration from %s/main.conf",
-							config_dirs[i]);
-			break;
-		}
+	for (i = 0; config_dirs[i]; i++) {
+		L_AUTO_FREE_VAR(char *, path) =
+			l_strdup_printf("%s/%s", config_dirs[i], "main.conf");
+
+		if (!l_settings_load_from_file(iwd_config, path))
+			continue;
+
+		l_info("Loaded configuration from %s", path);
+		break;
 	}
+
 	l_strv_free(config_dirs);
 
 	__eapol_set_config(iwd_config);
@@ -470,21 +476,30 @@ int main(int argc, char *argv[])
 	exit_status = EXIT_FAILURE;
 
 	if (!storage_create_dirs())
-		goto fail_dbus;
+		goto failed_dirs;
 
 	genl = l_genl_new();
 	if (!genl) {
 		l_error("Failed to open generic netlink socket");
-		goto fail_genl;
+		goto failed_genl;
 	}
 
 	if (getenv("IWD_GENL_DEBUG"))
 		l_genl_set_debug(genl, do_debug, "[GENL] ", NULL);
 
+	rtnl = l_netlink_new(NETLINK_ROUTE);
+	if (!rtnl) {
+		l_error("Failed to open route netlink socket");
+		goto failed_rtnl;
+	}
+
+	if (getenv("IWD_RTNL_DEBUG"))
+		l_netlink_set_debug(rtnl, do_debug, "[RTNL] ", NULL);
+
 	dbus = l_dbus_new_default(L_DBUS_SYSTEM_BUS);
 	if (!dbus) {
 		l_error("Failed to initialize D-Bus");
-		goto fail_dbus;
+		goto failed_dbus;
 	}
 
 	if (enable_dbus_debug)
@@ -495,20 +510,24 @@ int main(int argc, char *argv[])
 	dbus_init(dbus);
 
 	exit_status = l_main_run_with_signal(signal_handler, NULL);
+
 	plugin_exit();
-
 	iwd_modules_exit();
-
 	dbus_exit();
 	l_dbus_destroy(dbus);
-	storage_cleanup_dirs();
-fail_dbus:
+
+failed_dbus:
+	l_netlink_destroy(rtnl);
+
+failed_rtnl:
 	l_genl_unref(genl);
-fail_genl:
+
+failed_genl:
+	storage_cleanup_dirs();
+
+failed_dirs:
 	l_settings_free(iwd_config);
-
 	l_timeout_remove(timeout);
-
 	l_main_exit();
 
 	return exit_status;

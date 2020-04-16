@@ -1606,14 +1606,24 @@ static void terminate_iwd(pid_t iwd_pid)
 
 static pid_t start_monitor(const char *test_name)
 {
-	char *argv[4];
+	char *argv[6];
+	char *write_arg;
+	pid_t pid;
+
+	write_arg = l_strdup_printf("%s/%s/monitor.pcap", log_dir, test_name);
 
 	argv[0] = "iwmon";
 	argv[1] = "--nortnl";
 	argv[2] = "--nowiphy";
-	argv[3] = NULL;
+	argv[3] = "--write";
+	argv[4] = write_arg;
+	argv[5] = NULL;
 
-	return execute_program(argv, environ, false, test_name);
+	pid = execute_program(argv, environ, false, test_name);
+
+	l_free(write_arg);
+
+	return pid;
 }
 
 static bool create_tmpfs_extra_stuff(char **tmpfs_extra_stuff)
@@ -3093,6 +3103,8 @@ int main(int argc, char *argv[])
 	uint8_t actions = 0;
 	struct tm *timeinfo;
 	time_t t;
+	char *gid;
+	char *uid;
 
 	l_log_set_stderr();
 
@@ -3193,8 +3205,16 @@ int main(int argc, char *argv[])
 			time(&t);
 			timeinfo = localtime(&t);
 
-			log_gid = atoi(getenv("SUDO_GID"));
-			log_uid = atoi(getenv("SUDO_UID"));
+			gid = getenv("SUDO_GID");
+			uid = getenv("SUDO_UID");
+
+			if (!gid || !uid) {
+				log_gid = getgid();
+				log_uid = getuid();
+			} else {
+				log_gid = strtol(gid, NULL, 10);
+				log_uid = strtol(uid, NULL, 10);
+			}
 
 			snprintf(log_dir, sizeof(log_dir), "%s/run-%d-%d-%d-%d",
 					optarg, timeinfo->tm_year + 1900,

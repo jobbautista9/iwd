@@ -24,6 +24,9 @@
 #include <config.h>
 #endif
 
+#include <linux/rtnetlink.h>
+#include <linux/if.h>
+
 #include <ell/ell.h>
 
 #include "linux/nl80211.h"
@@ -131,10 +134,12 @@ static void adhoc_reset(struct adhoc_state *adhoc)
 				dbus_error_aborted(adhoc->pending));
 
 	l_free(adhoc->ssid);
+	adhoc->ssid = NULL;
 
 	netdev_station_watch_remove(adhoc->netdev, adhoc->sta_watch_id);
 
 	l_queue_destroy(adhoc->sta_states, adhoc_sta_free);
+	adhoc->sta_states = NULL;
 
 	adhoc->started = false;
 
@@ -156,6 +161,17 @@ static bool ap_sta_match_addr(const void *a, const void *b)
 	const struct sta_state *sta = a;
 
 	return !memcmp(sta->addr, b, 6);
+}
+
+static void adhoc_operstate_cb(int error, uint16_t type,
+					const void *data,
+					uint32_t len, void *user_data)
+{
+	if (!error)
+		return;
+
+	l_debug("netdev: %u, error: %s", L_PTR_TO_UINT(user_data),
+							strerror(-error));
 }
 
 static void adhoc_handshake_event(struct handshake_state *hs,
@@ -395,7 +411,15 @@ static void adhoc_new_station(struct adhoc_state *adhoc, const uint8_t *mac)
 
 	/* with open networks nothing else is required */
 	if (sta->adhoc->open) {
+		int ifindex = netdev_get_ifindex(adhoc->netdev);
+
 		sta->authenticated = true;
+
+		l_rtnl_set_linkmode_and_operstate(iwd_get_rtnl(), ifindex,
+					IF_LINK_MODE_DORMANT, IF_OPER_UP,
+					adhoc_operstate_cb,
+					L_UINT_TO_PTR(ifindex), NULL);
+
 		l_dbus_property_changed(dbus_get_bus(),
 					netdev_get_path(adhoc->netdev),
 					IWD_ADHOC_INTERFACE, "ConnectedPeers");
@@ -576,8 +600,10 @@ static struct l_dbus_message *adhoc_dbus_stop(struct l_dbus *dbus,
 	if (!adhoc->started)
 		return l_dbus_message_new_method_return(message);
 
-	if (!netdev_leave_adhoc(adhoc->netdev, adhoc_leave_cb, adhoc))
+	if (netdev_leave_adhoc(adhoc->netdev, adhoc_leave_cb, adhoc))
 		return dbus_error_failed(message);
+
+	adhoc->pending = l_dbus_message_ref(message);
 
 	return NULL;
 }

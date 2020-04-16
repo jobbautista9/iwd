@@ -168,13 +168,6 @@ static struct watchlist netdev_watches;
 static bool pae_over_nl80211;
 static bool mac_per_ssid;
 
-static void do_debug(const char *str, void *user_data)
-{
-	const char *prefix = user_data;
-
-	l_info("%s%s", prefix, str);
-}
-
 /* Cancels ongoing GTK/IGTK related commands (if any) */
 static void netdev_handshake_state_cancel_rekey(
 					struct netdev_handshake_state *nhs)
@@ -974,8 +967,15 @@ static struct l_genl_msg *netdev_build_cmd_del_station(struct netdev *netdev,
 
 static void netdev_del_sta_cb(struct l_genl_msg *msg, void *user_data)
 {
-	if (l_genl_msg_get_error(msg) < 0)
-		l_error("DEL_STATION failed: %i", l_genl_msg_get_error(msg));
+	int err = l_genl_msg_get_error(msg);
+	const char *ext_error;
+
+	if (err >= 0)
+		return;
+
+	ext_error = l_genl_msg_get_extended_error(msg);
+	l_error("DEL_STATION failed: %s",
+			ext_error ? ext_error : strerror(-err));
 }
 
 int netdev_del_station(struct netdev *netdev, const uint8_t *sta,
@@ -1096,7 +1096,11 @@ static void netdev_set_station_cb(struct l_genl_msg *msg, void *user_data)
 		goto done;
 
 	if (err < 0) {
-		l_error("Set Station failed for ifindex %d", netdev->index);
+		const char *ext_error = l_genl_msg_get_extended_error(msg);
+
+		l_error("Set Station failed for ifindex %d:%s", netdev->index,
+				ext_error ? ext_error : strerror(-err));
+
 		netdev_setting_keys_failed(nhs, err);
 		return;
 	}
@@ -1114,8 +1118,12 @@ static void netdev_new_group_key_cb(struct l_genl_msg *msg, void *data)
 	nhs->group_new_key_cmd_id = 0;
 
 	if (err < 0) {
-		l_error("New Key for Group Key failed for ifindex: %d",
-				netdev->index);
+		const char *ext_error = l_genl_msg_get_extended_error(msg);
+
+		l_error("New Key for Group Key failed for ifindex: %d:%s",
+				netdev->index,
+				ext_error ? ext_error : strerror(-err));
+
 		netdev_setting_keys_failed(nhs, err);
 		return;
 	}
@@ -1134,8 +1142,12 @@ static void netdev_new_group_management_key_cb(struct l_genl_msg *msg,
 	nhs->group_management_new_key_cmd_id = 0;
 
 	if (err < 0) {
-		l_error("New Key for Group Mgmt failed for ifindex: %d",
-				netdev->index);
+		const char *ext_error = l_genl_msg_get_extended_error(msg);
+
+		l_error("New Key for Group Mgmt failed for ifindex: %d:%s",
+				netdev->index,
+				ext_error ? ext_error : strerror(-err));
+
 		netdev_setting_keys_failed(nhs, err);
 		return;
 	}
@@ -1200,7 +1212,7 @@ static const uint8_t *netdev_choose_key_address(
 	return (nhs->super.authenticator) ? nhs->super.spa : nhs->super.aa;
 }
 
-static void netdev_set_gtk(struct handshake_state *hs, uint8_t key_index,
+static void netdev_set_gtk(struct handshake_state *hs, uint16_t key_index,
 				const uint8_t *gtk, uint8_t gtk_len,
 				const uint8_t *rsc, uint8_t rsc_len,
 				uint32_t cipher)
@@ -1247,7 +1259,7 @@ static void netdev_set_gtk(struct handshake_state *hs, uint8_t key_index,
 	netdev_setting_keys_failed(nhs, -EIO);
 }
 
-static void netdev_set_igtk(struct handshake_state *hs, uint8_t key_index,
+static void netdev_set_igtk(struct handshake_state *hs, uint16_t key_index,
 				const uint8_t *igtk, uint8_t igtk_len,
 				const uint8_t *ipn, uint8_t ipn_len,
 				uint32_t cipher)
@@ -1278,6 +1290,14 @@ static void netdev_set_igtk(struct handshake_state *hs, uint8_t key_index,
 		return;
 	}
 
+	if (key_index == 0x0400 || key_index == 0x0500) {
+		l_warn("Received an invalid IGTK key index (%04hx)"
+				" that is likely in"
+				" big endian format.  Trying to fix and"
+				" proceed anyway", key_index);
+		key_index = bswap_16(key_index);
+	}
+
 	msg = nl80211_build_new_key_group(netdev->index, cipher, key_index,
 					igtk_buf, igtk_len, ipn, ipn_len, NULL);
 
@@ -1303,8 +1323,11 @@ static void netdev_new_pairwise_key_cb(struct l_genl_msg *msg, void *data)
 	nhs->pairwise_new_key_cmd_id = 0;
 
 	if (err < 0) {
-		l_error("New Key for Pairwise Key failed for ifindex: %d",
-					netdev->index);
+		const char *ext_error = l_genl_msg_get_extended_error(msg);
+
+		l_error("New Key for Pairwise Key failed for ifindex: %d:%s",
+				netdev->index,
+				ext_error ? ext_error : strerror(-err));
 		goto error;
 	}
 
@@ -1540,11 +1563,16 @@ static void netdev_qos_map_cb(struct l_genl_msg *msg, void *user_data)
 {
 	struct netdev *netdev = user_data;
 	int err = l_genl_msg_get_error(msg);
-
-	if (err < 0)
-		l_error("Could not set QoS Map in kernel: %d", err);
+	const char *ext_error;
 
 	netdev->qos_map_cmd_id = 0;
+
+	if (err >= 0)
+		return;
+
+	ext_error = l_genl_msg_get_extended_error(msg);
+	l_error("Couuld not set QoS Map in kernel: %s",
+			ext_error ? ext_error : strerror(-err));
 }
 
 /*
@@ -3323,11 +3351,17 @@ static void netdev_neighbor_report_frame_event(const struct mmpdu_header *hdr,
 	l_timeout_remove(netdev->neighbor_report_timeout);
 }
 
-static void netdev_sa_query_resp_cb(struct l_genl_msg *msg,
-		void *user_data)
+static void netdev_sa_query_resp_cb(struct l_genl_msg *msg, void *user_data)
 {
-	if (l_genl_msg_get_error(msg) < 0)
-		l_debug("error sending SA Query request");
+	int err = l_genl_msg_get_error(msg);
+	const char *ext_error;
+
+	if (err >= 0)
+		return;
+
+	ext_error = l_genl_msg_get_extended_error(msg);
+	l_debug("error sending SA Query request: %s",
+			ext_error ? ext_error : strerror(-err));
 }
 
 static void netdev_sa_query_req_frame_event(const struct mmpdu_header *hdr,
@@ -3406,17 +3440,21 @@ static void netdev_sa_query_resp_frame_event(const struct mmpdu_header *hdr,
 	netdev->sa_query_timeout = NULL;
 }
 
-static void netdev_sa_query_req_cb(struct l_genl_msg *msg,
-		void *user_data)
+static void netdev_sa_query_req_cb(struct l_genl_msg *msg, void *user_data)
 {
 	struct netdev *netdev = user_data;
+	int err = l_genl_msg_get_error(msg);
+	const char *ext_error;
 
-	if (l_genl_msg_get_error(msg) < 0) {
-		l_debug("error sending SA Query request");
+	if (err >= 0)
+		return;
 
-		l_timeout_remove(netdev->sa_query_timeout);
-		netdev->sa_query_timeout = NULL;
-	}
+	ext_error = l_genl_msg_get_extended_error(msg);
+	l_debug("error sending SA Query request: %s",
+			ext_error ? ext_error : strerror(-err));
+
+	l_timeout_remove(netdev->sa_query_timeout);
+	netdev->sa_query_timeout = NULL;
 }
 
 static void netdev_sa_query_timeout(struct l_timeout *timeout,
@@ -3720,14 +3758,15 @@ static struct l_genl_msg *netdev_build_control_port_frame(struct netdev *netdev,
 static void netdev_control_port_frame_cb(struct l_genl_msg *msg,
 							void *user_data)
 {
-	int err;
+	int err = l_genl_msg_get_error(msg);
+	const char *ext_error;
 
-	err = l_genl_msg_get_error(msg);
+	if (err >= 0)
+		return;
 
-	l_debug("%d", err);
-
-	if (err < 0)
-		l_info("CMD_CONTROL_PORT failed: %s", strerror(-err));
+	ext_error = l_genl_msg_get_extended_error(msg);
+	l_error("CMD_CONTROL_PORT failed: %s",
+			ext_error ? ext_error : strerror(-err));
 }
 
 static int netdev_control_port_write_pae(struct netdev *netdev,
@@ -3889,12 +3928,15 @@ static struct l_genl_msg *netdev_build_cmd_cqm_rssi_update(
 
 static void netdev_cmd_set_cqm_cb(struct l_genl_msg *msg, void *user_data)
 {
-	int r = l_genl_msg_get_error(msg);
+	int err = l_genl_msg_get_error(msg);
+	const char *ext_error;
 
-	if (!r)
+	if (err >= 0)
 		return;
 
-	l_error("CMD_SET_CQM failed: %d(%s)", r, strerror(-r));
+	ext_error = l_genl_msg_get_extended_error(msg);
+	l_error("CMD_SET_CQM failed: %s",
+			ext_error ? ext_error : strerror(-err));
 }
 
 int netdev_set_rssi_report_levels(struct netdev *netdev, const int8_t *levels,
@@ -4674,16 +4716,7 @@ static int netdev_init(void)
 	if (rtnl)
 		return -EALREADY;
 
-	l_debug("Opening route netlink socket");
-
-	rtnl = l_netlink_new(NETLINK_ROUTE);
-	if (!rtnl) {
-		l_error("Failed to open route netlink socket");
-		return -EIO;
-	}
-
-	if (getenv("IWD_RTNL_DEBUG"))
-		l_netlink_set_debug(rtnl, do_debug, "[RTNL] ", NULL);
+	rtnl = iwd_get_rtnl();
 
 	if (!l_netlink_register(rtnl, RTNLGRP_LINK,
 				netdev_link_notify, NULL, NULL)) {
@@ -4733,7 +4766,6 @@ static int netdev_init(void)
 	return 0;
 
 fail_netlink:
-	l_netlink_destroy(rtnl);
 	rtnl = NULL;
 
 	return -EIO;
@@ -4753,8 +4785,6 @@ static void netdev_exit(void)
 	l_genl_family_free(nl80211);
 	nl80211 = NULL;
 
-	l_debug("Closing route netlink socket");
-	l_netlink_destroy(rtnl);
 	rtnl = NULL;
 }
 
