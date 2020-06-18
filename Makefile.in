@@ -285,25 +285,24 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/blacklist.c src/manager.c src/erp.h src/erp.c src/fils.h \
 	src/fils.c src/auth-proto.h src/anqp.h src/anqp.c \
 	src/anqputil.h src/anqputil.c src/netconfig.h src/netconfig.c \
-	src/resolve.h src/resolve.c src/hotspot.c src/p2putil.h \
-	src/p2putil.c src/module.h src/module.c src/rrm.c \
-	src/frame-xchg.h src/frame-xchg.c src/eap.c src/eap.h \
-	src/eap-private.h src/eap-wsc.c src/eap-wsc.h src/eap-md5.c \
-	src/eap-tls.c src/eap-ttls.c src/eap-mschapv2.c \
-	src/eap-mschapv2.h src/eap-sim.c src/eap-aka.c src/eap-peap.c \
-	src/eap-gtc.c src/eap-pwd.c src/util.h src/util.c src/crypto.h \
-	src/crypto.c src/wscutil.h src/wscutil.c src/simutil.h \
+	src/resolve.h src/resolve.c src/hotspot.c src/p2p.h src/p2p.c \
+	src/p2putil.h src/p2putil.c src/module.h src/module.c \
+	src/rrm.c src/frame-xchg.h src/frame-xchg.c src/eap-wsc.c \
+	src/eap-wsc.h src/wscutil.h src/wscutil.c src/eap.c src/eap.h \
+	src/eap-private.h src/eap-md5.c src/eap-tls.c src/eap-ttls.c \
+	src/eap-mschapv2.c src/eap-mschapv2.h src/eap-sim.c \
+	src/eap-aka.c src/eap-peap.c src/eap-gtc.c src/eap-pwd.c \
+	src/util.h src/util.c src/crypto.h src/crypto.c src/simutil.h \
 	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
 	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c \
 	src/mschaputil.h src/mschaputil.c plugins/sim_hardcoded.c \
 	plugins/ofono.c
-am__objects_3 = src/eap.$(OBJEXT) src/eap-wsc.$(OBJEXT) \
-	src/eap-md5.$(OBJEXT) src/eap-tls.$(OBJEXT) \
-	src/eap-ttls.$(OBJEXT) src/eap-mschapv2.$(OBJEXT) \
-	src/eap-sim.$(OBJEXT) src/eap-aka.$(OBJEXT) \
-	src/eap-peap.$(OBJEXT) src/eap-gtc.$(OBJEXT) \
-	src/eap-pwd.$(OBJEXT) src/util.$(OBJEXT) src/crypto.$(OBJEXT) \
-	src/wscutil.$(OBJEXT) src/simutil.$(OBJEXT) \
+am__objects_3 = src/eap.$(OBJEXT) src/eap-md5.$(OBJEXT) \
+	src/eap-tls.$(OBJEXT) src/eap-ttls.$(OBJEXT) \
+	src/eap-mschapv2.$(OBJEXT) src/eap-sim.$(OBJEXT) \
+	src/eap-aka.$(OBJEXT) src/eap-peap.$(OBJEXT) \
+	src/eap-gtc.$(OBJEXT) src/eap-pwd.$(OBJEXT) src/util.$(OBJEXT) \
+	src/crypto.$(OBJEXT) src/simutil.$(OBJEXT) \
 	src/simauth.$(OBJEXT) src/watchlist.$(OBJEXT) \
 	src/eap-tls-common.$(OBJEXT) src/mschaputil.$(OBJEXT)
 @DAEMON_TRUE@@SIM_HARDCODED_TRUE@am__objects_4 = plugins/sim_hardcoded.$(OBJEXT)
@@ -328,10 +327,11 @@ am__objects_6 = $(am__objects_4) $(am__objects_5)
 @DAEMON_TRUE@	src/erp.$(OBJEXT) src/fils.$(OBJEXT) \
 @DAEMON_TRUE@	src/anqp.$(OBJEXT) src/anqputil.$(OBJEXT) \
 @DAEMON_TRUE@	src/netconfig.$(OBJEXT) src/resolve.$(OBJEXT) \
-@DAEMON_TRUE@	src/hotspot.$(OBJEXT) src/p2putil.$(OBJEXT) \
-@DAEMON_TRUE@	src/module.$(OBJEXT) src/rrm.$(OBJEXT) \
-@DAEMON_TRUE@	src/frame-xchg.$(OBJEXT) $(am__objects_3) \
-@DAEMON_TRUE@	$(am__objects_6)
+@DAEMON_TRUE@	src/hotspot.$(OBJEXT) src/p2p.$(OBJEXT) \
+@DAEMON_TRUE@	src/p2putil.$(OBJEXT) src/module.$(OBJEXT) \
+@DAEMON_TRUE@	src/rrm.$(OBJEXT) src/frame-xchg.$(OBJEXT) \
+@DAEMON_TRUE@	src/eap-wsc.$(OBJEXT) src/wscutil.$(OBJEXT) \
+@DAEMON_TRUE@	$(am__objects_3) $(am__objects_6)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am__tools_hwsim_SOURCES_DIST = tools/hwsim.c src/mpdu.h src/util.h \
 	src/util.c src/storage.h src/storage.c src/common.h \
@@ -458,11 +458,10 @@ unit_test_wsc_DEPENDENCIES = $(am__DEPENDENCIES_1)
 am__wired_ead_SOURCES_DIST = wired/main.c wired/ethdev.h \
 	wired/ethdev.c wired/network.h wired/network.c wired/dbus.h \
 	wired/dbus.c src/module.h src/module.c src/eap.c src/eap.h \
-	src/eap-private.h src/eap-wsc.c src/eap-wsc.h src/eap-md5.c \
-	src/eap-tls.c src/eap-ttls.c src/eap-mschapv2.c \
-	src/eap-mschapv2.h src/eap-sim.c src/eap-aka.c src/eap-peap.c \
-	src/eap-gtc.c src/eap-pwd.c src/util.h src/util.c src/crypto.h \
-	src/crypto.c src/wscutil.h src/wscutil.c src/simutil.h \
+	src/eap-private.h src/eap-md5.c src/eap-tls.c src/eap-ttls.c \
+	src/eap-mschapv2.c src/eap-mschapv2.h src/eap-sim.c \
+	src/eap-aka.c src/eap-peap.c src/eap-gtc.c src/eap-pwd.c \
+	src/util.h src/util.c src/crypto.h src/crypto.c src/simutil.h \
 	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
 	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c \
 	src/mschaputil.h src/mschaputil.c
@@ -547,18 +546,18 @@ am__depfiles_remade = client/$(DEPDIR)/ad-hoc.Po \
 	src/$(DEPDIR)/netconfig.Po src/$(DEPDIR)/netdev.Po \
 	src/$(DEPDIR)/network.Po src/$(DEPDIR)/nl80211cmd.Po \
 	src/$(DEPDIR)/nl80211util.Po src/$(DEPDIR)/owe.Po \
-	src/$(DEPDIR)/p2putil.Po src/$(DEPDIR)/plugin.Po \
-	src/$(DEPDIR)/resolve.Po src/$(DEPDIR)/rfkill.Po \
-	src/$(DEPDIR)/rrm.Po src/$(DEPDIR)/sae.Po \
-	src/$(DEPDIR)/scan.Po src/$(DEPDIR)/simauth.Po \
-	src/$(DEPDIR)/simutil.Po src/$(DEPDIR)/station.Po \
-	src/$(DEPDIR)/storage.Po src/$(DEPDIR)/util.Po \
-	src/$(DEPDIR)/watchlist.Po src/$(DEPDIR)/wiphy.Po \
-	src/$(DEPDIR)/wsc.Po src/$(DEPDIR)/wscutil.Po \
-	tools/$(DEPDIR)/hwsim.Po tools/$(DEPDIR)/probe-req.Po \
-	tools/$(DEPDIR)/test-runner.Po unit/$(DEPDIR)/test-arc4.Po \
-	unit/$(DEPDIR)/test-client.Po unit/$(DEPDIR)/test-cmac-aes.Po \
-	unit/$(DEPDIR)/test-crypto.Po \
+	src/$(DEPDIR)/p2p.Po src/$(DEPDIR)/p2putil.Po \
+	src/$(DEPDIR)/plugin.Po src/$(DEPDIR)/resolve.Po \
+	src/$(DEPDIR)/rfkill.Po src/$(DEPDIR)/rrm.Po \
+	src/$(DEPDIR)/sae.Po src/$(DEPDIR)/scan.Po \
+	src/$(DEPDIR)/simauth.Po src/$(DEPDIR)/simutil.Po \
+	src/$(DEPDIR)/station.Po src/$(DEPDIR)/storage.Po \
+	src/$(DEPDIR)/util.Po src/$(DEPDIR)/watchlist.Po \
+	src/$(DEPDIR)/wiphy.Po src/$(DEPDIR)/wsc.Po \
+	src/$(DEPDIR)/wscutil.Po tools/$(DEPDIR)/hwsim.Po \
+	tools/$(DEPDIR)/probe-req.Po tools/$(DEPDIR)/test-runner.Po \
+	unit/$(DEPDIR)/test-arc4.Po unit/$(DEPDIR)/test-client.Po \
+	unit/$(DEPDIR)/test-cmac-aes.Po unit/$(DEPDIR)/test-crypto.Po \
 	unit/$(DEPDIR)/test-eap-mschapv2.Po \
 	unit/$(DEPDIR)/test-eap-sim.Po unit/$(DEPDIR)/test-eapol.Po \
 	unit/$(DEPDIR)/test-hmac-md5.Po \
@@ -1163,7 +1162,6 @@ manual_pages = src/iwd.8 src/iwd.debug.7 src/iwd.config.5 src/iwd.network.5 \
 		client/iwctl.1 monitor/iwmon.1 wired/ead.8 tools/hwsim.1
 
 eap_sources = src/eap.c src/eap.h src/eap-private.h \
-				src/eap-wsc.c src/eap-wsc.h \
 				src/eap-md5.c \
 				src/eap-tls.c \
 				src/eap-ttls.c \
@@ -1175,7 +1173,6 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 				src/eap-pwd.c \
 				src/util.h src/util.c \
 				src/crypto.h src/crypto.c \
-				src/wscutil.h src/wscutil.c \
 				src/simutil.h src/simutil.c \
 				src/simauth.h src/simauth.c \
 				src/watchlist.h src/watchlist.c \
@@ -1220,10 +1217,13 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/netconfig.h src/netconfig.c\
 @DAEMON_TRUE@					src/resolve.h src/resolve.c\
 @DAEMON_TRUE@					src/hotspot.c \
+@DAEMON_TRUE@					src/p2p.h src/p2p.c \
 @DAEMON_TRUE@					src/p2putil.h src/p2putil.c \
 @DAEMON_TRUE@					src/module.h src/module.c \
 @DAEMON_TRUE@					src/rrm.c \
 @DAEMON_TRUE@					src/frame-xchg.h src/frame-xchg.c \
+@DAEMON_TRUE@					src/eap-wsc.c src/eap-wsc.h \
+@DAEMON_TRUE@					src/wscutil.h src/wscutil.c \
 @DAEMON_TRUE@					$(eap_sources) \
 @DAEMON_TRUE@					$(builtin_sources)
 
@@ -1824,14 +1824,15 @@ src/resolve.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/hotspot.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
+src/p2p.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/module.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/rrm.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/frame-xchg.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
-src/eap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/eap-wsc.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
+src/eap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/eap-md5.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/eap-tls.$(OBJEXT): src/$(am__dirstamp) \
@@ -2169,6 +2170,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/nl80211cmd.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/nl80211util.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/owe.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/p2p.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/p2putil.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/plugin.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/resolve.Po@am__quote@ # am--include-marker
@@ -3238,6 +3240,7 @@ distclean: distclean-am
 	-rm -f src/$(DEPDIR)/nl80211cmd.Po
 	-rm -f src/$(DEPDIR)/nl80211util.Po
 	-rm -f src/$(DEPDIR)/owe.Po
+	-rm -f src/$(DEPDIR)/p2p.Po
 	-rm -f src/$(DEPDIR)/p2putil.Po
 	-rm -f src/$(DEPDIR)/plugin.Po
 	-rm -f src/$(DEPDIR)/resolve.Po
@@ -3449,6 +3452,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f src/$(DEPDIR)/nl80211cmd.Po
 	-rm -f src/$(DEPDIR)/nl80211util.Po
 	-rm -f src/$(DEPDIR)/owe.Po
+	-rm -f src/$(DEPDIR)/p2p.Po
 	-rm -f src/$(DEPDIR)/p2putil.Po
 	-rm -f src/$(DEPDIR)/plugin.Po
 	-rm -f src/$(DEPDIR)/resolve.Po

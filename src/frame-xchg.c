@@ -42,6 +42,10 @@
 #include "src/netdev.h"
 #include "src/frame-xchg.h"
 
+#ifndef SOL_NETLINK
+#define SOL_NETLINK 270
+#endif
+
 struct watch_group {
 	/*
 	 * Group IDs, except 0, are per wdev for user's convenience.
@@ -435,21 +439,30 @@ err:
 	return NULL;
 }
 
+struct watch_group_match_info {
+	uint64_t wdev_id;
+	uint32_t id;
+};
+
+static bool frame_watch_group_match(const void *a, const void *b)
+{
+	const struct watch_group *group = a;
+	const struct watch_group_match_info *info = b;
+
+	return group->wdev_id == info->wdev_id && group->id == info->id;
+}
+
 static struct watch_group *frame_watch_group_get(uint64_t wdev_id, uint32_t id)
 {
-	const struct l_queue_entry *entry;
-	struct watch_group *group;
+	struct watch_group_match_info info = { id == 0 ? 0 : wdev_id, id };
+	struct watch_group *group = l_queue_find(watch_groups,
+						frame_watch_group_match, &info);
 
-	for (entry = l_queue_get_entries(watch_groups); entry;
-			entry = entry->next) {
-		group = entry->data;
-
-		if (group->id == id && (id == 0 || group->wdev_id == wdev_id))
-			return group;
+	if (!group) {
+		group = frame_watch_group_new(wdev_id, id);
+		l_queue_push_tail(watch_groups, group);
 	}
 
-	group = frame_watch_group_new(wdev_id, id);
-	l_queue_push_tail(watch_groups, group);
 	return group;
 }
 
@@ -528,7 +541,17 @@ static bool frame_watch_check_duplicate(void *data, void *user_data)
 	}
 
 drop:
-	/* Drop the existing watch as a duplicate of the new one */
+	/*
+	 * Drop the existing watch as a duplicate of the new one. If we are in
+	 * the watchlist notify loop, just mark this item as stale and it will
+	 * be cleaned up afterwards
+	 */
+	if (watch->group->watches.in_notify) {
+		super->id = 0;
+		watch->group->watches.stale_items = true;
+		return false;
+	}
+
 	frame_watch_free(&watch->super);
 	return true;
 }
@@ -584,19 +607,6 @@ bool frame_watch_add(uint64_t wdev_id, uint32_t group_id, uint16_t frame_type,
 	}
 
 	return true;
-}
-
-struct watch_group_match_info {
-	uint64_t wdev_id;
-	uint32_t id;
-};
-
-static bool frame_watch_group_match(const void *a, const void *b)
-{
-	const struct watch_group *group = a;
-	const struct watch_group_match_info *info = b;
-
-	return group->wdev_id == info->wdev_id && group->id == info->id;
 }
 
 bool frame_watch_group_remove(uint64_t wdev_id, uint32_t group_id)
@@ -657,6 +667,7 @@ bool frame_watch_wdev_remove(uint64_t wdev_id)
 }
 
 struct frame_watch_handler_check_info {
+	uint64_t wdev_id;
 	frame_watch_cb_t handler;
 	void *user_data;
 };
@@ -667,7 +678,8 @@ static bool frame_watch_item_remove_by_handler(void *data, void *user_data)
 		l_container_of(data, struct frame_watch, super);
 	struct frame_watch_handler_check_info *info = user_data;
 
-	if (watch->super.notify != info->handler ||
+	if (watch->wdev_id != info->wdev_id ||
+			watch->super.notify != info->handler ||
 			watch->super.notify_data != info->user_data)
 		return false;
 
@@ -698,9 +710,9 @@ static bool frame_watch_remove_by_handler(uint64_t wdev_id, uint32_t group_id,
 						void *user_data)
 {
 	struct watch_group_match_info group_info =
-		{ wdev_id, group_id };
+		{ group_id == 0 ? 0 : wdev_id, group_id };
 	struct frame_watch_handler_check_info handler_info =
-		{ handler, user_data };
+		{ wdev_id, handler, user_data };
 	struct watch_group *group = l_queue_find(watch_groups,
 						frame_watch_group_match,
 						&group_info);
