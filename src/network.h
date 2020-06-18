@@ -53,7 +53,7 @@ const struct network_info *network_get_info(const struct network *network);
 void network_set_info(struct network *network, struct network_info *info);
 
 int network_autoconnect(struct network *network, struct scan_bss *bss);
-void network_connect_failed(struct network *network);
+void network_connect_failed(struct network *network, bool in_handshake);
 bool network_bss_add(struct network *network, struct scan_bss *bss);
 bool network_bss_list_isempty(struct network *network);
 void network_bss_list_clear(struct network *network);
@@ -70,7 +70,7 @@ int network_rank_compare(const void *a, const void *b, void *user);
 void network_rank_update(struct network *network, bool connected);
 
 void network_connect_new_hidden_network(struct network *network,
-						struct l_dbus_message *message);
+					struct l_dbus_message **message);
 
 void network_blacklist_add(struct network *network, struct scan_bss *bss);
 

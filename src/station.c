@@ -58,6 +58,8 @@ static struct l_queue *station_list;
 static uint32_t netdev_watch;
 static uint32_t mfp_setting;
 static bool anqp_disabled;
+static bool netconfig_enabled;
+static struct watchlist anqp_watches;
 
 struct station {
 	enum station_state state;
@@ -72,6 +74,7 @@ struct station {
 	struct l_hashmap *networks;
 	struct l_queue *networks_sorted;
 	struct l_dbus_message *connect_pending;
+	struct l_dbus_message *hidden_pending;
 	struct l_dbus_message *disconnect_pending;
 	struct l_dbus_message *scan_pending;
 	struct signal_agent *signal_agent;
@@ -432,6 +435,32 @@ static void network_add_foreach(struct network *network, void *user_data)
 	station_add_autoconnect_bss(station, network, bss);
 }
 
+static bool match_pending(const void *a, const void *b)
+{
+	const struct anqp_entry *entry = a;
+
+	return entry->pending != 0;
+}
+
+static void remove_anqp(void *data)
+{
+	struct anqp_entry *entry = data;
+
+	l_free(entry);
+}
+
+static bool anqp_entry_foreach(void *data, void *user_data)
+{
+	struct anqp_entry *e = data;
+
+	WATCHLIST_NOTIFY(&anqp_watches, station_anqp_watch_func_t,
+				STATION_ANQP_FINISHED, e->network);
+
+	remove_anqp(e);
+
+	return true;
+}
+
 static void station_anqp_response_cb(enum anqp_result result,
 					const void *anqp, size_t anqp_len,
 					void *user_data)
@@ -485,11 +514,14 @@ static void station_anqp_response_cb(enum anqp_result result,
 	l_strv_free(realms);
 
 request_done:
-	l_queue_remove(station->anqp_pending, entry);
+	entry->pending = 0;
 
-	/* If no more requests, resume scanning */
-	if (!l_queue_isempty(station->anqp_pending))
+	/* Return if there are other pending requests */
+	if (l_queue_find(station->anqp_pending, match_pending, NULL))
 		return;
+
+	/* Notify all watchers now that every ANQP request has finished */
+	l_queue_foreach_remove(station->anqp_pending, anqp_entry_foreach, NULL);
 
 	l_queue_destroy(station->autoconnect_list, l_free);
 	station->autoconnect_list = l_queue_new();
@@ -562,6 +594,8 @@ static bool station_start_anqp(struct station *station, struct network *network,
 
 	l_queue_push_head(station->anqp_pending, entry);
 
+	WATCHLIST_NOTIFY(&anqp_watches, station_anqp_watch_func_t,
+				STATION_ANQP_STARTED, network);
 	return true;
 }
 
@@ -1058,15 +1092,13 @@ static bool station_quick_scan_results(int err, struct l_queue *bss_list,
 
 	station_property_set_scanning(station, false);
 
-	if (err) {
-		station_enter_state(station, STATION_STATE_AUTOCONNECT_FULL);
-
-		return false;
-	}
+	if (err)
+		goto done;
 
 	autoconnect = station_is_autoconnecting(station);
 	station_set_scan_results(station, bss_list, autoconnect);
 
+done:
 	if (station->state == STATION_STATE_AUTOCONNECT_QUICK)
 		/*
 		 * If we're still in AUTOCONNECT_QUICK state, then autoconnect
@@ -1074,7 +1106,7 @@ static bool station_quick_scan_results(int err, struct l_queue *bss_list,
 		 */
 		station_enter_state(station, STATION_STATE_AUTOCONNECT_FULL);
 
-	return true;
+	return err == 0;
 }
 
 static void station_quick_scan_triggered(int err, void *user_data)
@@ -1215,6 +1247,18 @@ uint32_t station_add_state_watch(struct station *station,
 bool station_remove_state_watch(struct station *station, uint32_t id)
 {
 	return watchlist_remove(&station->state_watches, id);
+}
+
+uint32_t station_add_anqp_watch(station_anqp_watch_func_t func,
+				void *user_data,
+				station_destroy_func_t destroy)
+{
+	return watchlist_add(&anqp_watches, func, user_data, destroy);
+}
+
+void station_remove_anqp_watch(uint32_t id)
+{
+	watchlist_remove(&anqp_watches, id);
 }
 
 bool station_set_autoconnect(struct station *station, bool autoconnect)
@@ -2299,7 +2343,11 @@ static void station_connect_cb(struct netdev *netdev, enum netdev_result result,
 
 	if (result != NETDEV_RESULT_OK) {
 		if (result != NETDEV_RESULT_ABORTED) {
-			network_connect_failed(station->connected_network);
+			bool in_handshake =
+				result == NETDEV_RESULT_HANDSHAKE_FAILED;
+
+			network_connect_failed(station->connected_network,
+						in_handshake);
 			station_disassociated(station);
 		}
 
@@ -2434,8 +2482,8 @@ static void station_hidden_network_scan_triggered(int err, void *user_data)
 	if (!err)
 		return;
 
-	dbus_pending_reply(&station->connect_pending,
-				dbus_error_failed(station->connect_pending));
+	dbus_pending_reply(&station->hidden_pending,
+				dbus_error_failed(station->hidden_pending));
 }
 
 static bool station_hidden_network_scan_results(int err,
@@ -2453,8 +2501,8 @@ static bool station_hidden_network_scan_results(int err,
 
 	l_debug("");
 
-	msg = station->connect_pending;
-	station->connect_pending = NULL;
+	msg = station->hidden_pending;
+	station->hidden_pending = NULL;
 
 	if (err) {
 		dbus_pending_reply(&msg, dbus_error_failed(msg));
@@ -2500,7 +2548,7 @@ next:
 
 	network = network_psk ? : network_open;
 
-	network_connect_new_hidden_network(network, msg);
+	network_connect_new_hidden_network(network, &msg);
 	l_dbus_message_unref(msg);
 
 	return true;
@@ -2528,7 +2576,7 @@ static struct l_dbus_message *station_dbus_connect_hidden_network(
 
 	l_debug("");
 
-	if (station->connect_pending || station_is_busy(station))
+	if (station->hidden_pending || station_is_busy(station))
 		return dbus_error_busy(message);
 
 	if (!l_dbus_message_get_arguments(message, "s", &ssid))
@@ -2554,7 +2602,7 @@ static struct l_dbus_message *station_dbus_connect_hidden_network(
 	if (!station->hidden_network_scan_id)
 		return dbus_error_failed(message);
 
-	station->connect_pending = l_dbus_message_ref(message);
+	station->hidden_pending = l_dbus_message_ref(message);
 
 	return NULL;
 }
@@ -3098,7 +3146,8 @@ static struct station *station_create(struct netdev *netdev)
 	l_dbus_object_add_interface(dbus, netdev_get_path(netdev),
 					IWD_STATION_INTERFACE, station);
 
-	station->netconfig = netconfig_new(netdev_get_ifindex(netdev));
+	if (netconfig_enabled)
+		station->netconfig = netconfig_new(netdev_get_ifindex(netdev));
 
 	station->anqp_pending = l_queue_new();
 
@@ -3131,6 +3180,10 @@ static void station_free(struct station *station)
 	if (station->connect_pending)
 		dbus_pending_reply(&station->connect_pending,
 				dbus_error_aborted(station->connect_pending));
+
+	if (station->hidden_pending)
+		dbus_pending_reply(&station->hidden_pending,
+				dbus_error_aborted(station->hidden_pending));
 
 	if (station->disconnect_pending)
 		dbus_pending_reply(&station->disconnect_pending,
@@ -3250,7 +3303,24 @@ static int station_init(void)
 				&anqp_disabled))
 		anqp_disabled = true;
 
-	return true;
+	if (!l_settings_get_bool(iwd_get_config(), "General",
+					"EnableNetworkConfiguration",
+					&netconfig_enabled)) {
+		if (l_settings_get_bool(iwd_get_config(), "General",
+					"enable_network_config",
+					&netconfig_enabled))
+			l_warn("[General].enable_network_config is deprecated,"
+				" use [General].EnableNetworkConfiguration");
+		else
+			netconfig_enabled = false;
+	}
+
+	if (!netconfig_enabled)
+		l_info("station: Network configuration is disabled.");
+
+	watchlist_init(&anqp_watches, NULL);
+
+	return 0;
 }
 
 static void station_exit(void)
@@ -3259,6 +3329,7 @@ static void station_exit(void)
 	netdev_watch_remove(netdev_watch);
 	l_queue_destroy(station_list, NULL);
 	station_list = NULL;
+	watchlist_destroy(&anqp_watches);
 }
 
 IWD_MODULE(station, station_init, station_exit)

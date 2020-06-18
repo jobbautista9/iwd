@@ -52,6 +52,7 @@
 #include "src/util.h"
 
 static uint32_t known_networks_watch;
+static uint32_t anqp_watch;
 
 struct network {
 	char ssid[33];
@@ -72,7 +73,10 @@ struct network {
 	bool update_psk:1;  /* Whether PSK should be written to storage */
 	bool ask_passphrase:1; /* Whether we should force-ask agent */
 	bool is_hs20:1;
+	bool anqp_pending:1;	/* Set if there is a pending ANQP request */
 	int rank;
+	/* Holds DBus Connect() message if it comes in before ANQP finishes */
+	struct l_dbus_message *connect_after_anqp;
 };
 
 static bool network_settings_load(struct network *network)
@@ -521,6 +525,10 @@ int network_autoconnect(struct network *network, struct scan_bss *bss)
 	bool is_rsn;
 	int ret;
 
+	/* already waiting for an agent request, connect in progress */
+	if (network->agent_request)
+		return -EALREADY;
+
 	switch (security) {
 	case SECURITY_NONE:
 		is_rsn = false;
@@ -587,13 +595,13 @@ close_settings:
 	return ret;
 }
 
-void network_connect_failed(struct network *network)
+void network_connect_failed(struct network *network, bool in_handshake)
 {
 	/*
-	 * Connection failed, if PSK try asking for the passphrase
-	 * once more
+	 * Connection failed during the handshake phase.  If PSK try asking
+	 * for the passphrase once more
 	 */
-	if (network_get_security(network) == SECURITY_PSK) {
+	if (network_get_security(network) == SECURITY_PSK && in_handshake) {
 		network->update_psk = false;
 		network->ask_passphrase = true;
 	}
@@ -1156,6 +1164,22 @@ static struct l_dbus_message *network_connect(struct l_dbus *dbus,
 		station_connect_network(station, network, bss, message);
 		return NULL;
 	case SECURITY_8021X:
+		if (network->connect_after_anqp)
+			return dbus_error_busy(message);
+
+		/*
+		 * If there is an ongoing ANQP request we must wait for that to
+		 * finish. Save the message and wait for the ANQP watch to
+		 * fire
+		 */
+		if (network->anqp_pending) {
+			network->connect_after_anqp =
+						l_dbus_message_ref(message);
+			l_debug("Pending ANQP request, delaying connect to %s",
+						network->ssid);
+			return NULL;
+		}
+
 		if (!network_settings_load(network))
 			return dbus_error_not_configured(message);
 
@@ -1166,7 +1190,7 @@ static struct l_dbus_message *network_connect(struct l_dbus *dbus,
 }
 
 void network_connect_new_hidden_network(struct network *network,
-						struct l_dbus_message *message)
+						struct l_dbus_message **message)
 {
 	struct station *station = network->station;
 	struct scan_bss *bss;
@@ -1183,7 +1207,7 @@ void network_connect_new_hidden_network(struct network *network,
 	bss = network_bss_select(network, true);
 	if (!bss) {
 		/* This should never happened for the hidden networks. */
-		error = dbus_error_not_supported(message);
+		error = dbus_error_not_supported(*message);
 		goto reply_error;
 	}
 
@@ -1192,13 +1216,13 @@ void network_connect_new_hidden_network(struct network *network,
 
 	switch (network_get_security(network)) {
 	case SECURITY_PSK:
-		error = network_connect_psk(network, bss, message);
+		error = network_connect_psk(network, bss, *message);
 		break;
 	case SECURITY_NONE:
-		station_connect_network(station, network, bss, message);
+		station_connect_network(station, network, bss, *message);
 		return;
 	default:
-		error = dbus_error_not_supported(message);
+		error = dbus_error_not_supported(*message);
 		break;
 	}
 
@@ -1208,7 +1232,7 @@ void network_connect_new_hidden_network(struct network *network,
 	return;
 
 reply_error:
-	dbus_pending_reply(&message, error);
+	dbus_pending_reply(message, error);
 }
 
 void network_blacklist_add(struct network *network, struct scan_bss *bss)
@@ -1484,6 +1508,35 @@ static void known_networks_changed(enum known_networks_event event,
 	}
 }
 
+static void anqp_watch_changed(enum station_anqp_state state,
+				struct network *network, void *user_data)
+{
+	network->anqp_pending = state == STATION_ANQP_STARTED;
+
+	if (state == STATION_ANQP_FINISHED && network->connect_after_anqp) {
+		struct l_dbus_message *reply;
+
+		l_debug("ANQP complete, resuming connect to %s", network->ssid);
+
+		if (!network_settings_load(network)) {
+			reply = dbus_error_not_configured(
+						network->connect_after_anqp);
+			dbus_pending_reply(&network->connect_after_anqp, reply);
+			return;
+		}
+
+		reply = network_connect_8021x(network,
+					network_bss_select(network, true),
+					network->connect_after_anqp);
+
+		if (reply)
+			l_dbus_send(dbus_get_bus(), reply);
+
+		l_dbus_message_unref(network->connect_after_anqp);
+		network->connect_after_anqp = NULL;
+	}
+}
+
 static void setup_network_interface(struct l_dbus_interface *interface)
 {
 	l_dbus_interface_method(interface, "Connect", 0,
@@ -1517,6 +1570,8 @@ static int network_init(void)
 	known_networks_watch =
 		known_networks_watch_add(known_networks_changed, NULL, NULL);
 
+	anqp_watch = station_add_anqp_watch(anqp_watch_changed, NULL, NULL);
+
 	return 0;
 }
 
@@ -1524,6 +1579,9 @@ static void network_exit(void)
 {
 	known_networks_watch_remove(known_networks_watch);
 	known_networks_watch = 0;
+
+	station_remove_anqp_watch(anqp_watch);
+	anqp_watch = 0;
 
 	l_dbus_unregister_interface(dbus_get_bus(), IWD_NETWORK_INTERFACE);
 }
