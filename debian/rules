@@ -9,3 +9,6 @@ override_dh_auto_test:
 	# testsuite doesn't pass on buildds, possibly because of
 	# too old kernel?! Make it non-fatal for now...
 	dh_auto_test || true
+
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start --no-stop-on-upgrade
