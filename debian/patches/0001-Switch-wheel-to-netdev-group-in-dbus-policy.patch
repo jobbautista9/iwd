@@ -1,0 +1,25 @@
+From: Andreas Henriksson <andreas@fatal.se>
+Date: Fri, 31 Jul 2020 19:55:36 +0200
+Subject: Switch wheel to netdev group in dbus policy
+
+In Debian there's a specific dedicated group that is supposed to
+give permission to manage the network, called netdev.
+Thus replace the generic, and in debian not very widely used, wheel
+group in the default policy.
+---
+ src/iwd-dbus.conf | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/src/iwd-dbus.conf b/src/iwd-dbus.conf
+index 6b07ba9..308037d 100644
+--- a/src/iwd-dbus.conf
++++ b/src/iwd-dbus.conf
+@@ -13,7 +13,7 @@
+     <allow send_interface="net.connman.iwd.Agent"/>
+   </policy>
+ 
+-  <policy group="wheel">
++  <policy group="netdev">
+     <allow send_destination="net.connman.iwd"/>
+     <allow send_interface="net.connman.iwd.Agent"/>
+   </policy>
