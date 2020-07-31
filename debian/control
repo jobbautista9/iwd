@@ -15,6 +15,7 @@ Vcs-Browser: https://salsa.debian.org/debian/iwd
 Package: iwd
 Architecture: linux-any
 Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: dbus | dbus-system-bus
 Description: wireless daemon for Linux
  Minimalistic wireless daemon that uses modern Linux interfaces like
  cfg80211 and nl80211 (netlink). The daemon provides a D-Bus API.
