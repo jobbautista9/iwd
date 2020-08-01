@@ -1,0 +1,4 @@
+# enable sysvinit script
+update-rc.d iwd defaults
+
+#DEBHELPER#
