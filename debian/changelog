@@ -1,3 +1,11 @@
+iwd (1.8-1+devuan1) unstable; urgency=medium
+
+  * Initial release built specifically for Devuan. (Closes: #503)
+  * Disabled compilation of systemd service.
+  * Added a sysvinit script for non-systemd users.
+
+ -- Job Bautista <jobbautista9@protonmail.com>  Wed, 05 Aug 2020 10:59:42 +0800
+
 iwd (1.8-1) unstable; urgency=medium
 
   * New upstream release.
