@@ -8,8 +8,8 @@ Build-Depends: debhelper-compat (= 12),
                openssl <!nocheck>,
                python3-docutils <!nodoc>,
 Standards-Version: 4.2.1
-Vcs-Git: https://salsa.debian.org/debian/iwd.git
-Vcs-Browser: https://salsa.debian.org/debian/iwd
+Vcs-Git: https://git.devuan.org/jobbautista9/iwd.git
+Vcs-Browser: https://git.devuan.org/jobbautista9/iwd
 
 Package: iwd
 Architecture: linux-any
