@@ -1,7 +1,0 @@
-#!/bin/sh
-set -e
-
-# remove sysvinit script
-update-rc.d iwd remove
-
-#DEBHELPER#
