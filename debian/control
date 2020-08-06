@@ -1,6 +1,7 @@
 Source: iwd
 Section: net
 Priority: optional
+Origin: Devuan
 Maintainer: Job Bautista <jobbautista9@protonmail.com>
 Build-Depends: debhelper-compat (= 12),
                libreadline-dev,
@@ -8,8 +9,8 @@ Build-Depends: debhelper-compat (= 12),
                openssl <!nocheck>,
                python3-docutils <!nodoc>,
 Standards-Version: 4.2.1
-Vcs-Git: https://git.devuan.org/jobbautista9/iwd.git
-Vcs-Browser: https://git.devuan.org/jobbautista9/iwd
+Vcs-Git: https://git.devuan.org/devuan/iwd.git
+Vcs-Browser: https://git.devuan.org/devuan/iwd
 
 Package: iwd
 Architecture: linux-any
