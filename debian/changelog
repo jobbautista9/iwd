@@ -1,3 +1,9 @@
+iwd (1.8-1+devuan1~bpo3+1) beowulf-backports; urgency=medium
+
+  * Rebuild for beowulf-backports.
+
+ -- Job Bautista <jobbautista9@protonmail.com>  Sun, 09 Aug 2020 20:04:34 +0800
+
 iwd (1.8-1+devuan1) unstable; urgency=medium
 
   * Initial release built specifically for Devuan. (Closes: #503)
