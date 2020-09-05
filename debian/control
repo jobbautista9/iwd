@@ -2,20 +2,24 @@ Source: iwd
 Section: net
 Priority: optional
 Maintainer: Jonas Smedegaard <dr@jones.dk>
-Build-Depends: debhelper-compat (= 12),
-               libreadline-dev,
-               libdbus-1-dev,
-               openssl <!nocheck>,
-               python3-docutils <!nodoc>,
-               systemd
+Build-Depends:
+ debhelper-compat (= 12),
+ libdbus-1-dev,
+ libreadline-dev,
+ openssl <!nocheck>,
+ python3-docutils <!nodoc>,
+ systemd,
 Standards-Version: 4.2.1
 Vcs-Git: https://salsa.debian.org/debian/iwd.git
 Vcs-Browser: https://salsa.debian.org/debian/iwd
 
 Package: iwd
 Architecture: linux-any
-Depends: ${shlibs:Depends}, ${misc:Depends}
-Recommends: dbus | dbus-system-bus
+Depends:
+ ${misc:Depends},
+ ${shlibs:Depends},
+Recommends:
+ dbus | dbus-system-bus,
 Description: wireless daemon for Linux
  Minimalistic wireless daemon that uses modern Linux interfaces like
  cfg80211 and nl80211 (netlink). The daemon provides a D-Bus API.
