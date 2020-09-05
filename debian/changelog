@@ -1,3 +1,20 @@
+iwd (1.8-2) UNRELEASED; urgency=medium
+
+  * Recommend dbus (system bus)
+    Interaction with iwd happens via dbus, i.e. as used by the iwctl
+    command (or NetworkManager iwd backend).
+    Packages using D-Bus usually doesn't describe this in their package
+    relationships and implicitly rely on everyone having a bus available.
+    People using iwd however seems to be confused about the lack of a
+    startup script and fails to realize that "dbus activation" is the
+    intended way to start iwd so hopefully making the dbus relationship more
+    explicit will give a hint and help people figure this out.
+  * Do not enable/start/restart service by default
+  * Extend package description with note about dbus activation
+  * Add d/p/0001-Switch-wheel-to-netdev-group-in-dbus-policy.patch
+
+ -- Andreas Henriksson <andreas@fatal.se>  Sat, 05 Sep 2020 15:31:05 +0200
+
 iwd (1.8-1) unstable; urgency=medium
 
   * New upstream release.
