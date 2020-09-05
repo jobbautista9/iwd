@@ -3,17 +3,20 @@ Upstream-Name: iwd
 Source: https://mirrors.edge.kernel.org/pub/linux/network/wireless/
 
 Files: *
-Copyright: 2011-2020 Intel Corporation. All rights reserved.
-           2016 Markus Ongyerth. All rights reserved.
+Copyright:
+  2011-2020 Intel Corporation
+  2016 Markus Ongyerth
 License: LGPL-2.1+
 
 Files: ell/dbus-client.*
-Copyright: 2011-2014 Intel Corporation. All rights reserved.
-           2017 Codecoup. All rights reserved.
+Copyright:
+  2011-2014 Intel Corporation
+  2017 Codecoup
 License: LGPL-2.1+
 
 Files: ell/ecc-external.c
-Copyright: 2013, Kenneth MacKay
+Copyright:
+  2013, Kenneth MacKay
 License: BSD-2-clause
  Redistribution and use in source and binary forms, with or without
  modification, are permitted provided that the following conditions are
@@ -37,8 +40,9 @@ License: BSD-2-clause
  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Files: ell/util.h
-Copyright: 2011-2014  Intel Corporation. All rights reserved.
-           2015 Christophe Meessen
+Copyright:
+  2011-2014  Intel Corporation
+  2015 Christophe Meessen
 License: LGPL-2.1+ and MIT
  This library is free software; you can redistribute it and/or
  modify it under the terms of the GNU Lesser General Public
@@ -85,15 +89,16 @@ License: LGPL-2.1+ and MIT
  a negative, zero or positif value if a < b, a == b or a > b respectively.
 
 Files: linux/nl80211.h
-Copyright: 2006-2010 Johannes Berg <johannes@sipsolutions.net>
-           2008 Michael Wu <flamingice@sourmilk.net>
-           2008 Luis Carlos Cobo <luisca@cozybit.com>
-           2008 Michael Buesch <m@bues.ch>
-           2008, 2009 Luis R. Rodriguez <lrodriguez@atheros.com>
-           2008 Jouni Malinen <jouni.malinen@atheros.com>
-           2008 Colin McCabe <colin@cozybit.com>
-           2015-2017	Intel Deutschland GmbH
-           2018-2019 Intel Corporation
+Copyright:
+  2006-2010 Johannes Berg <johannes@sipsolutions.net>
+  2008 Luis Carlos Cobo <luisca@cozybit.com>
+  2008 Michael Buesch <m@bues.ch>
+  2008 Michael Wu <flamingice@sourmilk.net>
+  2008 Colin McCabe <colin@cozybit.com>
+  2008 Jouni Malinen <jouni.malinen@atheros.com>
+  2008-2009 Luis R. Rodriguez <lrodriguez@atheros.com>
+  2015-2017 Intel Deutschland GmbH
+  2018-2019 Intel Corporation
 License: ISC
  Permission to use, copy, modify, and/or distribute this software for any
  purpose with or without fee is hereby granted, provided that the above
@@ -108,7 +113,8 @@ License: ISC
  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 Files: debian/*
-Copyright: 2018-2020 Andreas Henriksson <andreas@fatal.se>
+Copyright:
+  2018-2020 Andreas Henriksson <andreas@fatal.se>
 License: LGPL-2.1+
 
 License: LGPL-2.1+
