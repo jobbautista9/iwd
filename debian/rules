@@ -2,9 +2,9 @@
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
+# testsuite doesn't pass on buildds, possibly because of too old kernel?
+# Make it non-fatal for now...
 override_dh_auto_test:
-	# testsuite doesn't pass on buildds, possibly because of
-	# too old kernel?! Make it non-fatal for now...
 	dh_auto_test || true
 
 override_dh_installsystemd:
