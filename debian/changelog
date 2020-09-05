@@ -1,5 +1,12 @@
 iwd (1.9-1) unstable; urgency=medium
 
+  [ upstream ]
+  * new release
+    + eapol: prevent key reinstallation on retransmitted Msg4/4
+      closes: bug#968996, thanks to Salvatore Bonaccorso
+      CVE-2020-17497
+
+  [ Andreas Henriksson ]
   * Recommend dbus (system bus)
     Interaction with iwd happens via dbus, i.e. as used by the iwctl
     command (or NetworkManager iwd backend).
