@@ -1,4 +1,4 @@
-iwd (1.9-1) UNRELEASED; urgency=medium
+iwd (1.9-1) unstable; urgency=medium
 
   * Recommend dbus (system bus)
     Interaction with iwd happens via dbus, i.e. as used by the iwctl
@@ -13,8 +13,10 @@ iwd (1.9-1) UNRELEASED; urgency=medium
   * Extend package description with note about dbus activation
   * Add d/p/0001-Switch-wheel-to-netdev-group-in-dbus-policy.patch
   * New upstream release.
+  * Update debian/copyright
+  * Orphan package (see #969586)
 
- -- Andreas Henriksson <andreas@fatal.se>  Sat, 05 Sep 2020 15:31:05 +0200
+ -- Andreas Henriksson <andreas@fatal.se>  Sat, 05 Sep 2020 16:05:08 +0200
 
 iwd (1.8-1) unstable; urgency=medium
 
