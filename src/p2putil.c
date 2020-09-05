@@ -984,6 +984,8 @@ int p2p_parse_go_negotiation_req(const uint8_t *pdu, size_t len,
 	d.go_intent = go_intent.intent;
 	d.go_tie_breaker = go_intent.tie_breaker;
 
+	d.wfd = ie_tlv_extract_wfd_payload(pdu + 1, len - 1, &d.wfd_size);
+
 	memcpy(out, &d, sizeof(d));
 	return 0;
 
@@ -1043,6 +1045,8 @@ int p2p_parse_go_negotiation_resp(const uint8_t *pdu, size_t len,
 	d.go_intent = go_intent.intent;
 	d.go_tie_breaker = go_intent.tie_breaker;
 
+	d.wfd = ie_tlv_extract_wfd_payload(pdu + 1, len - 1, &d.wfd_size);
+
 	memcpy(out, &d, sizeof(d));
 	return 0;
 
@@ -1072,12 +1076,16 @@ int p2p_parse_go_negotiation_confirmation(const uint8_t *pdu, size_t len,
 			REQUIRED(CHANNEL_LIST, &d.channel_list),
 			OPTIONAL(P2P_GROUP_ID, &d.group_id),
 			-1);
+	if (r < 0)
+		goto error;
 
-	if (r >= 0)
-		memcpy(out, &d, sizeof(d));
-	else
-		p2p_clear_go_negotiation_confirmation(&d);
+	d.wfd = ie_tlv_extract_wfd_payload(pdu + 1, len - 1, &d.wfd_size);
 
+	memcpy(out, &d, sizeof(d));
+	return 0;
+
+error:
+	p2p_clear_go_negotiation_confirmation(&d);
 	return r;
 }
 
@@ -1109,27 +1117,30 @@ int p2p_parse_invitation_req(const uint8_t *pdu, size_t len,
 			REQUIRED(P2P_DEVICE_INFO, &d.device_info),
 			-1);
 	if (r < 0)
-		goto done;
+		goto error;
 
 	/* A WSC IE is optional */
 	wsc_data = ie_tlv_extract_wsc_payload(pdu + 1, len - 1, &wsc_len);
-	if (!wsc_data)
-		goto done;
-
-	r = wsc_parse_attrs(wsc_data, wsc_len, &wsc_version2, NULL, 0, NULL,
+	if (wsc_data) {
+		r = wsc_parse_attrs(
+			wsc_data, wsc_len, &wsc_version2, NULL, 0, NULL,
 			WSC_REQUIRED(DEVICE_PASSWORD_ID, &d.device_password_id),
 			WSC_ATTR_INVALID);
-	l_free(wsc_data);
+		l_free(wsc_data);
 
-	if (r >= 0 && !wsc_version2)
-		r = -EINVAL;
+		if (r >= 0 && !wsc_version2) {
+			r = -EINVAL;
+			goto error;
+		}
+	}
 
-done:
-	if (r >= 0)
-		memcpy(out, &d, sizeof(d));
-	else
-		p2p_clear_invitation_req(&d);
+	d.wfd = ie_tlv_extract_wfd_payload(pdu + 1, len - 1, &d.wfd_size);
 
+	memcpy(out, &d, sizeof(d));
+	return 0;
+
+error:
+	p2p_clear_invitation_req(&d);
 	return r;
 }
 
@@ -1154,12 +1165,16 @@ int p2p_parse_invitation_resp(const uint8_t *pdu, size_t len,
 			OPTIONAL(P2P_GROUP_BSSID, &d.group_bssid),
 			OPTIONAL(CHANNEL_LIST, &d.channel_list),
 			-1);
+	if (r < 0)
+		goto error;
 
-	if (r >= 0)
-		memcpy(out, &d, sizeof(d));
-	else
-		p2p_clear_invitation_resp(&d);
+	d.wfd = ie_tlv_extract_wfd_payload(pdu + 1, len - 1, &d.wfd_size);
 
+	memcpy(out, &d, sizeof(d));
+	return 0;
+
+error:
+	p2p_clear_invitation_resp(&d);
 	return r;
 }
 
@@ -1277,6 +1292,8 @@ int p2p_parse_provision_disc_req(const uint8_t *pdu, size_t len,
 		goto error;
 	}
 
+	d.wfd = ie_tlv_extract_wfd_payload(pdu + 1, len - 1, &d.wfd_size);
+
 	memcpy(out, &d, sizeof(d));
 	return 0;
 
@@ -1354,6 +1371,8 @@ int p2p_parse_provision_disc_resp(const uint8_t *pdu, size_t len,
 		r = -EINVAL;
 		goto error;
 	}
+
+	d.wfd = ie_tlv_extract_wfd_payload(pdu + 1, len - 1, &d.wfd_size);
 
 	memcpy(out, &d, sizeof(d));
 	return 0;
@@ -1523,41 +1542,55 @@ void p2p_clear_go_negotiation_req(struct p2p_go_negotiation_req *data)
 {
 	p2p_clear_channel_list_attr(&data->channel_list);
 	p2p_clear_device_info_attr(&data->device_info);
+	l_free(data->wfd);
+	data->wfd = NULL;
 }
 
 void p2p_clear_go_negotiation_resp(struct p2p_go_negotiation_resp *data)
 {
 	p2p_clear_channel_list_attr(&data->channel_list);
 	p2p_clear_device_info_attr(&data->device_info);
+	l_free(data->wfd);
+	data->wfd = NULL;
 }
 
 void p2p_clear_go_negotiation_confirmation(
 				struct p2p_go_negotiation_confirmation *data)
 {
 	p2p_clear_channel_list_attr(&data->channel_list);
+	l_free(data->wfd);
+	data->wfd = NULL;
 }
 
 void p2p_clear_invitation_req(struct p2p_invitation_req *data)
 {
 	p2p_clear_channel_list_attr(&data->channel_list);
 	p2p_clear_device_info_attr(&data->device_info);
+	l_free(data->wfd);
+	data->wfd = NULL;
 }
 
 void p2p_clear_invitation_resp(struct p2p_invitation_resp *data)
 {
 	p2p_clear_channel_list_attr(&data->channel_list);
+	l_free(data->wfd);
+	data->wfd = NULL;
 }
 
 void p2p_clear_provision_disc_req(struct p2p_provision_discovery_req *data)
 {
 	p2p_clear_channel_list_attr(&data->channel_list);
 	p2p_clear_device_info_attr(&data->device_info);
+	l_free(data->wfd);
+	data->wfd = NULL;
 }
 
 void p2p_clear_provision_disc_resp(struct p2p_provision_discovery_resp *data)
 {
 	p2p_clear_channel_list_attr(&data->channel_list);
 	p2p_clear_device_info_attr(&data->device_info);
+	l_free(data->wfd);
+	data->wfd = NULL;
 }
 
 void p2p_clear_notice_of_absence(struct p2p_notice_of_absence *data)
@@ -2205,7 +2238,8 @@ static uint8_t *p2p_build_action_frame(bool public, uint8_t frame_subtype,
 					uint8_t dialog_token,
 					struct p2p_attr_builder *p2p_attrs,
 					const struct wsc_p2p_attrs *wsc_attrs,
-					size_t *out_len)
+					const uint8_t *wfd_ie,
+					size_t wfd_ie_len, size_t *out_len)
 {
 	uint8_t *p2p_ie, *wsc_ie, *ret;
 	size_t p2p_ie_len, wsc_ie_len;
@@ -2234,7 +2268,7 @@ static uint8_t *p2p_build_action_frame(bool public, uint8_t frame_subtype,
 		wsc_ie = NULL;
 
 	*out_len = (public ? 8 : 7) + (p2p_ie ? p2p_ie_len : 0) +
-		(wsc_ie ? wsc_ie_len : 0);
+		(wsc_ie ? wsc_ie_len : 0) + (wfd_ie ? wfd_ie_len : 0);
 	ret = l_malloc(*out_len);
 
 	if (public) {
@@ -2259,7 +2293,11 @@ static uint8_t *p2p_build_action_frame(bool public, uint8_t frame_subtype,
 	if (wsc_ie) {
 		memcpy(ret + pos, wsc_ie, wsc_ie_len);
 		l_free(wsc_ie);
+		pos += wsc_ie_len;
 	}
+
+	if (wfd_ie)
+		memcpy(ret + pos, wfd_ie, wfd_ie_len);
 
 	return ret;
 }
@@ -2290,7 +2328,7 @@ uint8_t *p2p_build_go_negotiation_req(const struct p2p_go_negotiation_req *data,
 
 	return p2p_build_action_frame(true, P2P_ACTION_GO_NEGOTIATION_REQ,
 					data->dialog_token, builder, &wsc_attrs,
-					out_len);
+					data->wfd, data->wfd_size, out_len);
 }
 
 /* Section 4.2.9.3 */
@@ -2320,7 +2358,7 @@ uint8_t *p2p_build_go_negotiation_resp(
 
 	return p2p_build_action_frame(true, P2P_ACTION_GO_NEGOTIATION_RESP,
 					data->dialog_token, builder, &wsc_attrs,
-					out_len);
+					data->wfd, data->wfd_size, out_len);
 }
 
 /* Section 4.2.9.4 */
@@ -2341,7 +2379,7 @@ uint8_t *p2p_build_go_negotiation_confirmation(
 
 	return p2p_build_action_frame(true, P2P_ACTION_GO_NEGOTIATION_CONFIRM,
 					data->dialog_token, builder, NULL,
-					out_len);
+					data->wfd, data->wfd_size, out_len);
 }
 
 /* Section 4.2.9.5 */
@@ -2371,7 +2409,8 @@ uint8_t *p2p_build_invitation_req(const struct p2p_invitation_req *data,
 	return p2p_build_action_frame(true, P2P_ACTION_INVITATION_REQ,
 					data->dialog_token, builder,
 					data->device_password_id ?
-					&wsc_attrs : NULL, out_len);
+					&wsc_attrs : NULL,
+					data->wfd, data->wfd_size, out_len);
 }
 
 /* Section 4.2.9.6 */
@@ -2395,7 +2434,7 @@ uint8_t *p2p_build_invitation_resp(const struct p2p_invitation_resp *data,
 
 	return p2p_build_action_frame(true, P2P_ACTION_INVITATION_RESP,
 					data->dialog_token, builder, NULL,
-					out_len);
+					data->wfd, data->wfd_size, out_len);
 }
 
 /* Section 4.2.9.7 */
@@ -2414,7 +2453,7 @@ uint8_t *p2p_build_device_disc_req(
 	return p2p_build_action_frame(true,
 					P2P_ACTION_DEVICE_DISCOVERABILITY_REQ,
 					data->dialog_token, builder, NULL,
-					out_len);
+					NULL, 0, out_len);
 }
 
 /* Section 4.2.9.8 */
@@ -2430,7 +2469,7 @@ uint8_t *p2p_build_device_disc_resp(
 	return p2p_build_action_frame(true,
 					P2P_ACTION_DEVICE_DISCOVERABILITY_RESP,
 					data->dialog_token, builder, NULL,
-					out_len);
+					NULL, 0, out_len);
 }
 
 /* Section 4.2.9.9 */
@@ -2474,7 +2513,7 @@ uint8_t *p2p_build_provision_disc_req(
 
 	return p2p_build_action_frame(true, P2P_ACTION_PROVISION_DISCOVERY_REQ,
 					data->dialog_token, builder, &wsc_attrs,
-					out_len);
+					data->wfd, data->wfd_size, out_len);
 }
 
 /* Section 4.2.9.10 */
@@ -2520,7 +2559,7 @@ uint8_t *p2p_build_provision_disc_resp(
 
 	return p2p_build_action_frame(true, P2P_ACTION_PROVISION_DISCOVERY_RESP,
 					data->dialog_token, builder, &wsc_attrs,
-					out_len);
+					data->wfd, data->wfd_size, out_len);
 }
 
 /* Section 4.2.10.2 */
@@ -2534,7 +2573,7 @@ uint8_t *p2p_build_notice_of_absence(const struct p2p_notice_of_absence *data,
 						&data->notice_of_absence);
 
 	return p2p_build_action_frame(false, P2P_ACTION_NOTICE_OF_ABSENCE,
-					0, builder, NULL, out_len);
+					0, builder, NULL, NULL, 0, out_len);
 }
 
 /* Section 4.2.10.3 */
@@ -2548,7 +2587,7 @@ uint8_t *p2p_build_presence_req(const struct p2p_presence_req *data,
 						&data->notice_of_absence);
 
 	return p2p_build_action_frame(false, P2P_ACTION_PRESENCE_REQ,
-					0, builder, NULL, out_len);
+					0, builder, NULL, NULL, 0, out_len);
 }
 
 /* Section 4.2.10.4 */
@@ -2563,12 +2602,12 @@ uint8_t *p2p_build_presence_resp(const struct p2p_presence_resp *data,
 						&data->notice_of_absence);
 
 	return p2p_build_action_frame(false, P2P_ACTION_PRESENCE_RESP,
-					0, builder, NULL, out_len);
+					0, builder, NULL, NULL, 0, out_len);
 }
 
 /* Section 4.2.10.5 */
 uint8_t *p2p_build_go_disc_req(size_t *out_len)
 {
 	return p2p_build_action_frame(false, P2P_ACTION_GO_DISCOVERABILITY_REQ,
-					0, NULL, NULL, out_len);
+					0, NULL, NULL, NULL, 0, out_len);
 }

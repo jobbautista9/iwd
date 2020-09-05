@@ -876,7 +876,7 @@ struct eapol_sm *eapol_sm_new(struct handshake_state *hs)
 
 	sm->handshake = hs;
 
-	if (hs->settings_8021x)
+	if (hs->settings_8021x && !hs->authenticator)
 		sm->use_eapol_start = true;
 
 	sm->require_handshake = true;
@@ -904,8 +904,11 @@ void eapol_sm_set_user_data(struct eapol_sm *sm, void *user_data)
 static void eapol_sm_write(struct eapol_sm *sm, const struct eapol_frame *ef,
 				bool noencrypt)
 {
-	__eapol_tx_packet(sm->handshake->ifindex, sm->handshake->aa, ETH_P_PAE,
-				ef, noencrypt);
+	const uint8_t *dst = sm->handshake->authenticator ?
+		sm->handshake->spa : sm->handshake->aa;
+
+	__eapol_tx_packet(sm->handshake->ifindex, dst, ETH_P_PAE, ef,
+				noencrypt);
 }
 
 static inline void handshake_failed(struct eapol_sm *sm, uint16_t reason_code)
@@ -1024,7 +1027,6 @@ static void eapol_set_key_timeout(struct eapol_sm *sm,
 /* 802.11-2016 Section 12.7.6.2 */
 static void eapol_send_ptk_1_of_4(struct eapol_sm *sm)
 {
-	uint32_t ifindex = sm->handshake->ifindex;
 	const uint8_t *aa = sm->handshake->aa;
 	uint8_t frame_buf[512];
 	struct eapol_key *ek = (struct eapol_key *) frame_buf;
@@ -1062,8 +1064,7 @@ static void eapol_send_ptk_1_of_4(struct eapol_sm *sm)
 	l_debug("STA: "MAC" retries=%u", MAC_STR(sm->handshake->spa),
 			sm->frame_retry);
 
-	__eapol_tx_packet(ifindex, sm->handshake->spa, ETH_P_PAE,
-				(struct eapol_frame *) ek, false);
+	eapol_sm_write(sm, (struct eapol_frame *) ek, false);
 }
 
 static void eapol_ptk_1_of_4_retry(struct l_timeout *timeout, void *user_data)
@@ -1265,19 +1266,17 @@ error_unspecified:
 /* 802.11-2016 Section 12.7.6.4 */
 static void eapol_send_ptk_3_of_4(struct eapol_sm *sm)
 {
-	uint32_t ifindex = sm->handshake->ifindex;
 	uint8_t frame_buf[512];
-	uint8_t key_data_buf[128];
+	unsigned int rsne_len = sm->handshake->authenticator_ie[1] + 2;
+	uint8_t key_data_buf[128 + rsne_len];
+	int key_data_len = rsne_len;
 	struct eapol_key *ek = (struct eapol_key *) frame_buf;
-	int key_data_len;
 	enum crypto_cipher cipher = ie_rsn_cipher_suite_to_cipher(
 				sm->handshake->pairwise_cipher);
 	enum crypto_cipher group_cipher = ie_rsn_cipher_suite_to_cipher(
 				sm->handshake->group_cipher);
 	const uint8_t *kck;
 	const uint8_t *kek;
-	struct ie_rsn_info rsn;
-	uint8_t *rsne;
 
 	sm->replay_counter++;
 
@@ -1304,17 +1303,7 @@ static void eapol_send_ptk_3_of_4(struct eapol_sm *sm)
 	 * Just one RSNE in Key Data as we only set one cipher in ap->ciphers
 	 * currently.
 	 */
-
-	memset(&rsn, 0, sizeof(rsn));
-	rsn.akm_suites = IE_RSN_AKM_SUITE_PSK;
-	rsn.pairwise_ciphers = sm->handshake->pairwise_cipher;
-	rsn.group_cipher = sm->handshake->group_cipher;
-
-	rsne = key_data_buf;
-	if (!ie_build_rsne(&rsn, rsne))
-		return;
-
-	key_data_len = rsne[1] + 2;
+	memcpy(key_data_buf, sm->handshake->authenticator_ie, rsne_len);
 
 	if (group_cipher) {
 		uint8_t *gtk_kde = key_data_buf + key_data_len;
@@ -1346,8 +1335,7 @@ static void eapol_send_ptk_3_of_4(struct eapol_sm *sm)
 	l_debug("STA: "MAC" retries=%u", MAC_STR(sm->handshake->spa),
 			sm->frame_retry);
 
-	__eapol_tx_packet(ifindex, sm->handshake->spa, ETH_P_PAE,
-				(struct eapol_frame *) ek, false);
+	eapol_sm_write(sm, (struct eapol_frame *) ek, false);
 }
 
 static void eapol_ptk_3_of_4_retry(struct l_timeout *timeout,
@@ -1462,7 +1450,6 @@ static void eapol_handle_ptk_2_of_4(struct eapol_sm *sm,
 	memcpy(sm->handshake->snonce, ek->key_nonce,
 			sizeof(sm->handshake->snonce));
 	sm->handshake->have_snonce = true;
-	sm->handshake->ptk_complete = true;
 
 	sm->frame_retry = 0;
 
@@ -1782,7 +1769,15 @@ static void eapol_handle_ptk_4_of_4(struct eapol_sm *sm,
 	l_timeout_remove(sm->timeout);
 	sm->timeout = NULL;
 
-	handshake_state_install_ptk(sm->handshake);
+	/*
+	 * If ptk_complete is set, then we are receiving Message 4 again.
+	 * This might be a retransmission, so accept but don't install
+	 * the keys again.
+	 */
+	if (!sm->handshake->ptk_complete)
+		handshake_state_install_ptk(sm->handshake);
+
+	sm->handshake->ptk_complete = true;
 }
 
 static void eapol_handle_gtk_1_of_2(struct eapol_sm *sm,
@@ -2079,6 +2074,18 @@ static void eapol_eap_complete_cb(enum eap_result result, void *user_data)
 	}
 
 	eap_reset(sm->eap);
+
+	if (sm->handshake->authenticator) {
+		if (L_WARN_ON(!sm->handshake->have_pmk)) {
+			handshake_failed(sm, MMPDU_REASON_CODE_UNSPECIFIED);
+			return;
+		}
+
+		/* sm->mic_len will have been set in eapol_eap_results_cb */
+
+		/* Kick off 4-Way Handshake */
+		eapol_ptk_1_of_4_retry(NULL, sm);
+	}
 }
 
 /* This respresentes the eapResults message */
@@ -2185,6 +2192,7 @@ static void eapol_auth_key_handle(struct eapol_sm *sm,
 	size_t frame_len = 4 + L_BE16_TO_CPU(frame->header.packet_len);
 	const struct eapol_key *ek = eapol_key_validate((const void *) frame,
 							frame_len, sm->mic_len);
+	uint16_t key_data_len;
 
 	if (!ek)
 		return;
@@ -2199,7 +2207,8 @@ static void eapol_auth_key_handle(struct eapol_sm *sm,
 	if (!sm->handshake->have_anonce)
 		return; /* Not expecting an EAPoL-Key yet */
 
-	if (!sm->handshake->ptk_complete)
+	key_data_len = EAPOL_KEY_DATA_LEN(ek, sm->mic_len);
+	if (key_data_len != 0)
 		eapol_handle_ptk_2_of_4(sm, ek);
 	else
 		eapol_handle_ptk_4_of_4(sm, ek);
@@ -2212,10 +2221,38 @@ static void eapol_rx_auth_packet(uint16_t proto, const uint8_t *from,
 {
 	struct eapol_sm *sm = user_data;
 
-	if (!sm->protocol_version)
-		sm->protocol_version = frame->header.protocol_version;
+	if (proto != ETH_P_PAE || memcmp(from, sm->handshake->spa, 6))
+		return;
 
 	switch (frame->header.packet_type) {
+	case 0:	/* EAPOL-EAP */
+		if (!sm->eap) {
+			l_error("Authenticator received an unexpected "
+				"EAPOL-EAP frame from %s",
+				util_address_to_string(from));
+			return;
+		}
+
+		eap_rx_packet(sm->eap, frame->data,
+				L_BE16_TO_CPU(frame->header.packet_len));
+		break;
+
+	case 1:	/* EAPOL-Start */
+		/*
+		 * The supplicant may have sent an EAPoL-Start even before
+		 * we queued our EAP Identity Request or it may have missed our
+		 * early Identity Request and may need a retransmission.  Tell
+		 * sm->eap so it can decide whether to send a new Identity
+		 * Request or ignore this.
+		 *
+		 * TODO: if we're already past the full handshake, send a
+		 * new msg 1/4.
+		 */
+		if (sm->eap)
+			eap_start(sm->eap);
+
+		break;
+
 	case 3: /* EAPOL-Key */
 		eapol_auth_key_handle(sm, frame);
 		break;
@@ -2344,28 +2381,14 @@ void __eapol_set_rekey_offload_func(eapol_rekey_offload_func_t func)
 
 void eapol_register(struct eapol_sm *sm)
 {
+	eapol_frame_watch_func_t rx_handler = sm->handshake->authenticator ?
+		eapol_rx_auth_packet : eapol_rx_packet;
+
 	l_queue_push_head(state_machines, sm);
 
-	if (sm->handshake->authenticator) {
-		sm->watch_id = eapol_frame_watch_add(sm->handshake->ifindex,
-						eapol_rx_auth_packet, sm);
-
-		if (!sm->handshake->proto_version)
-			sm->protocol_version = EAPOL_PROTOCOL_VERSION_2004;
-		else
-			sm->protocol_version = sm->handshake->proto_version;
-
-		sm->started = true;
-		/* Since AP/AdHoc only support AKM PSK we can hard code this */
-		sm->mic_len = 16;
-
-		/* kick off handshake */
-		eapol_ptk_1_of_4_retry(NULL, sm);
-	} else {
-		sm->watch_id = eapol_frame_watch_add(sm->handshake->ifindex,
-						eapol_rx_packet, sm);
-		sm->protocol_version = sm->handshake->proto_version;
-	}
+	sm->watch_id = eapol_frame_watch_add(sm->handshake->ifindex,
+						rx_handler, sm);
+	sm->protocol_version = sm->handshake->proto_version;
 }
 
 bool eapol_start(struct eapol_sm *sm)
@@ -2390,21 +2413,11 @@ bool eapol_start(struct eapol_sm *sm)
 
 	sm->started = true;
 
-	/*
-	 * FILS only uses the 4-way for rekeys, so only started needs to be set,
-	 * then we wait for a rekey.
-	 */
-	if (sm->handshake->akm_suite & (IE_RSN_AKM_SUITE_FILS_SHA256 |
-			IE_RSN_AKM_SUITE_FILS_SHA384 |
-			IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA384 |
-			IE_RSN_AKM_SUITE_FT_OVER_FILS_SHA256))
-		return true;
-
 	if (sm->require_handshake)
 		sm->timeout = l_timeout_create(eapol_4way_handshake_time,
 				eapol_timeout, sm, NULL);
 
-	if (sm->use_eapol_start) {
+	if (!sm->handshake->authenticator && sm->use_eapol_start) {
 		/*
 		 * We start a short timeout, if EAP packets are not received
 		 * from AP, then we send the EAPoL-Start
@@ -2423,6 +2436,26 @@ bool eapol_start(struct eapol_sm *sm)
 				sm);
 		l_free(sm->early_frame);
 		sm->early_frame = NULL;
+	}
+
+	if (sm->handshake->authenticator) {
+		if (!sm->protocol_version)
+			sm->protocol_version = EAPOL_PROTOCOL_VERSION_2004;
+
+		if (sm->handshake->settings_8021x) {
+			/*
+			 * If we're allowed to, send EAP Identity request
+			 * immediately, otherwise wait for an EAPoL-Start.
+			 */
+			if (!sm->use_eapol_start)
+				eap_start(sm->eap);
+		} else {
+			if (L_WARN_ON(!sm->handshake->have_pmk))
+				return false;
+
+			/* Kick off handshake */
+			eapol_ptk_1_of_4_retry(NULL, sm);
+		}
 	}
 
 	return true;

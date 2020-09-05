@@ -279,7 +279,7 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/storage.c src/network.h src/network.c src/wsc.h src/wsc.c \
 	src/backtrace.h src/backtrace.c src/knownnetworks.h \
 	src/knownnetworks.c src/rfkill.h src/rfkill.c src/ft.h \
-	src/ft.c src/ap.c src/adhoc.c src/sae.h src/sae.c \
+	src/ft.c src/ap.h src/ap.c src/adhoc.c src/sae.h src/sae.c \
 	src/nl80211util.h src/nl80211util.c src/nl80211cmd.h \
 	src/nl80211cmd.c src/owe.h src/owe.c src/blacklist.h \
 	src/blacklist.c src/manager.c src/erp.h src/erp.c src/fils.h \
@@ -1202,7 +1202,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/knownnetworks.c \
 @DAEMON_TRUE@					src/rfkill.h src/rfkill.c \
 @DAEMON_TRUE@					src/ft.h src/ft.c \
-@DAEMON_TRUE@					src/ap.c src/adhoc.c \
+@DAEMON_TRUE@					src/ap.h src/ap.c src/adhoc.c \
 @DAEMON_TRUE@					src/sae.h src/sae.c \
 @DAEMON_TRUE@					src/nl80211util.h src/nl80211util.c \
 @DAEMON_TRUE@					src/nl80211cmd.h src/nl80211cmd.c \
