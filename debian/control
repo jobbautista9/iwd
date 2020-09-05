@@ -1,7 +1,7 @@
 Source: iwd
 Section: net
 Priority: optional
-Maintainer: Andreas Henriksson <andreas@fatal.se>
+Maintainer: Debian QA Group <packages@qa.debian.org>
 Build-Depends: debhelper-compat (= 12),
                libreadline-dev,
                libdbus-1-dev,
