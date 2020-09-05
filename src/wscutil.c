@@ -362,13 +362,25 @@ static bool extract_network_key(struct wsc_attr_iter *iter, void *data)
 {
 	struct iovec *network_key = data;
 	unsigned int len;
+	const uint8_t *key;
 
 	len = wsc_attr_iter_get_length(iter);
 	if (len > 64)
 		return false;
 
+	/*
+	 * WSC 2.0.5, Section 12, Network Key:
+	 * "Some existing implementations based on v1.0h null-terminate the
+	 * passphrase value, i.e., add an extra 0x00 octet into the end of
+	 * the value. For backwards compatibility, implementations shall be
+	 * able to parse such a value"
+	 */
+	key = wsc_attr_iter_get_data(iter);
+	if (len && key[len - 1] == 0x00)
+		len--;
+
 	network_key->iov_len = len;
-	network_key->iov_base = (void *) wsc_attr_iter_get_data(iter);
+	network_key->iov_base = (void *) key;
 
 	return true;
 }
@@ -1622,10 +1634,11 @@ static bool wsc_attr_builder_start_attr(struct wsc_attr_builder *builder,
 	/* Record previous attribute's length */
 	if (builder->curlen > 0) {
 		bytes = builder->buf + builder->offset;
-		l_put_be16(builder->curlen, bytes + 2);
-		builder->offset += 4 + builder->curlen;
-		builder->curlen = 0;
+		l_put_be16(builder->curlen - 4, bytes + 2);
+		builder->offset += builder->curlen;
 	}
+
+	builder->curlen = 4;
 
 	if (builder->offset + 4 >= builder->capacity)
 		wsc_attr_builder_grow(builder);
@@ -1638,10 +1651,10 @@ static bool wsc_attr_builder_start_attr(struct wsc_attr_builder *builder,
 
 static bool wsc_attr_builder_put_u8(struct wsc_attr_builder *builder, uint8_t v)
 {
-	if (builder->offset + 4 + builder->curlen + 1 >= builder->capacity)
+	if (builder->offset + builder->curlen + 1 >= builder->capacity)
 		wsc_attr_builder_grow(builder);
 
-	builder->buf[builder->offset + 4 + builder->curlen] = v;
+	builder->buf[builder->offset + builder->curlen] = v;
 	builder->curlen += 1;
 
 	return true;
@@ -1650,10 +1663,10 @@ static bool wsc_attr_builder_put_u8(struct wsc_attr_builder *builder, uint8_t v)
 static bool wsc_attr_builder_put_u16(struct wsc_attr_builder *builder,
 								uint16_t v)
 {
-	if (builder->offset + 4 + builder->curlen + 2 >= builder->capacity)
+	if (builder->offset + builder->curlen + 2 >= builder->capacity)
 		wsc_attr_builder_grow(builder);
 
-	l_put_be16(v, builder->buf + builder->offset + 4 + builder->curlen);
+	l_put_be16(v, builder->buf + builder->offset + builder->curlen);
 	builder->curlen += 2;
 
 	return true;
@@ -1662,10 +1675,10 @@ static bool wsc_attr_builder_put_u16(struct wsc_attr_builder *builder,
 static bool wsc_attr_builder_put_u32(struct wsc_attr_builder *builder,
 								uint32_t v)
 {
-	if (builder->offset + 4 + builder->curlen + 4 >= builder->capacity)
+	if (builder->offset + builder->curlen + 4 >= builder->capacity)
 		wsc_attr_builder_grow(builder);
 
-	l_put_be32(v, builder->buf + builder->offset + 4 + builder->curlen);
+	l_put_be32(v, builder->buf + builder->offset + builder->curlen);
 	builder->curlen += 4;
 
 	return true;
@@ -1674,12 +1687,10 @@ static bool wsc_attr_builder_put_u32(struct wsc_attr_builder *builder,
 static bool wsc_attr_builder_put_bytes(struct wsc_attr_builder *builder,
 					const void *bytes, size_t size)
 {
-	while (builder->offset + 4 + builder->curlen + size >=
-							builder->capacity)
+	while (builder->offset + builder->curlen + size >= builder->capacity)
 		wsc_attr_builder_grow(builder);
 
-	memcpy(builder->buf + builder->offset + 4 + builder->curlen,
-								bytes, size);
+	memcpy(builder->buf + builder->offset + builder->curlen, bytes, size);
 	builder->curlen += size;
 
 	return true;
@@ -1688,10 +1699,10 @@ static bool wsc_attr_builder_put_bytes(struct wsc_attr_builder *builder,
 static bool wsc_attr_builder_put_oui(struct wsc_attr_builder *builder,
 							const uint8_t *oui)
 {
-	if (builder->offset + 4 + builder->curlen + 3 >= builder->capacity)
+	if (builder->offset + builder->curlen + 3 >= builder->capacity)
 		wsc_attr_builder_grow(builder);
 
-	memcpy(builder->buf + builder->offset + 4 + builder->curlen, oui, 3);
+	memcpy(builder->buf + builder->offset + builder->curlen, oui, 3);
 	builder->curlen += 3;
 
 	return true;
@@ -1709,11 +1720,10 @@ static bool wsc_attr_builder_put_string(struct wsc_attr_builder *builder,
 		len = 1;
 	}
 
-	if (builder->offset + 4 + builder->curlen + len >= builder->capacity)
+	if (builder->offset + builder->curlen + len >= builder->capacity)
 		wsc_attr_builder_grow(builder);
 
-	memcpy(builder->buf + builder->offset + 4 + builder->curlen,
-								string, len);
+	memcpy(builder->buf + builder->offset + builder->curlen, string, len);
 	builder->curlen += len;
 
 	return true;
@@ -1741,8 +1751,8 @@ static uint8_t *wsc_attr_builder_free(struct wsc_attr_builder *builder,
 
 	if (builder->curlen > 0) {
 		uint8_t *bytes = builder->buf + builder->offset;
-		l_put_be16(builder->curlen, bytes + 2);
-		builder->offset += 4 + builder->curlen;
+		l_put_be16(builder->curlen - 4, bytes + 2);
+		builder->offset += builder->curlen;
 		builder->curlen = 0;
 	}
 
@@ -2084,6 +2094,20 @@ static void build_wsc_state(struct wsc_attr_builder *builder,
 	wsc_attr_builder_put_u8(builder, 1);				\
 	wsc_attr_builder_put_u8(builder, 0x20)
 
+static void wfa_build_authorized_macs(struct wsc_attr_builder *builder,
+				const uint8_t authorized_macs[static 30])
+{
+	int count;
+
+	for (count = 1; count < 5; count++)
+		if (util_mem_is_zero(authorized_macs + count * 6, 6))
+			break;
+
+	wsc_attr_builder_put_u8(builder, WSC_WFA_EXTENSION_AUTHORIZED_MACS);
+	wsc_attr_builder_put_u8(builder, count * 6);
+	wsc_attr_builder_put_bytes(builder, authorized_macs, count * 6);
+}
+
 uint8_t *wsc_build_credential(const struct wsc_credential *in, size_t *out_len)
 {
 	struct wsc_attr_builder *builder;
@@ -2112,6 +2136,53 @@ static void build_credential(struct wsc_attr_builder *builder,
 	wsc_attr_builder_start_attr(builder, WSC_ATTR_CREDENTIAL);
 	wsc_attr_builder_put_bytes(builder, data, data_len);
 	l_free(data);
+}
+
+uint8_t *wsc_build_beacon(const struct wsc_beacon *beacon, size_t *out_len)
+{
+	struct wsc_attr_builder *builder;
+	uint8_t *ret;
+
+	builder = wsc_attr_builder_new(512);
+	build_version(builder, 0x10);
+	build_wsc_state(builder, beacon->state);
+
+	if (beacon->ap_setup_locked)
+		build_ap_setup_locked(builder, true);
+
+	if (beacon->selected_registrar) {
+		build_selected_registrar(builder, true);
+		build_device_password_id(builder, beacon->device_password_id);
+		build_selected_registrar_configuration_methods(builder,
+					beacon->selected_reg_config_methods);
+	}
+
+	/* These two "should be provided" if dual-band */
+	if (__builtin_popcount(beacon->rf_bands) > 1) {
+		if (beacon->selected_registrar)
+			build_uuid_e(builder, beacon->uuid_e);
+
+		build_rf_bands(builder, beacon->rf_bands);
+	}
+
+	if (!beacon->version2)
+		goto done;
+
+	START_WFA_VENDOR_EXTENSION();
+
+	if (!util_mem_is_zero(beacon->authorized_macs, 6))
+		wfa_build_authorized_macs(builder, beacon->authorized_macs);
+
+	if (beacon->reg_config_methods) {
+		wsc_attr_builder_put_u8(builder,
+			WSC_WFA_EXTENSION_REGISTRAR_CONFIGRATION_METHODS);
+		wsc_attr_builder_put_u8(builder, 2);
+		wsc_attr_builder_put_u16(builder, beacon->reg_config_methods);
+	}
+
+done:
+	ret = wsc_attr_builder_free(builder, false, out_len);
+	return ret;
 }
 
 uint8_t *wsc_build_probe_request(const struct wsc_probe_request *probe_request,
@@ -2186,7 +2257,7 @@ uint8_t *wsc_build_probe_response(
 	build_device_name(builder, probe_response->device_name);
 	build_configuration_methods(builder, probe_response->config_methods);
 
-	if (probe_response->rf_bands & (probe_response->rf_bands - 1))
+	if (__builtin_popcount(probe_response->rf_bands) > 1)
 		build_rf_bands(builder, probe_response->rf_bands);
 
 	if (!probe_response->version2)
@@ -2194,21 +2265,9 @@ uint8_t *wsc_build_probe_response(
 
 	START_WFA_VENDOR_EXTENSION();
 
-	if (!util_mem_is_zero(probe_response->authorized_macs, 30)) {
-		int count;
-
-		for (count = 1; count < 5; count++)
-			if (util_mem_is_zero(probe_response->authorized_macs +
-						count * 6, 30 - count * 6))
-				break;
-
-		wsc_attr_builder_put_u8(builder,
-					WSC_WFA_EXTENSION_AUTHORIZED_MACS);
-		wsc_attr_builder_put_u8(builder, count * 6);
-		wsc_attr_builder_put_bytes(builder,
-					probe_response->authorized_macs,
-					count * 6);
-	}
+	if (!util_mem_is_zero(probe_response->authorized_macs, 6))
+		wfa_build_authorized_macs(builder,
+					probe_response->authorized_macs);
 
 	if (probe_response->reg_config_methods) {
 		wsc_attr_builder_put_u8(builder,

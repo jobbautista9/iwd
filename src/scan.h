@@ -82,6 +82,8 @@ struct scan_bss {
 	uint8_t *rc_ie;		/* Roaming consortium IE */
 	uint8_t hs20_version;
 	uint64_t parent_tsf;
+	uint8_t *wfd;		/* Concatenated WFD IEs */
+	ssize_t wfd_size;	/* Size of Concatenated WFD IEs */
 	bool mde_present : 1;
 	bool cc_present : 1;
 	bool cap_rm_neighbor_report : 1;
@@ -170,6 +172,3 @@ bool scan_freq_set_isempty(const struct scan_freq_set *set);
 
 bool scan_wdev_add(uint64_t wdev_id);
 bool scan_wdev_remove(uint64_t wdev_id);
-
-bool scan_suspend(uint64_t wdev_id);
-void scan_resume(uint64_t wdev_id);

@@ -40,14 +40,16 @@ Common methods of obtaining extra debugging information.
 .sp
 \fI$IWD_RTNL_DEBUG\fP set to \fB1\fP enables RTNL debugging.
 .sp
+\fI$IWD_GENL_DEBUG\fP set to \fB1\fP enables printing Generic Netlink communication with the kernel.
+.sp
 \fI$IWD_DHCP_DEBUG\fP set to \fB1\fP enables DHCP debugging.
 .sp
 \fI$IWD_TLS_DEBUG\fP set to \fB1\fP enables TLS debugging.
 .sp
-\fI$IWD_WSC_DEBUG_KEYS\fP set to \fB1\fP enables WSC debug keys.
+\fI$IWD_WSC_DEBUG_KEYS\fP set to \fB1\fP enables printing received WSC keys.
 .SH SEE ALSO
 .sp
-iwd(8),
+iwd(8), iwmon(1)
 .SH AUTHOR
 Marcel Holtmann <marcel@holtmann.org>, Denis Kenzior <denkenz@gmail.com>, Andrew Zaborowski <andrew.zaborowski@intel.com>, Tim Kourt <tim.a.kourt@linux.intel.com>, James Prestwood <prestwoj@gmail.com>
 .SH COPYRIGHT

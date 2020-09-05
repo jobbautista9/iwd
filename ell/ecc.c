@@ -442,10 +442,9 @@ int _vli_legendre(uint64_t *val, const uint64_t *p, unsigned int ndigits)
 
 	if (_vli_cmp(tmp, _1, ndigits) == 0)
 		return 1;
-	else if (_vli_cmp(tmp, _0, ndigits) == 0)
+	if (_vli_cmp(tmp, _0, ndigits) == 0)
 		return 0;
-	else
-		return -1;
+	return -1;
 }
 
 static bool vli_is_zero_or_one(const uint64_t *vli, unsigned int ndigits)
@@ -604,7 +603,7 @@ LIB_EXPORT struct l_ecc_scalar *l_ecc_scalar_new(
 	_ecc_be2native(c->c, buf, curve->ndigits);
 
 	if (!vli_is_zero_or_one(c->c, curve->ndigits) &&
-				_vli_cmp(c->c, curve->n, curve->ndigits) < 0)
+			secure_memcmp_64(curve->n, c->c, curve->ndigits) > 0)
 		return c;
 
 	l_ecc_scalar_free(c);

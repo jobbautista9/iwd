@@ -96,6 +96,7 @@ struct station {
 	struct netconfig *netconfig;
 
 	bool preparing_roam : 1;
+	bool roam_scan_full : 1;
 	bool signal_low : 1;
 	bool roam_no_orig_ap : 1;
 	bool ap_directed_roaming : 1;
@@ -195,7 +196,7 @@ static int autoconnect_rank_compare(const void *a, const void *b, void *user)
 	const struct autoconnect_entry *new_ae = a;
 	const struct autoconnect_entry *ae = b;
 
-	return ae->rank - new_ae->rank;
+	return (ae->rank > new_ae->rank) ? 1 : -1;
 }
 
 static void station_add_autoconnect_bss(struct station *station,
@@ -289,7 +290,7 @@ static int bss_signal_strength_compare(const void *a, const void *b, void *user)
 	const struct scan_bss *new_bss = a;
 	const struct scan_bss *bss = b;
 
-	return bss->signal_strength - new_bss->signal_strength;
+	return (bss->signal_strength > new_bss->signal_strength) ? 1 : -1;
 }
 
 /*
@@ -446,6 +447,9 @@ static void remove_anqp(void *data)
 {
 	struct anqp_entry *entry = data;
 
+	if (entry->pending)
+		anqp_cancel(entry->pending);
+
 	l_free(entry);
 }
 
@@ -475,12 +479,9 @@ static void station_anqp_response_cb(enum anqp_result result,
 	char **realms = NULL;
 	struct nai_search search;
 
-	entry->pending = 0;
-
 	l_debug("");
 
-	if (result == ANQP_TIMEOUT) {
-		l_queue_remove(station->anqp_pending, entry);
+	if (result != ANQP_SUCCESS) {
 		/* TODO: try next BSS */
 		goto request_done;
 	}
@@ -530,8 +531,6 @@ request_done:
 		station_network_foreach(station, network_add_foreach, station);
 		station_autoconnect_next(station);
 	}
-
-	scan_resume(netdev_get_wdev_id(station->netdev));
 }
 
 static bool station_start_anqp(struct station *station, struct network *network,
@@ -582,11 +581,10 @@ static bool station_start_anqp(struct station *station, struct network *network,
 	 * these are checked in hs20_find_settings_file.
 	 */
 
-	entry->pending = anqp_request(netdev_get_ifindex(station->netdev),
-					netdev_get_address(station->netdev),
-					bss, anqp, ptr - anqp,
-					station_anqp_response_cb,
-					entry, l_free);
+	entry->pending = anqp_request(netdev_get_wdev_id(station->netdev),
+				netdev_get_address(station->netdev), bss, anqp,
+				ptr - anqp, station_anqp_response_cb,
+				entry, NULL);
 	if (!entry->pending) {
 		l_free(entry);
 		return false;
@@ -662,19 +660,7 @@ void station_set_scan_results(struct station *station,
 
 	l_hashmap_foreach_remove(station->networks, process_network, station);
 
-	/*
-	 * ANQP requests are scheduled in the same manor as scans, and cannot
-	 * be done simultaneously. To avoid long queue times (waiting for a
-	 * scan to finish) its best to stop scanning, do ANQP, then resume
-	 * scanning.
-	 *
-	 * TODO: It may be possible for some hardware to actually scan and do
-	 * ANQP at the same time. Detecting this could allow us to continue
-	 * scanning.
-	 */
-	if (wait_for_anqp)
-		scan_suspend(netdev_get_wdev_id(station->netdev));
-	else if (add_to_autoconnect) {
+	if (!wait_for_anqp && add_to_autoconnect) {
 		station_network_foreach(station, network_add_foreach, station);
 		station_autoconnect_next(station);
 	}
@@ -1209,6 +1195,12 @@ static void station_enter_state(struct station *station,
 					new_scan_results, station);
 		break;
 	case STATION_STATE_CONNECTING:
+		/* Refresh the ordered network list */
+		network_rank_update(station->connected_network, true);
+		l_queue_remove(station->networks_sorted, station->connected_network);
+		l_queue_insert(station->networks_sorted, station->connected_network,
+					network_rank_compare, NULL);
+
 		l_dbus_property_changed(dbus, netdev_get_path(station->netdev),
 				IWD_STATION_INTERFACE, "ConnectedNetwork");
 		l_dbus_property_changed(dbus,
@@ -1282,6 +1274,7 @@ static void station_roam_state_clear(struct station *station)
 	l_timeout_remove(station->roam_trigger_timeout);
 	station->roam_trigger_timeout = NULL;
 	station->preparing_roam = false;
+	station->roam_scan_full = false;
 	station->signal_low = false;
 	station->roam_min_time.tv_sec = 0;
 
@@ -1304,6 +1297,12 @@ static void station_reset_connection_state(struct station *station)
 		network_disconnected(network);
 
 	station_roam_state_clear(station);
+
+	/* Refresh the ordered network list */
+	network_rank_update(station->connected_network, false);
+	l_queue_remove(station->networks_sorted, station->connected_network);
+	l_queue_insert(station->networks_sorted, station->connected_network,
+				network_rank_compare, NULL);
 
 	station->connected_bss = NULL;
 	station->connected_network = NULL;
@@ -1345,6 +1344,8 @@ static void station_disconnect_event(struct station *station, void *event_data)
 }
 
 static void station_roam_timeout_rearm(struct station *station, int seconds);
+static int station_roam_scan(struct station *station,
+				struct scan_freq_set *freq_set);
 
 static void station_roamed(struct station *station)
 {
@@ -1355,6 +1356,7 @@ static void station_roamed(struct station *station)
 	station->signal_low = false;
 	station->roam_min_time.tv_sec = 0;
 	station->roam_no_orig_ap = false;
+	station->roam_scan_full = false;
 
 	if (station->netconfig)
 		netconfig_reconfigure(station->netconfig);
@@ -1364,23 +1366,43 @@ static void station_roamed(struct station *station)
 
 static void station_roam_failed(struct station *station)
 {
+	l_debug("%u", netdev_get_ifindex(station->netdev));
+
+	/*
+	 * If we attempted a reassociation or a fast transition, and ended up
+	 * here then we are now disconnected.
+	 */
+	if (station->state == STATION_STATE_ROAMING) {
+		station_disassociated(station);
+		return;
+	}
+
+	/*
+	 * We were told by the AP to roam, but failed.  Try ourselves or
+	 * wait for the AP to tell us to roam again
+	 */
+	if (station->ap_directed_roaming)
+		goto delayed_retry;
+
+	/*
+	 * If we tried a limited scan, failed and the signal is still low,
+	 * repeat with a full scan right away
+	 */
+	if (station->signal_low && !station->roam_scan_full &&
+					!station_roam_scan(station, NULL))
+		return;
+
+delayed_retry:
 	/*
 	 * If we're still connected to the old BSS, only clear preparing_roam
 	 * and reattempt in 60 seconds if signal level is still low at that
-	 * time.  Otherwise (we'd already started negotiating with the
-	 * transition target, preparing_roam is false, state is roaming) we
-	 * are now disconnected.
+	 * time.
 	 */
-
-	l_debug("%u", netdev_get_ifindex(station->netdev));
-
 	station->preparing_roam = false;
-	station->roam_no_orig_ap = false;
+	station->roam_scan_full = false;
 	station->ap_directed_roaming = false;
 
-	if (station->state == STATION_STATE_ROAMING)
-		station_disassociated(station);
-	else if (station->signal_low)
+	if (station->signal_low)
 		station_roam_timeout_rearm(station, 60);
 }
 
@@ -1770,7 +1792,7 @@ static void station_roam_scan_destroy(void *userdata)
 	station->roam_scan_id = 0;
 }
 
-static void station_roam_scan(struct station *station,
+static int station_roam_scan(struct station *station,
 				struct scan_freq_set *freq_set)
 {
 	struct scan_parameters params = { .freqs = freq_set, .flush = true };
@@ -1781,6 +1803,9 @@ static void station_roam_scan(struct station *station,
 		/* Use direct probe request */
 		params.ssid = network_get_ssid(station->connected_network);
 
+	if (!freq_set)
+		station->roam_scan_full = true;
+
 	station->roam_scan_id =
 		scan_active_full(netdev_get_wdev_id(station->netdev), &params,
 					station_roam_scan_triggered,
@@ -1788,26 +1813,25 @@ static void station_roam_scan(struct station *station,
 					station_roam_scan_destroy);
 
 	if (!station->roam_scan_id)
-		station_roam_failed(station);
+		return -EIO;
+
+	return 0;
 }
 
-static bool station_roam_scan_known_freqs(struct station *station)
+static int station_roam_scan_known_freqs(struct station *station)
 {
 	const struct network_info *info = network_get_info(
 						station->connected_network);
 	struct scan_freq_set *freqs = network_info_get_roam_frequencies(info,
 					station->connected_bss->frequency, 5);
+	int r;
 
-	if (!freqs) {
-		l_debug("no known frequencies to scan");
-		return false;
-	}
+	if (!freqs)
+		return -ENODATA;
 
-	station_roam_scan(station, freqs);
-
+	r = station_roam_scan(station, freqs);
 	scan_freq_set_free(freqs);
-
-	return true;
+	return r;
 }
 
 static uint32_t station_freq_from_neighbor_report(const uint8_t *country,
@@ -1866,6 +1890,7 @@ static void station_neighbor_report_cb(struct netdev *netdev, int err,
 	struct scan_freq_set *freq_set_md, *freq_set_no_md;
 	uint32_t current_freq = 0;
 	struct handshake_state *hs = netdev_get_handshake(station->netdev);
+	int r;
 
 	l_debug("ifindex: %u, error: %d(%s)",
 			netdev_get_ifindex(station->netdev),
@@ -1879,10 +1904,13 @@ static void station_neighbor_report_cb(struct netdev *netdev, int err,
 		return;
 
 	if (!reports || err) {
-		if (!station_roam_scan_known_freqs(station)) {
+		r = station_roam_scan_known_freqs(station);
+
+		if (r == -ENODATA)
 			l_debug("no neighbor report results or known freqs");
+
+		if (r < 0)
 			station_roam_failed(station);
-		}
 
 		return;
 	}
@@ -1974,21 +2002,25 @@ static void station_neighbor_report_cb(struct netdev *netdev, int err,
 	if (count_md) {
 		scan_freq_set_add(freq_set_md, current_freq);
 
-		station_roam_scan(station, freq_set_md);
+		r = station_roam_scan(station, freq_set_md);
 	} else if (count_no_md) {
 		scan_freq_set_add(freq_set_no_md, current_freq);
 
-		station_roam_scan(station, freq_set_no_md);
+		r = station_roam_scan(station, freq_set_no_md);
 	} else
-		station_roam_scan(station, NULL);
+		r = station_roam_scan(station, NULL);
 
 	scan_freq_set_free(freq_set_md);
 	scan_freq_set_free(freq_set_no_md);
+
+	if (r < 0)
+		station_roam_failed(station);
 }
 
 static void station_roam_trigger_cb(struct l_timeout *timeout, void *user_data)
 {
 	struct station *station = user_data;
+	int r;
 
 	l_debug("%u", netdev_get_ifindex(station->netdev));
 
@@ -2011,11 +2043,12 @@ static void station_roam_trigger_cb(struct l_timeout *timeout, void *user_data)
 						station_neighbor_report_cb))
 			return;
 
-	if (!station_roam_scan_known_freqs(station)) {
+	r = station_roam_scan_known_freqs(station);
+	if (r == -ENODATA)
 		l_debug("No neighbor report or known frequencies, roam failed");
+
+	if (r < 0)
 		station_roam_failed(station);
-		return;
-	}
 }
 
 static void station_roam_timeout_rearm(struct station *station, int seconds)
@@ -2156,7 +2189,8 @@ void station_ap_directed_roam(struct station *station,
 				body_len - pos,station);
 	} else {
 		l_debug("roam: AP did not include a preferred candidate list");
-		station_roam_scan(station, NULL);
+		if (station_roam_scan(station, NULL) < 0)
+			station_roam_failed(station);
 	}
 
 	return;
@@ -2260,7 +2294,7 @@ static bool station_retry_with_reason(struct station *station,
 	return station_try_next_bss(station);
 }
 
-/* A bit more consise for trying to fit these into 80 characters */
+/* A bit more concise for trying to fit these into 80 characters */
 #define IS_TEMPORARY_STATUS(code) \
 	((code) == MMPDU_STATUS_CODE_DENIED_UNSUFFICIENT_BANDWIDTH || \
 	(code) == MMPDU_STATUS_CODE_DENIED_POOR_CHAN_CONDITIONS || \
@@ -2452,6 +2486,19 @@ void station_connect_network(struct station *station, struct network *network,
 	struct l_dbus *dbus = dbus_get_bus();
 	int err;
 
+	/*
+	 * If a hidden scan is not completed, station_is_busy would not
+	 * indicate anything is going on so we need to cancel the scan and
+	 * fail the connection now.
+	 */
+	if (station->hidden_network_scan_id) {
+		scan_cancel(netdev_get_wdev_id(station->netdev),
+				station->hidden_network_scan_id);
+
+		dbus_pending_reply(&station->hidden_pending,
+				dbus_error_failed(station->hidden_pending));
+	}
+
 	if (station_is_busy(station)) {
 		station_disconnect_onconnect(station, network, bss, message);
 
@@ -2503,6 +2550,8 @@ static bool station_hidden_network_scan_results(int err,
 
 	msg = station->hidden_pending;
 	station->hidden_pending = NULL;
+	/* Zero this now so station_connect_network knows the scan is done */
+	station->hidden_network_scan_id = 0;
 
 	if (err) {
 		dbus_pending_reply(&msg, dbus_error_failed(msg));
@@ -2648,7 +2697,6 @@ static void station_disconnect_cb(struct netdev *netdev, bool success,
 			reply = dbus_error_failed(station->disconnect_pending);
 
 		dbus_pending_reply(&station->disconnect_pending, reply);
-
 	}
 
 	station_enter_state(station, STATION_STATE_DISCONNECTED);
@@ -2665,10 +2713,6 @@ int station_disconnect(struct station *station)
 	if (!station->connected_bss)
 		return -ENOTCONN;
 
-	if (netdev_disconnect(station->netdev,
-					station_disconnect_cb, station) < 0)
-		return -EIO;
-
 	if (station->netconfig)
 		netconfig_reset(station->netconfig);
 
@@ -2680,6 +2724,10 @@ int station_disconnect(struct station *station)
 	station_reset_connection_state(station);
 
 	station_enter_state(station, STATION_STATE_DISCONNECTING);
+
+	if (netdev_disconnect(station->netdev,
+					station_disconnect_cb, station) < 0)
+		return -EIO;
 
 	return 0;
 }
@@ -3215,7 +3263,7 @@ static void station_free(struct station *station)
 
 	watchlist_destroy(&station->state_watches);
 
-	l_queue_destroy(station->anqp_pending, l_free);
+	l_queue_destroy(station->anqp_pending, remove_anqp);
 
 	l_free(station);
 }
@@ -3333,4 +3381,5 @@ static void station_exit(void)
 }
 
 IWD_MODULE(station, station_init, station_exit)
+IWD_MODULE_DEPENDS(station, netdev);
 IWD_MODULE_DEPENDS(station, netconfig)
