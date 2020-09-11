@@ -41,6 +41,7 @@
 #include "src/nl80211util.h"
 #include "src/netdev.h"
 #include "src/frame-xchg.h"
+#include "src/wiphy.h"
 
 #ifndef SOL_NETLINK
 #define SOL_NETLINK 270
@@ -106,14 +107,14 @@ struct frame_xchg_data {
 	struct l_timeout *timeout;
 	struct l_queue *rx_watches;
 	frame_xchg_cb_t cb;
+	frame_xchg_destroy_func_t destroy;
 	void *user_data;
 	uint32_t group_id;
 	unsigned int retry_cnt;
 	unsigned int retry_interval;
 	unsigned int resp_timeout;
 	unsigned int retries_on_ack;
-	bool in_frame_cb : 1;
-	bool stale : 1;
+	struct wiphy_radio_work_item work;
 };
 
 struct frame_xchg_watch_data {
@@ -230,6 +231,10 @@ static void frame_watch_unicast_notify(struct l_genl_msg *msg, void *user_data)
 	WATCHLIST_NOTIFY_MATCHES(&group->watches, frame_watch_match_prefix,
 					&info, frame_watch_cb_t, mpdu,
 					info.body, info.body_len, rssi);
+
+	/* Has frame_watch_group_destroy been called inside a frame CB? */
+	if (group->watches.pending_destroy)
+		l_free(group);
 }
 
 static void frame_watch_group_destroy(void *data)
@@ -243,7 +248,16 @@ static void frame_watch_group_destroy(void *data)
 	l_io_destroy(group->io);
 	l_queue_destroy(group->write_queue,
 			(l_queue_destroy_func_t) l_genl_msg_unref);
+
+	/*
+	 * We may be inside a frame notification but even then use
+	 * watchlist_destroy to prevent any more notifications from
+	 * being dispatched.
+	 */
 	watchlist_destroy(&group->watches);
+	if (group->watches.in_notify)
+		return;
+
 	l_free(group);
 }
 
@@ -725,7 +739,7 @@ static bool frame_watch_remove_by_handler(uint64_t wdev_id, uint32_t group_id,
 					&handler_info) > 0;
 }
 
-static void frame_xchg_tx_retry(struct frame_xchg_data *fx);
+static bool frame_xchg_tx_retry(struct wiphy_radio_work_item *item);
 static bool frame_xchg_resp_handle(const struct mmpdu_header *mpdu,
 					const void *body, size_t body_len,
 					int rssi, void *user_data);
@@ -752,9 +766,6 @@ static void frame_xchg_wait_cancel(struct frame_xchg_data *fx)
 
 static void frame_xchg_reset(struct frame_xchg_data *fx)
 {
-	fx->in_frame_cb = false;
-	fx->stale = false;
-
 	frame_xchg_wait_cancel(fx);
 
 	if (fx->timeout)
@@ -770,26 +781,26 @@ static void frame_xchg_reset(struct frame_xchg_data *fx)
 					frame_xchg_resp_cb, fx);
 }
 
-static void frame_xchg_destroy(struct frame_xchg_data *fx, int err)
+static void frame_xchg_destroy(struct wiphy_radio_work_item *item)
 {
-	if (fx->cb)
-		fx->cb(err, fx->user_data);
+	struct frame_xchg_data *fx = l_container_of(item,
+						struct frame_xchg_data, work);
+
+	if (fx->destroy)
+		fx->destroy(fx->user_data);
 
 	frame_xchg_reset(fx);
 	l_free(fx);
 }
 
-static void frame_xchg_cancel(void *user_data)
-{
-	struct frame_xchg_data *fx = user_data;
-
-	frame_xchg_destroy(fx, -ECANCELED);
-}
-
 static void frame_xchg_done(struct frame_xchg_data *fx, int err)
 {
 	l_queue_remove(frame_xchgs, fx);
-	frame_xchg_destroy(fx, err);
+
+	if (fx->cb)
+		fx->cb(err, fx->user_data);
+
+	wiphy_radio_work_done(wiphy_find_by_wdev(fx->wdev_id), fx->work.id);
 }
 
 static void frame_xchg_timeout_destroy(void *user_data)
@@ -805,7 +816,7 @@ static void frame_xchg_timeout_cb(struct l_timeout *timeout,
 	struct frame_xchg_data *fx = user_data;
 
 	l_timeout_remove(fx->timeout);
-	frame_xchg_tx_retry(fx);
+	frame_xchg_tx_retry(&fx->work);
 }
 
 static void frame_xchg_listen_end_cb(struct l_timeout *timeout,
@@ -821,7 +832,7 @@ static void frame_xchg_listen_end_cb(struct l_timeout *timeout,
 	l_timeout_remove(fx->timeout);
 	fx->retries_on_ack--;
 	fx->retry_cnt = 0;
-	frame_xchg_tx_retry(fx);
+	frame_xchg_tx_retry(&fx->work);
 }
 
 static void frame_xchg_tx_status(struct frame_xchg_data *fx, bool acked)
@@ -918,8 +929,10 @@ error:
 	frame_xchg_done(fx, error);
 }
 
-static void frame_xchg_tx_retry(struct frame_xchg_data *fx)
+static bool frame_xchg_tx_retry(struct wiphy_radio_work_item *item)
 {
+	struct frame_xchg_data *fx = l_container_of(item,
+						struct frame_xchg_data, work);
 	struct l_genl_msg *msg;
 	uint32_t cmd_id;
 	uint32_t duration = fx->resp_timeout;
@@ -951,13 +964,20 @@ static void frame_xchg_tx_retry(struct frame_xchg_data *fx)
 		l_error("Error sending frame");
 		l_genl_msg_unref(msg);
 		frame_xchg_done(fx, -EIO);
-		return;
+		return true;
 	}
 
 	fx->tx_acked = false;
 	fx->have_cookie = false;
 	fx->early_status = false;
 	fx->retry_cnt++;
+
+	return false;
+}
+
+static bool frame_xchg_match_ptr(const void *a, const void *b)
+{
+	return a == b;
 }
 
 static bool frame_xchg_resp_handle(const struct mmpdu_header *mpdu,
@@ -977,14 +997,11 @@ static bool frame_xchg_resp_handle(const struct mmpdu_header *mpdu,
 		return false;
 
 	/*
-	 * Is the received frame's BSSID same as the transmitted frame's
-	 * BSSID, may have to be moved to the user callback if there are
-	 * usages where this is false.  Some drivers (brcmfmac) can't
-	 * report the BSSID so check for all-zeros too.
+	 * BSSID (address_3) check not practical because some Linux
+	 * drivers report all-zero values and some remote devices send
+	 * wrong addresses.  But the frame callback is free to perform
+	 * its own check.
 	 */
-	if (memcmp(mpdu->address_3, fx->tx_mpdu->address_3, 6) &&
-			!util_mem_is_zero(mpdu->address_3, 6))
-		return false;
 
 	for (entry = l_queue_get_entries(fx->rx_watches);
 			entry; entry = entry->next) {
@@ -999,20 +1016,13 @@ static bool frame_xchg_resp_handle(const struct mmpdu_header *mpdu,
 		if (!fx->tx_acked)
 			goto early_frame;
 
-		fx->in_frame_cb = true;
 		done = watch->cb(mpdu, body, body_len, rssi, fx->user_data);
 
-		/*
-		 * If the callback has started a new frame exchange it will
-		 * have reset and taken over the state variables and we need
-		 * to just exit without touching anything.
-		 */
-		if (!fx->in_frame_cb)
+		if (!l_queue_find(frame_xchgs, frame_xchg_match_ptr, fx))
 			return true;
 
-		fx->in_frame_cb = false;
-
-		if (done || fx->stale) {
+		if (done) {
+			/* NULL callback here since the caller is done */
 			fx->cb = NULL;
 			frame_xchg_done(fx, 0);
 			return true;
@@ -1047,12 +1057,12 @@ static void frame_xchg_resp_cb(const struct mmpdu_header *mpdu,
 	frame_xchg_resp_handle(mpdu, body, body_len, rssi, user_data);
 }
 
-static bool frame_xchg_match(const void *a, const void *b)
+static bool frame_xchg_match_running(const void *a, const void *b)
 {
 	const struct frame_xchg_data *fx = a;
 	const uint64_t *wdev_id = b;
 
-	return fx->wdev_id == *wdev_id;
+	return fx->retry_cnt > 0 && fx->wdev_id == *wdev_id;
 }
 
 /*
@@ -1070,61 +1080,58 @@ static bool frame_xchg_match(const void *a, const void *b)
  * @resp_timeout was 0.  @frame is an iovec array terminated by an iovec
  * struct with NULL-iov_base.
  */
-void frame_xchg_start(uint64_t wdev_id, struct iovec *frame, uint32_t freq,
+uint32_t frame_xchg_start(uint64_t wdev_id, struct iovec *frame, uint32_t freq,
 			unsigned int retry_interval, unsigned int resp_timeout,
 			unsigned int retries_on_ack, uint32_t group_id,
-			frame_xchg_cb_t cb, void *user_data, ...)
+			frame_xchg_cb_t cb, void *user_data,
+			frame_xchg_destroy_func_t destroy, ...)
 {
+	uint32_t id;
 	va_list args;
 
-	va_start(args, user_data);
-	frame_xchg_startv(wdev_id, frame, freq, retry_interval, resp_timeout,
-				retries_on_ack, group_id, cb, user_data, args);
+	va_start(args, destroy);
+	id = frame_xchg_startv(wdev_id, frame, freq, retry_interval, resp_timeout,
+				retries_on_ack, group_id, cb, user_data,
+				destroy, args);
 	va_end(args);
+	return id;
 }
 
-void frame_xchg_startv(uint64_t wdev_id, struct iovec *frame, uint32_t freq,
+static const struct wiphy_radio_work_item_ops work_ops = {
+	.do_work = frame_xchg_tx_retry,
+	.destroy = frame_xchg_destroy,
+};
+
+uint32_t frame_xchg_startv(uint64_t wdev_id, struct iovec *frame, uint32_t freq,
 			unsigned int retry_interval, unsigned int resp_timeout,
 			unsigned int retries_on_ack, uint32_t group_id,
-			frame_xchg_cb_t cb, void *user_data, va_list resp_args)
+			frame_xchg_cb_t cb, void *user_data,
+			frame_xchg_destroy_func_t destroy, va_list resp_args)
 {
 	struct frame_xchg_data *fx;
 	size_t frame_len;
 	struct iovec *iov;
 	uint8_t *ptr;
-	struct mmpdu_header *mpdu;
 
 	for (frame_len = 0, iov = frame; iov->iov_base; iov++)
 		frame_len += iov->iov_len;
 
-	if (frame_len < sizeof(*mpdu)) {
+	/*
+	 * This assumes that the first iovec at least contains the mmpdu_fc
+	 * portion of the header used to calculate the minimum length.
+	 */
+	if (frame[0].iov_len >= 2 && frame_len <
+				mmpdu_header_len((const struct mmpdu_header *)
+				frame[0].iov_base)) {
 		l_error("Frame too short");
 		cb(-EMSGSIZE, user_data);
-		return;
+		return 0;
 	}
 
-	fx = l_queue_find(frame_xchgs, frame_xchg_match, &wdev_id);
+	fx = l_new(struct frame_xchg_data, 1);
 
-	if (fx) {
-		/*
-		 * If a frame callback calls us assume it's the end of
-		 * that earlier frame exchange and the start of a new one.
-		 */
-		if (fx->in_frame_cb)
-			frame_xchg_reset(fx);
-		else {
-			l_error("Frame exchange in progress");
-			cb(-EBUSY, user_data);
-			return;
-		}
-	} else {
-		fx = l_new(struct frame_xchg_data, 1);
-
-		if (!frame_xchgs)
-			frame_xchgs = l_queue_new();
-
-		l_queue_push_tail(frame_xchgs, fx);
-	}
+	if (!frame_xchgs)
+		frame_xchgs = l_queue_new();
 
 	fx->wdev_id = wdev_id;
 	fx->freq = freq;
@@ -1132,6 +1139,7 @@ void frame_xchg_startv(uint64_t wdev_id, struct iovec *frame, uint32_t freq,
 	fx->resp_timeout = resp_timeout;
 	fx->retries_on_ack = retries_on_ack;
 	fx->cb = cb;
+	fx->destroy = destroy;
 	fx->user_data = user_data;
 	fx->group_id = group_id;
 
@@ -1168,24 +1176,53 @@ void frame_xchg_startv(uint64_t wdev_id, struct iovec *frame, uint32_t freq,
 	}
 
 	fx->retry_cnt = 0;
-	frame_xchg_tx_retry(fx);
+
+	l_queue_push_tail(frame_xchgs, fx);
+
+	/*
+	 * TODO: Assume any offchannel frames are a high priority (0). This may
+	 * need to be re-examined in the future if other operations (e.g.
+	 * wait on channel) are introduced.
+	 */
+	return wiphy_radio_work_insert(wiphy_find_by_wdev(wdev_id),
+					&fx->work, 0, &work_ops);
 }
 
-void frame_xchg_stop(uint64_t wdev_id)
+static bool frame_xchg_cancel_by_wdev(void *data, void *user_data)
+{
+	struct frame_xchg_data *fx = data;
+	const uint64_t *wdev_id = user_data;
+
+	if (fx->wdev_id != *wdev_id)
+		return false;
+
+	wiphy_radio_work_done(wiphy_find_by_wdev(fx->wdev_id), fx->work.id);
+	return true;
+}
+
+void frame_xchg_stop_wdev(uint64_t wdev_id)
+{
+	l_queue_foreach_remove(frame_xchgs, frame_xchg_cancel_by_wdev,
+				&wdev_id);
+}
+
+static bool frame_xchg_match_id(const void *a, const void *b)
+{
+	const struct frame_xchg_data *fx = a;
+	const uint32_t *id = b;
+
+	return fx->work.id == *id;
+}
+
+void frame_xchg_cancel(uint32_t id)
 {
 	struct frame_xchg_data *fx =
-		l_queue_remove_if(frame_xchgs, frame_xchg_match, &wdev_id);
+		l_queue_remove_if(frame_xchgs, frame_xchg_match_id, &id);
 
 	if (!fx)
 		return;
 
-	if (fx->in_frame_cb) {
-		fx->stale = true;
-		return;
-	}
-
-	frame_xchg_reset(fx);
-	l_free(fx);
+	wiphy_radio_work_done(wiphy_find_by_wdev(fx->wdev_id), id);
 }
 
 static void frame_xchg_mlme_notify(struct l_genl_msg *msg, void *user_data)
@@ -1206,7 +1243,8 @@ static void frame_xchg_mlme_notify(struct l_genl_msg *msg, void *user_data)
 
 		l_debug("Received %s", ack ? "an ACK" : "no ACK");
 
-		fx = l_queue_find(frame_xchgs, frame_xchg_match, &wdev_id);
+		fx = l_queue_find(frame_xchgs, frame_xchg_match_running,
+					&wdev_id);
 		if (!fx)
 			return;
 
@@ -1332,13 +1370,20 @@ error:
 	return -EIO;
 }
 
+static void destroy_xchg_data(void *user_data)
+{
+	struct frame_xchg_data *fx = user_data;
+
+	wiphy_radio_work_done(wiphy_find_by_wdev(fx->wdev_id), fx->work.id);
+}
+
 static void frame_xchg_exit(void)
 {
 	struct l_queue *groups = watch_groups;
 	struct l_queue *xchgs = frame_xchgs;
 
 	frame_xchgs = NULL;
-	l_queue_destroy(xchgs, frame_xchg_cancel);
+	l_queue_destroy(xchgs, destroy_xchg_data);
 
 	watch_groups = NULL;
 	l_queue_destroy(groups, frame_watch_group_destroy);
@@ -1351,3 +1396,4 @@ static void frame_xchg_exit(void)
 }
 
 IWD_MODULE(frame_xchg, frame_xchg_init, frame_xchg_exit);
+IWD_MODULE_DEPENDS(frame_xchg, wiphy)
