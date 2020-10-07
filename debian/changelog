@@ -1,3 +1,19 @@
+iwd (1.9-2) unstable; urgency=medium
+
+  * adopt package
+  * set Rules-Requires-Root: no
+  * declare compliance with Debian Policy 4.5.0
+  * add CVE closure for previous changelog section
+  * copyright:
+    + normalize listing of copyright holders
+    + use License-Grant and License-Reference,
+      and list License sections last
+    + merge same-licensed Files sections
+    + update coverage
+  * add source script copyright-check
+
+ -- Jonas Smedegaard <dr@jones.dk>  Thu, 08 Oct 2020 01:35:19 +0200
+
 iwd (1.9-1) unstable; urgency=medium
 
   [ upstream ]
