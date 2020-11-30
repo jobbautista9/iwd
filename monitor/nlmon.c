@@ -4915,6 +4915,19 @@ static const struct attr_entry frame_types_table[] = {
 	{ }
 };
 
+static const struct attr_entry survey_info_table[] = {
+	{ NL80211_SURVEY_INFO_FREQUENCY, "Frequency", ATTR_U32 },
+	{ NL80211_SURVEY_INFO_NOISE, "Noise dBm", ATTR_S8 },
+	{ NL80211_SURVEY_INFO_IN_USE, "Channel Currently In Use", ATTR_FLAG },
+	{ NL80211_SURVEY_INFO_TIME, "Survey Time", ATTR_U64 },
+	{ NL80211_SURVEY_INFO_TIME_BUSY, "Busy Time", ATTR_U64 },
+	{ NL80211_SURVEY_INFO_TIME_EXT_BUSY, "Busy Time Extension Channel", ATTR_U64 },
+	{ NL80211_SURVEY_INFO_TIME_RX, "RX Time", ATTR_U64 },
+	{ NL80211_SURVEY_INFO_TIME_TX, "TX Time", ATTR_U64 },
+	{ NL80211_SURVEY_INFO_TIME_SCAN, "Scan Time", ATTR_U64 },
+	{ }
+};
+
 static void print_cqm_event(unsigned int level, const char *label,
 					const void *data, uint16_t size)
 {
@@ -5596,7 +5609,7 @@ static const struct attr_entry attr_table[] = {
 	{ NL80211_ATTR_4ADDR,
 			"4-Address", ATTR_U8 },
 	{ NL80211_ATTR_SURVEY_INFO,
-			"Survey Info" },
+			"Survey Info", ATTR_NESTED, { survey_info_table } },
 	{ NL80211_ATTR_PMKID,
 			"PMKID", ATTR_BINARY },
 	{ NL80211_ATTR_MAX_NUM_PMKIDS,
@@ -6487,6 +6500,24 @@ static void genl_ctrl(struct nlmon *nlmon, const void *data, uint32_t len)
 		nlmon->id = id;
 }
 
+static const char *scope_to_string(uint8_t scope)
+{
+	switch (scope) {
+	case RT_SCOPE_UNIVERSE:
+		return "global";
+	case RT_SCOPE_SITE:
+		return "site";
+	case RT_SCOPE_LINK:
+		return "link";
+	case RT_SCOPE_HOST:
+		return "host";
+	case RT_SCOPE_NOWHERE:
+		return "nowhere";
+	default:
+		return "unknown";
+	}
+}
+
 static void print_ifi_addr(unsigned int indent, const char *str,
 						const void *buf, uint16_t size)
 {
@@ -6567,6 +6598,28 @@ static void print_link_mode(unsigned int indent, const char *str,
 		link_mode_to_ascii(link_mode), link_mode);
 }
 
+static void flags_str(const struct flag_names *table,
+				char *str, size_t size, uint16_t flags)
+{
+	int pos, i;
+
+	pos = sprintf(str, "(0x%02x)", flags);
+	if (!flags)
+		return;
+
+	pos += sprintf(str + pos, " [");
+
+	for (i = 0; table[i].name; i++) {
+		if (flags & table[i].flag) {
+			flags &= ~table[i].flag;
+			pos += sprintf(str + pos, "%s%s", table[i].name,
+							flags ? "," : "");
+		}
+	}
+
+	pos += sprintf(str + pos, "]");
+}
+
 static struct attr_entry link_info_entry[] = {
 	{ IFLA_INFO_KIND,	"Kind",		ATTR_STRING },
 	{ },
@@ -6601,16 +6654,77 @@ static struct attr_entry info_entry[] = {
 	{ },
 };
 
+static struct flag_names ifa_flags[] = {
+	{ IFA_F_SECONDARY, "temporary" },
+	{ IFA_F_NODAD, "nodad" },
+	{ IFA_F_OPTIMISTIC, "optimistic" },
+	{ IFA_F_DADFAILED, "dadfailed" },
+	{ IFA_F_HOMEADDRESS, "homeaddress" },
+	{ IFA_F_DEPRECATED, "deprecated" },
+	{ IFA_F_TENTATIVE, "tentative" },
+	{ IFA_F_PERMANENT, "permanent" },
+	{ IFA_F_MANAGETEMPADDR, "managetempaddr" },
+	{ IFA_F_NOPREFIXROUTE, "noprefixroute" },
+	{ IFA_F_MCAUTOJOIN, "mcautojoin" },
+	{ IFA_F_STABLE_PRIVACY, "stableprivacy" },
+	{ },
+};
+
+static void print_ifa_flags(unsigned int indent, const char *str,
+					const void *buf, uint16_t size)
+{
+	uint32_t flags;
+	char str_flags[1024];
+
+	if (size != 4)
+		return;
+
+	flags = l_get_u32(buf);
+	flags_str(ifa_flags, str_flags, sizeof(str_flags), flags);
+	print_attr(indent, "%s: %s", str, str_flags);
+}
+
 static void print_inet_addr(unsigned int indent, const char *str,
 						const void *buf, uint16_t size)
 {
-	struct in_addr addr;
+	int family;
+	char ip[INET6_ADDRSTRLEN];
 
-	if (size != sizeof(struct in_addr))
+	if (size == sizeof(struct in_addr))
+		family = AF_INET;
+	else if (size == sizeof(struct in6_addr))
+		family = AF_INET6;
+	else
 		return;
 
-	addr = *((struct in_addr *) buf);
-	print_attr(indent, "%s: %s", str, inet_ntoa(addr));
+	inet_ntop(family, buf, ip, sizeof(ip));
+	print_attr(indent, "%s: %s", str, ip);
+}
+
+static void print_cacheinfo(unsigned int indent, const char *str,
+						const void *buf, uint16_t size)
+{
+	const struct ifa_cacheinfo *cinfo = buf;
+
+	print_attr(indent, "%s:", str);
+
+	if (size != sizeof(struct ifa_cacheinfo)) {
+		printf("malformed packet\n");
+		return;
+	}
+
+	if (cinfo->ifa_prefered == 0xffffffffu)
+		print_attr(indent + 1, "ifa_prefered: infinite");
+	else
+		print_attr(indent + 1, "ifa_prefered: %u", cinfo->ifa_prefered);
+
+	if (cinfo->ifa_valid == 0xffffffffu)
+		print_attr(indent + 1, "ifa_valid: infinite");
+	else
+		print_attr(indent + 1, "ifa_valid: %u", cinfo->ifa_valid);
+
+	print_attr(indent + 1, "tstamp: %u, cstamp: %u",
+				cinfo->tstamp, cinfo->cstamp);
 }
 
 static struct attr_entry addr_entry[] = {
@@ -6623,8 +6737,16 @@ static struct attr_entry addr_entry[] = {
 	{ IFA_ANYCAST,		"Anycast Address", ATTR_CUSTOM,
 					{ .function = print_inet_addr } },
 	{ IFA_LABEL,		"Label",	ATTR_STRING },
-	{ IFA_CACHEINFO,	"CacheInfo",	ATTR_BINARY },
+	{ IFA_CACHEINFO,	"CacheInfo",	ATTR_CUSTOM,
+					{ .function = print_cacheinfo } },
+	{ IFA_FLAGS,		"Flags", ATTR_CUSTOM,
+					{ .function = print_ifa_flags } },
 	{ },
+};
+
+static const struct attr_entry metrics_table[] = {
+	{ RTAX_MTU,	"MTU",		ATTR_U32 },
+	{ }
 };
 
 static struct attr_entry route_entry[] = {
@@ -6637,10 +6759,13 @@ static struct attr_entry route_entry[] = {
 	{ RTA_GATEWAY,		"Gateway", ATTR_CUSTOM,
 					{ .function = print_inet_addr } },
 	{ RTA_PRIORITY,		"Priority of the route", ATTR_S32 },
-	{ RTA_METRICS,		"Metric of the route", ATTR_S32 },
 	{ RTA_TABLE,		"Routing Table", ATTR_U32 },
+	{ RTA_EXPIRES,		"Route lifetime", ATTR_U32 },
+	{ RTA_PREF,		"Route Preference", ATTR_U8 },
 	{ RTA_PREFSRC,		"Preferred Source", ATTR_CUSTOM,
 					{ .function = print_inet_addr } },
+	{ RTA_METRICS,		"Metrics",
+				ATTR_NESTED, { metrics_table } },
 	{ },
 };
 
@@ -6774,26 +6899,34 @@ static void print_rtnl_attributes(int indent, const struct attr_entry *table,
 	}
 }
 
-static void flags_str(const struct flag_names *table,
-				char *str, size_t size, uint16_t flags)
+static const char *family_to_string(uint8_t family)
 {
-	int pos, i;
-
-	pos = sprintf(str, "(0x%02x)", flags);
-	if (!flags)
-		return;
-
-	pos += sprintf(str + pos, " [");
-
-	for (i = 0; table[i].name; i++) {
-		if (flags & table[i].flag) {
-			flags &= ~table[i].flag;
-			pos += sprintf(str + pos, "%s%s", table[i].name,
-							flags ? "," : "");
-		}
+	switch (family) {
+	case AF_INET:
+		return "AF_INET";
+	case AF_INET6:
+		return "AF_INET6";
+	default:
+		return "Unknown";
 	}
+}
 
-	pos += sprintf(str + pos, "]");
+static const char *protocol_to_string(uint8_t proto)
+{
+	switch (proto) {
+	case RTPROT_DHCP:
+		return "dhcp";
+	case RTPROT_RA:
+		return "ra";
+	case RTPROT_KERNEL:
+		return "kernel";
+	case RTPROT_BOOT:
+		return "boot";
+	case RTPROT_STATIC:
+		return "static";
+	default:
+		return "Unknown";
+	}
 }
 
 static void print_ifinfomsg(const struct ifinfomsg *info)
@@ -6823,7 +6956,7 @@ static void print_ifinfomsg(const struct ifinfomsg *info)
 	if (!info)
 		return;
 
-	print_field("IFLA Family: %u", info->ifi_family);
+	print_field("IFLA Family: %s", family_to_string(info->ifi_family));
 	print_field("IFLA Type: %u", info->ifi_type);
 	print_field("IFLA Index: %d", info->ifi_index);
 	print_field("IFLA ChangeMask: %u", info->ifi_change);
@@ -6833,14 +6966,17 @@ static void print_ifinfomsg(const struct ifinfomsg *info)
 
 static void print_ifaddrmsg(const struct ifaddrmsg *addr)
 {
+	char str[1024];
+
 	if (!addr)
 		return;
 
-	print_field("IFA Family: %u", addr->ifa_family);
+	print_field("IFA Family: %s", family_to_string(addr->ifa_family));
 	print_field("IFA Prefixlen: %u", addr->ifa_prefixlen);
 	print_field("IFA Index: %d", addr->ifa_index);
-	print_field("IFA Scope: %u", addr->ifa_scope);
-	print_field("IFA Flags: %u", addr->ifa_flags);
+	print_field("IFA Scope: %s", scope_to_string(addr->ifa_scope));
+	flags_str(ifa_flags, str, sizeof(str), addr->ifa_flags);
+	print_field("IFA Flags: %s", str);
 }
 
 static void print_rtmsg(const struct rtmsg *msg)
@@ -6853,13 +6989,14 @@ static void print_rtmsg(const struct rtmsg *msg)
 	};
 	char str[256];
 
-	print_field("RTM Family: %hhu", msg->rtm_family);
+	print_field("RTM Family: %s", family_to_string(msg->rtm_family));
 	print_field("RTM Destination Len: %hhu", msg->rtm_dst_len);
 	print_field("RTM Source Len: %hhu", msg->rtm_src_len);
 	print_field("RTM TOS Field: %hhu", msg->rtm_tos);
 	print_field("RTM Table: %hhu", msg->rtm_table);
-	print_field("RTM Protocol: %hhu", msg->rtm_protocol);
-	print_field("RTM Scope: %hhu", msg->rtm_scope);
+	print_field("RTM Protocol: %s",
+			protocol_to_string(msg->rtm_protocol));
+	print_field("RTM Scope: %s", scope_to_string(msg->rtm_scope));
 	print_field("RTM Type: %hhu", msg->rtm_type);
 	flags_str(rtm_flags, str, sizeof(str), msg->rtm_flags);
 	print_field("RTM Flags: %s", str);
@@ -6963,6 +7100,16 @@ static void print_rtm_route(uint16_t type, const struct rtmsg *msg, size_t len)
 	print_rtnl_attributes(1, route_entry, RTM_RTA(msg), len);
 }
 
+static void print_rtm_addr(uint16_t type, const struct ifaddrmsg *msg,
+								size_t len)
+{
+	if (!msg || len < sizeof(struct ifaddrmsg))
+		return;
+
+	print_ifaddrmsg(msg);
+	print_rtnl_attributes(1, addr_entry, IFA_RTA(msg), len);
+}
+
 static const char *nlmsg_type_to_str(uint32_t msg_type)
 {
 	const char *str = NULL;
@@ -7037,7 +7184,7 @@ static void print_nlmsghdr(const struct timeval *tv,
 							nlmsg->nlmsg_flags);
 	print_field("Sequence number: %u (0x%08x)",
 					nlmsg->nlmsg_seq, nlmsg->nlmsg_seq);
-	print_field("Port ID: %u", nlmsg->nlmsg_pid);
+	print_field("Port ID: %d", nlmsg->nlmsg_pid);
 }
 
 static void print_nlmsg(const struct timeval *tv, const struct nlmsghdr *nlmsg)
@@ -7121,8 +7268,7 @@ static void print_rtnl_msg(const struct timeval *tv,
 			return;
 
 		print_nlmsghdr(tv, nlmsg);
-		print_ifaddrmsg(addr);
-		print_rtnl_attributes(1, addr_entry, IFA_RTA(addr), len);
+		print_rtm_addr(nlmsg->nlmsg_type, addr, len);
 		break;
 	}
 }

@@ -1,0 +1,431 @@
+Notes for test-runner usage
+***************************
+
+Tool Description
+================
+
+test-runner is an automated test execution tool for IWD. It is capable of
+creating the emulated environments representing a variety of network topologies
+and run the automated tests of IWD functionality.
+
+
+Software Prerequisites
+======================
+
+The test-runner tool requires the following binaries to be present on the host
+OS:
+
+	Name:			Tested ver.:
+	 1. qemu		2.4.1
+	 2. Linux kernel	4.20+
+	 3. dbus-daemon		1.11.18
+	 4. ifconfig		2.10-alpha
+	 5. iw			3.17
+	 6. python		2.7
+	 7. haveged		no ver. avail.
+	 8. hostapd		recent
+	 9. <iwd>/tools/hwsim	0.0
+	10. <iwd>/src/iwd	0.0
+	11. ofono (optional)
+	12. phonesim (optional)
+
+Note: The version for hostapd is listed as 'recent'. Older hostapd versions
+will work but we are continually adopting new features from hostapd and using
+those to test. Its recommended to use a recent release of hostapd.
+
+Note: The test-runner mounts host's file system in readonly mode and executes
+the above binaries inside of an emulated environment directly from it.
+
+Note: Running EAP-SIM/AKA/AKA' tests using oFono will require oFono and
+phonesim to be installed on the host. This is explained further in the
+"Running with oFono and phonesim" section.
+
+Building Kernel
+===============
+
+The test-runner tool requires a kernel that is at least build with these
+minimal options for a successful boot and execution:
+
+	<arch>_defconfig 			Default kernel configuration
+
+	kvmconfig				Default configuration for
+						kvm guests
+
+	<iwd>/tools/test_runner_kernel_config	The test-runner specific
+						configuration
+
+These configurations should be installed as .config in the kernel source
+directory. To make a x86_64 guest kernel the sequence of commands may look
+as follows:
+
+	$ cd linux-X.X.X
+
+	$ make x86_64_defconfig
+
+	$ make kvmconfig
+
+	$ sh <iwd>/tools/test_runner_kernel_config
+
+	$ make olddefconfig
+
+After that a default kernel with the required options can be built:
+
+	$ make -j$(nproc)
+
+Note: If your host distribution does not contain a regulatory.db you may get an
+error similar to this when building the kernel:
+
+No rule to make target '/lib/firmware/regulatory.db'...
+
+To fix this you must download the regulatory.db manually and place it in
+/lib/firmware. This can be found here:
+
+https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git
+
+Note: To catch locking related issues the following set of kernel config
+options may be useful:
+
+	CONFIG_LOCKDEP_SUPPORT=y
+	CONFIG_DEBUG_SPINLOCK=y
+	CONFIG_DEBUG_LOCK_ALLOC=y
+	CONFIG_PROVE_LOCKING=y
+	CONFIG_LOCKDEP=y
+	CONFIG_DEBUG_MUTEXES=y
+
+By default the test-runner will search for the kernel image in these locations:
+
+	<iwd>/tools/bzImage
+
+		or
+
+	<iwd>/tools/arch/x86/boot/bzImage
+
+An arbitrary kernel image location can be specified by using '--kernel <path>'
+parameter into test-runner.
+
+Running Automated Tests
+=======================
+Before running any tests, its expected that the folder /var/lib/iwd exists on
+the host machine. If not, you will see a mounting error when starting
+test-runner.
+
+	mkdir /var/lib/iwd
+
+By default, the automated test configuration directories reside in
+'<iwd>/autotests' and have a mandatory prefix of 'test'.
+
+	<iwd>/autotests/test1
+			/test2
+			...
+
+The test configurations along with test cases in <iwd>/autotests/test*
+directories will be discovered and executed by test-runner in sequential
+fashion. The following set of commands is sufficient to run the automated
+tests shipped with IWD:
+
+	$ cd <iwd>/tools
+
+	$ sudo ./test-runner
+
+One can specify a particular set of test configurations to be executed by using
+'-t <dir1,dir2>' parameter. An absolute path is necessary for the test
+configuration directories outside of <iwd>/autotests.
+
+The command line may look as follows:
+
+	$ sudo ./test-runner -t test1,test3,/home/test4
+
+Glob matching is also supported when specifying a test list:
+
+	$ sudo ./test-runner -t testWPA*
+
+
+Creating Test Configurations
+============================
+
+A typical test configuration directory may consist of these types of files:
+
+	hw.conf			Defines the network configuration and
+				properties of the radios.
+
+	*Test or *Test.py	The set of test cases for IWD functionality
+				implemented using Python scripting language.
+				These files must have one of the two predefined
+				suffixes: 'test' or 'test.py'. The file name
+				must also be more descriptive than simply 'test'.
+				e.g. 'connection_test' or 'failure_test'. Files
+				named 'test' will not be dynamically loaded due
+				to python module naming overlap.
+
+	*.conf			A configuration file for an instance of hostapd
+	(Defined in hw.conf)	service.
+
+Each configuration directory has exactly one hw.conf, where the number of
+Python script files is virtually unlimited. The number of hostapd configuration
+files is bounded by the limitation in mac80211_hwsim driver and is set
+to 99. (The mac80211_hwsim driver allows to create 100 of simultaneous radios
+and one of them is reserved by the test-runner for IWD)
+
+A typical contents of a test configuration directory may look as follows:
+
+	 /test1/hw.conf
+		ap1.conf
+		ap2.conf
+		networkScanTest
+		networkConnectTest.py
+
+Note: Any additional files in your test directory will be copied to /tmp inside
+the VM. These additional file should be referenced using /tmp/<file> inside
+any configuration file for hostapd.
+
+Defining Network
+----------------
+Network topology along with configuration for the automated test cases is
+predetermined in hardware configuration file 'hw.conf'. In addition, it allows
+to establish the relationships between the emulated hardware radios and
+services that represent various entities of a wireless network.
+
+The following sample hardware configuration file allows to emulate a network
+of three nodes. Two of which are access points and the third one represents a
+supplicant running IWD:
+
+#~~~~~~~~~~~~~~~~~~~~~~~~~ hw.conf ~~~~~~~~~~~~~~~~~~~~~~~~~
+# Lines starting with # are ignored
+
+# 'SETUP' is a manditory configuration group.
+[SETUP]
+#
+# Total number of radios requested per network setup. This includes
+# the radios used by APs as well as one for IWD. This field is mandatory and
+# has a range of [1, 100].
+num_radios=3
+
+# Maximum execution interval per Python script file in seconds. This field is
+# optional.
+# Default: 20 seconds.
+#max_test_exec_interval_sec=5
+
+#
+# The following two configuration groups are examples of the radio
+# configurations.
+#
+# This group of settings allows to specify a set of properties for a radio. The
+# name of the group represents a radio identifier. These configuration groups
+# are optional.
+[rad0]
+
+# For each radX group you can specify radio properties:
+# Disables the provided interface type(s):
+disable_iftype=ap,p2p
+
+# Disables the provided cipher types:
+disable_cipher=ccmp,bip
+
+# 'HOSTAPD' configuration group identifies a set of access points (AP) for the
+# current network topology. Each key/value pair represents a single AP that is
+# emulated by the instance of hostapd service. The key indicates an arbitrary
+# radio identifier and value specifies a configuration file for the instance.
+# If a radio identifier can not be mapped to a predefined radio configuration
+# (identifier is not part of the 'radio_confs' list), then a radio with the
+# default configuration is used. This configuration group is optional.
+[HOSTAPD]
+rad0=ap1.conf
+rad1=ap2.conf
+
+# 'radius_server' is a special option used to specify a hostapd instance which
+# acts as a radius server only (not an access point). This option does not
+# require an additional 'num_radios' to be used.
+radius_server=radius.conf
+#~~~~~~~~~~~~~~~~~~ end of hw.conf ~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Configuring Access Points
+-------------------------
+The test-runner tool makes use of the hostapd service to emulate the access
+points (AP). Despite the fact that hostapd service comes preinstalled on most
+Linux distributions, test-runner uses some of the recently introduced features,
+which may only be available from the master tree of the hostapd repository:
+
+	git://w1.fi/srv/git/hostap.git
+
+		OR (its HTTP version)
+
+	http://w1.fi/hostap.git
+
+commit id: 31d3692fe5d56c05753ed4a70c7943979e1d29e7 or above is required.
+
+The sequence of commands to clone, build and install hostapd may look as
+follows:
+
+	$ git clone git://w1.fi/srv/git/hostap.git
+
+	$ cd hostap/hostapd
+
+	$ cp <iwd>/doc/hostapd.config .config
+
+	Note: You may need to pre-install: 'gnutls-devel' and 'libgcrypt-devel'
+	libraries.
+
+	$ make install
+
+Note: All hostapd build options (CONFIG_*) are stored in doc/hostapd.config.
+Any new options which are required for a test should be added there.
+
+Note: If 'make install' fails with the netlink warnings you may need to
+install libnl-1.0pre8 (or later).
+
+Note: It is recommended to override the pre-installed version of hostapd with
+the newly built one to avoid any confusion. The simplest way to make sure
+that the correct version of hostapd is used is to execute the following
+command:
+
+	$ hostapd -h
+
+Make sure that '-i' option is available in the list of option.
+For more information on hostapd refer to this page:
+
+	https://wireless.wiki.kernel.org/en/users/documentation/hostapd
+
+A full set of the hostapd configurations along with explanation can be
+found at:
+
+	https://w1.fi/cgit/hostap/plain/hostapd/hostapd.conf
+
+Note: for EAP-SIM/AKA/AKA' hostapd needs an authenticator running separately.
+IWD has a python version of hostapd's "hlrauc.c". This may work out of the box
+on your system, but the pycrypto library is required. This can be installed
+with python pip3:
+
+	sudo pip3 install pycrypto
+
+Running with oFono and phonesim
+-------------------------------
+EAP-SIM/AKA/AKA' require SIM card access to perform the authentication
+algorithms. This is achieved in test runner using oFono and phonesim. If
+either oFono or phonesim are not found when test runner starts, any test
+involving oFono will be skipped. Using the option "sim_keys=ofono" in the
+hardware config file will tell test runner that the test should use oFono.
+There is some setup that needs to be done before test runner will work with
+ofono/phonesim
+
+setup ofono:
+
+	$ git clone git://git.kernel.org/pub/scm/network/ofono/ofono.git
+	$ cd ofono
+	$ ./bootstrap-configure
+	$ make install
+
+setup phonesim:
+
+	$ git clone git://git.kernel.org/pub/scm/network/ofono/phonesim.git
+	$ cd phonesim
+	$ ./bootstrap-configure
+	$ make install
+
+Now test runner should pick up both installed binaries.
+
+Note: EAP-SIM/AKA/AKA' can also be tested using the hardcoded SIM plugin. This
+just reads hardcoded SIM values from a local file. Tests using this plugin
+should not need any additional setup. This plugin is enabled by setting
+"sim_keys=<file>" in the hardware config file.
+
+Writing Python Test Scripts
+---------------------------
+The test-runner tool relies on test cases written in Python script language
+to exercise the functionality of IWD. The outcomes of the tests are determined
+by the exit status of a process running test and reported on per Python file
+bases. The test creators are highly encouraged to use the Python unit test
+framework.
+
+For more information on Python unit test framework refer to the following page:
+
+	http://pyunit.sourceforge.net/pyunit.html
+
+Using hardware passthrough
+---------------------------
+
+The --hw, -w flag lets you pass in a config file containing USB/PCI adapter
+addresses, which can then be used as radios inside the test/VM just as the
+virtual mac80211_hwsim radios are used. Note: physical radios cannot be used at
+the same time as mac80211_hwsim radios.
+
+Using this option, in some cases, does require some pre-configuration that won't
+be described in this document. Specifically, PCI adapters are very involved to
+get setup, and require special kernel boot options (on the host), BIOS changes,
+and most likely a lot of time to get the system working reliably. Because of
+this only USB adapters will be discussed in this document.
+
+If PCI passthrough is something you need, it would be best to follow this guide:
+
+https://wiki.archlinux.org/index.php/PCI_passthrough_via_OVMF
+
+First, whatever kernel you are using must contain the adapters driver and, if
+required, firmware built in. The driver can be built in using 'make menuconfig'
+and finding the correct driver for your adapter:
+
+Device Driver -> Network Device Support -> Wireless LAN
+
+Enable [*] the driver(s) you need, save, and exit.
+
+The firmware also needs to be built in, and this will require you finding the
+right firmware file (/lib/firmware/) required for your adapter and adding it to
+CONFIG_EXTRA_FIRMWARE in your .config file. It is sometimes not very obvious
+what firmware you need. I have found that during the kernel boot some adapters
+will print out if the firmware was not found, and the name of the firmware file
+they expect. If you are having trouble finding the firmware file try continuing
+on and see what happens when test-runner starts. Google is also your friend.
+
+Once you have the kernel built you can write your hardware config file for
+test-runner. Find the USB bus and device for the adapter:
+
+$ lsusb
+
+You should see your device listed with a 'Bus' and 'Device' number:
+
+$ Bus 001 Device 002: ........
+
+Put these into your passthrough config file under a 'USBAdapters' group:
+
+[USBAdapters]
+rad0=1,2
+
+Note: The 'rad#' does not matter at this time. These named keys will not
+correspond to rad0, rad1, etc in your test config file. This may change in the
+future.
+
+You can then run test-runner using this config file:
+
+./test-runner -k <kernel> --hw passthrough.conf ...
+
+If running specific tests you need to ensure you have enough adapters defined
+in the config file, and that the adapters support the features you expect. For
+example, some adapters cannot go into AP mode, or use certain channels. If your
+test expects these features and the adapters do not support them, the test will
+fail in sometimes unexpected ways.
+
+Using the 'shell' feature
+---------------------------
+
+The --shell,-s flag allows you to boot into a shell inside the test-runner VM.
+If this flag is used the python test will not actually run, only the environment
+will be setup. Tis is useful for diagnosing issues with a particular test
+quickly without having to modify the python test and restart the VM. The shell
+flag is meant to be used in conjunction with --autotest,-A. If no specific test
+is specified test-runner will default to the 'shell' test, which is just an
+empty test with one adapter.
+
+Using the shell with real hardware (--hw flag) is even more powerful. If your
+system is setup for USB/PCI passthrough you can expose physical network cards
+in the VM and use them in the shell sandbox. This allows you to try out
+different kernels in the VM very quickly (no reboots/swapping out kernels on
+the host system).
+
+Here are some examples of --shell usage:
+
+Setup environment for 'testWPA' and boot into shell:
+./test-runner -k <kernel> -A testWPA --shell
+
+Boot directly into 'shell' test (sandbox):
+./test-runner -k <kernel> --shell
+
+Use hardware passthrough:
+./test-runner -k <kernel> --hw <hw.conf> --shell
