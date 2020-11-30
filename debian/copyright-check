@@ -1,0 +1,83 @@
+#!/bin/sh
+# Copyright 2020  Jonas Smedegaard <dr@jones.dk>
+# Copyright 2020  Purism, SPC
+# Description: helper script to update copyright_hints
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 3, or (at your option)
+# any later version.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+set -eu
+
+# default licensed files
+RE_default=$(grep --files-with-matches --recursive --null \
+ --regexp='Copyright (C) .* Intel Corporation\. All rights reserved' \
+ | tr '\0' '|' | perl -pe 's/\|$//')
+
+# generated files
+RE_FSFUL_configure='(.*/)?configure'
+RE_FSFULLR='(.*/)?(aclocal|libtool|lt(options|sugar|version|~obsolete))\.m4'
+RE_FSFULLR_Makefile='(.*/)?Makefile\.in'
+RE_GPL_Autoconf='(.*/)?(compile|config\.(guess|sub)|depcomp|missing|test-driver|ylwrap)'
+RE_GPL_Libtool='(.*/)?ltmain\.sh'
+RE_X11='(.*/)?install-sh'
+RE_generated="$RE_FSFUL_configure|$RE_FSFULLR|$RE_FSFULLR_Makefile|$RE_GPL_Autoconf|$RE_GPL_Libtool|$RE_X11"
+
+# TODO: automate more of this manual cleanup:
+#  * strip garbage copyright holders
+#  * optionally merge equally licensed Files sections
+#  * do "sort -k2 -k1,1 -u" on copyright holders
+#  * merge copyright years for each copyright holder
+# TODO: strip files matching glob in current (only, no later) section
+_licensecheck() {
+	GLOB=$1
+	shift
+	case "$GLOB" in
+		'*') 1>&2 echo "check default section(s) ...";;
+		'') 1>&2 echo "check remaining upstream section(s) ...";;
+		*) 1>&2 echo "check section(s) $GLOB ...";;
+	esac
+	licensecheck --copyright --deb-machine --recursive --lines 0 "$@" -- * \
+		| GLOB=$GLOB perl -0777 -p \
+		-e 'BEGIN { our $GLOB = join "\n ", split(" ",$ENV{GLOB}) }' \
+		-e 's/^.*?\n\nFiles: \K/$GLOB\n /s if $GLOB;' \
+		-e 's/^.*?\n\nFiles: \K.*?(?=\n\w)/$GLOB/s if $GLOB and $GLOB =~ /^[*]\//;' \
+		-e 's/^.*?\n\n//s unless $GLOB and $GLOB =~ /^[*]$/m;' \
+		-e 's/^Files:\K /\n /mg;' \
+		-e 's/^Copyright:\K /\n  /mg;' \
+		-e 's/(?:(?<=^  )|(?<=\d{4})),\K (?=\d{4})//mg;' \
+		-e 's/:(?:meta|skip)$//mg;' \
+		>> debian/copyright_hints
+}
+
+rm -f debian/copyright_hints
+
+# try check all upstream files to learn roughly what to check in which order
+#rm -f debian/copyright_hints
+#_licensecheck '' --check '.*' --ignore '^debian/'
+#exit 0
+
+# check default licensed files first
+_licensecheck '*' --check "^($RE_default)$" --ignore '^debian/'
+
+# check generated files
+_licensecheck '*/configure' --check "^($RE_FSFUL_configure)$" --ignore "^($RE_default|debian/.*)$"
+_licensecheck '*/aclocal.m4 */libtool.m4 */ltoptions.m4 */ltsugar.m4 */ltversion.m4 */lt~obsolete.m4' --check "^($RE_FSFULLR)$" --ignore "^($RE_default|debian/.*)$"
+_licensecheck '*/Makefile.in' --check "^($RE_FSFULLR_Makefile)$" --ignore "^($RE_default|debian/.*)$"
+_licensecheck '*/compile */config.guess */config.sub */depcomp */missing */test-driver */ylwrap' --check "^($RE_GPL_Autoconf)$" --ignore "^($RE_default|debian/.*)$"
+_licensecheck '*/ltmain.sh' --check "^($RE_GPL_Libtool)$" --ignore "^($RE_default|debian/.*)$"
+_licensecheck '*/install-sh' --check "^($RE_X11)$" --ignore "^($RE_default|debian/.*)$"
+
+# check generally
+#  * omit non-copyright-protected Debian files
+_licensecheck '' --check '.*' --ignore "^($RE_default|$RE_generated|debian/.*)$"
+_licensecheck '*/debian' --check '^debian/' --ignore '^debian/(changelog|copyright(_hints)?|source/lintian-overrides)$'

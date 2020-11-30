@@ -1,3 +1,26 @@
+iwd (1.10+devuan1) unstable; urgency=medium
+
+ * New upupstream release.
+ * Merged changes from upstream 1.9-2 to this release
+
+ -- Job Bautista <jobbautista9@protonmail.com>  Mon, 30 Nov 2020 18:53:01 +0800
+
+iwd (1.9-2) unstable; urgency=medium
+
+  * adopt package
+  * set Rules-Requires-Root: no
+  * declare compliance with Debian Policy 4.5.0
+  * add CVE closure for previous changelog section
+  * copyright:
+    + normalize listing of copyright holders
+    + use License-Grant and License-Reference,
+      and list License sections last
+    + merge same-licensed Files sections
+    + update coverage
+  * add source script copyright-check
+
+ -- Jonas Smedegaard <dr@jones.dk>  Thu, 08 Oct 2020 01:35:19 +0200
+
 iwd (1.9-1+devuan1) unstable; urgency=medium
 
   * New release from Debian upstream.
@@ -6,6 +29,13 @@ iwd (1.9-1+devuan1) unstable; urgency=medium
 
 iwd (1.9-1) unstable; urgency=medium
 
+  [ upstream ]
+  * new release
+    + eapol: prevent key reinstallation on retransmitted Msg4/4
+      closes: bug#968996, thanks to Salvatore Bonaccorso
+      CVE-2020-17497
+
+  [ Andreas Henriksson ]
   * Recommend dbus (system bus)
     Interaction with iwd happens via dbus, i.e. as used by the iwctl
     command (or NetworkManager iwd backend).
