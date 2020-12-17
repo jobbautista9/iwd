@@ -31,6 +31,8 @@ extern "C" {
 
 struct l_dhcp_client;
 struct l_dhcp_lease;
+struct l_netlink;
+struct l_dhcp_server;
 
 /* RFC 2132 */
 enum l_dhcp_option {
@@ -56,11 +58,21 @@ enum l_dhcp_client_event {
 	L_DHCP_CLIENT_EVENT_NO_LEASE,
 };
 
+enum l_dhcp_server_event {
+	L_DHCP_SERVER_EVENT_NEW_LEASE,
+	L_DHCP_SERVER_EVENT_LEASE_EXPIRED,
+};
+
 typedef void (*l_dhcp_client_event_cb_t)(struct l_dhcp_client *client,
 						enum l_dhcp_client_event event,
 						void *userdata);
 typedef void (*l_dhcp_debug_cb_t)(const char *str, void *user_data);
 typedef void (*l_dhcp_destroy_cb_t)(void *userdata);
+
+typedef void (*l_dhcp_server_event_cb_t)(struct l_dhcp_server *server,
+					enum l_dhcp_server_event event,
+					void *user_data,
+					const struct l_dhcp_lease *lease);
 
 struct l_dhcp_client *l_dhcp_client_new(uint32_t ifindex);
 bool l_dhcp_client_add_request_option(struct l_dhcp_client *client,
@@ -73,6 +85,9 @@ bool l_dhcp_client_set_interface_name(struct l_dhcp_client *client,
 							const char *ifname);
 bool l_dhcp_client_set_hostname(struct l_dhcp_client *client,
 							const char *hostname);
+
+bool l_dhcp_client_set_rtnl(struct l_dhcp_client *client,
+					struct l_netlink *rtnl);
 
 const struct l_dhcp_lease *l_dhcp_client_get_lease(
 					const struct l_dhcp_client *client);
@@ -89,6 +104,7 @@ bool l_dhcp_client_set_debug(struct l_dhcp_client *client,
 				l_dhcp_debug_cb_t function,
 				void *user_data, l_dhcp_destroy_cb_t destroy);
 
+
 char *l_dhcp_lease_get_address(const struct l_dhcp_lease *lease);
 char *l_dhcp_lease_get_gateway(const struct l_dhcp_lease *lease);
 char *l_dhcp_lease_get_netmask(const struct l_dhcp_lease *lease);
@@ -96,10 +112,35 @@ char *l_dhcp_lease_get_broadcast(const struct l_dhcp_lease *lease);
 char *l_dhcp_lease_get_server_id(const struct l_dhcp_lease *lease);
 char **l_dhcp_lease_get_dns(const struct l_dhcp_lease *lease);
 char *l_dhcp_lease_get_domain_name(const struct l_dhcp_lease *lease);
+const uint8_t *l_dhcp_lease_get_mac(const struct l_dhcp_lease *lease);
 
 uint32_t l_dhcp_lease_get_t1(const struct l_dhcp_lease *lease);
 uint32_t l_dhcp_lease_get_t2(const struct l_dhcp_lease *lease);
 uint32_t l_dhcp_lease_get_lifetime(const struct l_dhcp_lease *lease);
+
+struct l_dhcp_server *l_dhcp_server_new(int ifindex);
+void l_dhcp_server_destroy(struct l_dhcp_server *server);
+bool l_dhcp_server_start(struct l_dhcp_server *server);
+bool l_dhcp_server_stop(struct l_dhcp_server *server);
+bool l_dhcp_server_set_ip_range(struct l_dhcp_server *server,
+				const char *start_ip,
+				const char *end_ip);
+bool l_dhcp_server_set_debug(struct l_dhcp_server *server,
+				l_dhcp_debug_cb_t function,
+				void *user_data, l_dhcp_destroy_cb_t destory);
+bool l_dhcp_server_set_event_handler(struct l_dhcp_server *server,
+					l_dhcp_server_event_cb_t handler,
+					void *user_data,
+					l_dhcp_destroy_cb_t destroy);
+bool l_dhcp_server_set_lease_time(struct l_dhcp_server *server,
+					unsigned int lease_time);
+bool l_dhcp_server_set_interface_name(struct l_dhcp_server *server,
+					const char *ifname);
+bool l_dhcp_server_set_ip_address(struct l_dhcp_server *server,
+						const char *ip);
+bool l_dhcp_server_set_netmask(struct l_dhcp_server *server, const char *mask);
+bool l_dhcp_server_set_gateway(struct l_dhcp_server *server, const char *ip);
+bool l_dhcp_server_set_dns(struct l_dhcp_server *server, char **dns);
 #ifdef __cplusplus
 }
 #endif

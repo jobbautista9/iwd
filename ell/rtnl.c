@@ -26,6 +26,7 @@
 
 #define _GNU_SOURCE
 #include <linux/if.h>
+#include <linux/icmpv6.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 
@@ -34,6 +35,494 @@
 #include "log.h"
 #include "rtnl.h"
 #include "private.h"
+
+struct l_rtnl_address {
+	uint8_t family;
+	uint8_t prefix_len;
+	uint8_t scope;
+	union {
+		struct in6_addr in6_addr;
+		struct in_addr in_addr;
+	};
+	struct in_addr broadcast;
+	char label[IFNAMSIZ];
+	uint32_t preferred_lifetime;
+	uint32_t valid_lifetime;
+	uint32_t flags;
+};
+
+static inline int address_to_string(int family, const struct in_addr *v4,
+					const struct in6_addr *v6,
+					char *out_address)
+{
+	switch (family) {
+	case AF_INET:
+		if (!inet_ntop(family, v4, out_address, INET_ADDRSTRLEN))
+			return -errno;
+		break;
+	case AF_INET6:
+		if (!inet_ntop(family, v6, out_address, INET6_ADDRSTRLEN))
+			return -errno;
+		break;
+	default:
+		return  false;
+	}
+
+	return 0;
+}
+
+static int address_get(const char *ip, struct in_addr *out_v4,
+				struct in6_addr *out_v6)
+{
+	if (inet_pton(AF_INET, ip, out_v4) == 1)
+		return AF_INET;
+
+	if (inet_pton(AF_INET6, ip, out_v6) == 1)
+		return AF_INET6;
+
+	return -EINVAL;
+}
+
+static int address_is_null(int family, const struct in_addr *v4,
+						const struct in6_addr *v6)
+{
+	switch (family) {
+	case AF_INET:
+		return v4->s_addr == 0;
+	case AF_INET6:
+		return IN6_IS_ADDR_UNSPECIFIED(v6);
+	}
+
+	return -EAFNOSUPPORT;
+}
+
+static inline void _rtnl_address_init(struct l_rtnl_address *addr,
+					uint8_t prefix_len)
+{
+	addr->prefix_len = prefix_len;
+	addr->scope = RT_SCOPE_UNIVERSE;
+	addr->flags = IFA_F_PERMANENT;
+	memset(addr->label, 0, sizeof(addr->label));
+	addr->preferred_lifetime = 0;
+	addr->valid_lifetime = 0;
+
+	l_rtnl_address_set_broadcast(addr, NULL);
+}
+
+static bool rtnl_address_init(struct l_rtnl_address *addr,
+				const char *ip, uint8_t prefix_len)
+{
+	int family;
+
+	if ((family = address_get(ip, &addr->in_addr, &addr->in6_addr)) < 0)
+		return false;
+
+	addr->family = family;
+	_rtnl_address_init(addr, prefix_len);
+	return true;
+}
+
+LIB_EXPORT struct l_rtnl_address *l_rtnl_address_new(const char *ip,
+							uint8_t prefix_len)
+{
+	struct in_addr in_addr;
+	struct in6_addr in6_addr;
+	int family;
+	struct l_rtnl_address *addr;
+
+	if ((family = address_get(ip, &in_addr, &in6_addr)) < 0)
+		return NULL;
+
+	addr = l_new(struct l_rtnl_address, 1);
+	_rtnl_address_init(addr, prefix_len);
+	addr->family = family;
+
+	if (family == AF_INET6)
+		memcpy(&addr->in6_addr, &in6_addr, sizeof(in6_addr));
+	else
+		memcpy(&addr->in_addr, &in_addr, sizeof(in_addr));
+
+	return addr;
+}
+
+LIB_EXPORT void l_rtnl_address_free(struct l_rtnl_address *addr)
+{
+	l_free(addr);
+}
+
+LIB_EXPORT bool l_rtnl_address_get_address(const struct l_rtnl_address *addr,
+						char *out_buf)
+{
+	if (unlikely(!addr))
+		return false;
+
+	return !address_to_string(addr->family, &addr->in_addr,
+						&addr->in6_addr,
+						out_buf);
+}
+
+LIB_EXPORT uint8_t l_rtnl_address_get_family(const struct l_rtnl_address *addr)
+{
+	if (unlikely(!addr))
+		return 0;
+
+	return addr->family;
+}
+
+LIB_EXPORT uint8_t l_rtnl_address_get_prefix_length(
+					const struct l_rtnl_address *addr)
+{
+	if (unlikely(!addr))
+		return 0;
+
+	return addr->prefix_len;
+}
+
+LIB_EXPORT bool l_rtnl_address_get_broadcast(const struct l_rtnl_address *addr,
+						char *out_buf)
+{
+	if (unlikely(!addr))
+		return false;
+
+	inet_ntop(AF_INET, &addr->broadcast, out_buf, INET_ADDRSTRLEN);
+	return true;
+}
+
+LIB_EXPORT bool l_rtnl_address_set_broadcast(struct l_rtnl_address *addr,
+						const char *broadcast)
+{
+	if (unlikely(!addr))
+		return false;
+
+	if (unlikely(addr->family != AF_INET))
+		return false;
+
+	if (broadcast) {
+		if (inet_pton(AF_INET, broadcast, &addr->broadcast) != 1)
+			return false;
+	} else
+		addr->broadcast.s_addr = addr->in_addr.s_addr |
+					htonl(0xFFFFFFFFLU >> addr->prefix_len);
+
+	return true;
+}
+
+LIB_EXPORT const char *l_rtnl_address_get_label(
+					const struct l_rtnl_address *addr)
+{
+	if (unlikely(!addr))
+		return NULL;
+
+	return addr->label;
+}
+
+LIB_EXPORT bool l_rtnl_address_set_label(struct l_rtnl_address *addr,
+						const char *label)
+{
+	if (unlikely(!addr))
+		return false;
+
+	if (strlen(label) > IFNAMSIZ - 1)
+		return false;
+
+	l_strlcpy(addr->label, label, IFNAMSIZ);
+	return true;
+}
+
+LIB_EXPORT bool l_rtnl_address_set_noprefixroute(struct l_rtnl_address *addr,
+							bool noprefixroute)
+{
+	if (unlikely(!addr))
+		return false;
+
+	if (noprefixroute)
+		addr->flags |= IFA_F_NOPREFIXROUTE;
+	else
+		addr->flags &= ~IFA_F_NOPREFIXROUTE;
+
+	return true;
+}
+
+LIB_EXPORT uint32_t l_rtnl_address_get_valid_lifetime(
+					const struct l_rtnl_address *addr)
+{
+	if (unlikely(!addr))
+		return false;
+
+	return addr->valid_lifetime;
+}
+
+LIB_EXPORT uint32_t l_rtnl_address_get_preferred_lifetime(
+					const struct l_rtnl_address *addr)
+{
+	if (unlikely(!addr))
+		return false;
+
+	return addr->preferred_lifetime;
+}
+
+LIB_EXPORT bool l_rtnl_address_set_lifetimes(struct l_rtnl_address *addr,
+						uint32_t preferred_lifetime,
+						uint32_t valid_lifetime)
+{
+	if (unlikely(!addr))
+		return false;
+
+	addr->preferred_lifetime = preferred_lifetime;
+	addr->valid_lifetime = valid_lifetime;
+
+	return true;
+}
+
+LIB_EXPORT bool l_rtnl_address_set_scope(struct l_rtnl_address *addr,
+								uint8_t scope)
+{
+	if (unlikely(!addr))
+		return false;
+
+	addr->scope = scope;
+	return true;
+}
+
+struct l_rtnl_route {
+	uint8_t family;
+	uint8_t scope;
+	uint8_t protocol;
+	union {
+		struct in6_addr in6_addr;
+		struct in_addr in_addr;
+	} gw;
+	union {
+		struct in6_addr in6_addr;
+		struct in_addr in_addr;
+	} dst;
+	uint8_t dst_prefix_len;
+	union {
+		struct in6_addr in6_addr;
+		struct in_addr in_addr;
+	} prefsrc;
+	uint32_t lifetime;
+	uint32_t mtu;
+	uint32_t priority;
+	uint8_t preference;
+};
+
+LIB_EXPORT struct l_rtnl_route *l_rtnl_route_new_gateway(const char *gw)
+{
+	struct in_addr in_addr;
+	struct in6_addr in6_addr;
+	int family;
+	struct l_rtnl_route *rt;
+
+	if ((family = address_get(gw, &in_addr, &in6_addr)) < 0)
+		return NULL;
+
+	rt = l_new(struct l_rtnl_route, 1);
+	rt->family = family;
+	rt->scope = RT_SCOPE_UNIVERSE;
+	rt->protocol = RTPROT_UNSPEC;
+	rt->lifetime = 0xffffffff;
+
+	if (family == AF_INET6)
+		memcpy(&rt->gw.in6_addr, &in6_addr, sizeof(in6_addr));
+	else
+		memcpy(&rt->gw.in_addr, &in_addr, sizeof(in_addr));
+
+	return rt;
+}
+
+LIB_EXPORT struct l_rtnl_route *l_rtnl_route_new_prefix(const char *ip,
+							uint8_t prefix_len)
+{
+	struct in_addr in_addr;
+	struct in6_addr in6_addr;
+	int family;
+	struct l_rtnl_route *rt;
+
+	if ((family = address_get(ip, &in_addr, &in6_addr)) < 0)
+		return NULL;
+
+	if (!prefix_len)
+		return NULL;
+
+	if (family == AF_INET && prefix_len > 32)
+		return NULL;
+
+	if (family == AF_INET6 && prefix_len > 128)
+		return NULL;
+
+	rt = l_new(struct l_rtnl_route, 1);
+	rt->family = family;
+	rt->protocol = RTPROT_UNSPEC;
+	rt->lifetime = 0xffffffff;
+	rt->dst_prefix_len = prefix_len;
+
+	/* IPV6 prefix routes are usually global, IPV4 are link-local */
+	if (family == AF_INET6) {
+		memcpy(&rt->dst.in6_addr, &in6_addr, sizeof(in6_addr));
+		rt->scope = RT_SCOPE_UNIVERSE;
+	} else {
+		memcpy(&rt->dst.in_addr, &in_addr, sizeof(in_addr));
+		rt->scope = RT_SCOPE_LINK;
+	}
+
+	return rt;
+}
+
+LIB_EXPORT void l_rtnl_route_free(struct l_rtnl_route *rt)
+{
+	l_free(rt);
+}
+
+LIB_EXPORT uint8_t l_rtnl_route_get_family(const struct l_rtnl_route *rt)
+{
+	if (unlikely(!rt))
+		return 0;
+
+	return rt->family;
+}
+
+LIB_EXPORT uint32_t l_rtnl_route_get_lifetime(const struct l_rtnl_route *rt)
+{
+	if (unlikely(!rt))
+		return 0;
+
+	return rt->lifetime;
+}
+
+LIB_EXPORT bool l_rtnl_route_set_lifetime(struct l_rtnl_route *rt, uint32_t lt)
+{
+	if (unlikely(!rt))
+		return false;
+
+	rt->lifetime = lt;
+	return true;
+}
+
+LIB_EXPORT uint32_t l_rtnl_route_get_mtu(const struct l_rtnl_route *rt)
+{
+	if (unlikely(!rt))
+		return 0;
+
+	return rt->mtu;
+}
+
+LIB_EXPORT bool l_rtnl_route_set_mtu(struct l_rtnl_route *rt, uint32_t mtu)
+{
+	if (unlikely(!rt))
+		return false;
+
+	rt->mtu = mtu;
+	return true;
+}
+
+LIB_EXPORT uint8_t l_rtnl_route_get_preference(const struct l_rtnl_route *rt)
+{
+	if (unlikely(!rt))
+		return ICMPV6_ROUTER_PREF_INVALID;
+
+	return rt->preference;
+}
+
+LIB_EXPORT bool l_rtnl_route_set_preference(struct l_rtnl_route *rt,
+							uint8_t preference)
+{
+	if (unlikely(!rt))
+		return false;
+
+	if (preference != ICMPV6_ROUTER_PREF_LOW &&
+			preference != ICMPV6_ROUTER_PREF_HIGH &&
+			preference != ICMPV6_ROUTER_PREF_MEDIUM)
+		return false;
+
+	rt->preference = preference;
+	return true;
+}
+
+LIB_EXPORT bool l_rtnl_route_get_prefsrc(const struct l_rtnl_route *rt,
+						char *out_address)
+{
+	if (unlikely(!rt))
+		return false;
+
+	if (address_is_null(rt->family, &rt->prefsrc.in_addr,
+					&rt->prefsrc.in6_addr))
+		return false;
+
+
+	return !address_to_string(rt->family, &rt->prefsrc.in_addr,
+						&rt->prefsrc.in6_addr,
+						out_address);
+}
+
+LIB_EXPORT bool l_rtnl_route_set_prefsrc(struct l_rtnl_route *rt,
+							const char *address)
+{
+	if (unlikely(!rt))
+		return false;
+
+	switch(rt->family) {
+	case AF_INET:
+		return inet_pton(AF_INET, address, &rt->prefsrc.in_addr) == 1;
+	case AF_INET6:
+		return inet_pton(AF_INET6, address, &rt->prefsrc.in6_addr) == 1;
+	default:
+		return  false;
+	}
+}
+
+LIB_EXPORT uint32_t l_rtnl_route_get_priority(const struct l_rtnl_route *rt)
+{
+	if (unlikely(!rt))
+		return 0;
+
+	return rt->priority;
+}
+
+LIB_EXPORT bool l_rtnl_route_set_priority(struct l_rtnl_route *rt,
+							uint32_t priority)
+{
+	if (unlikely(!rt))
+		return false;
+
+	rt->priority = priority;
+	return true;
+}
+
+LIB_EXPORT uint8_t l_rtnl_route_get_protocol(const struct l_rtnl_route *rt)
+{
+	if (unlikely(!rt))
+		return RTPROT_UNSPEC;
+
+	return rt->scope;
+}
+
+LIB_EXPORT bool l_rtnl_route_set_protocol(struct l_rtnl_route *rt,
+							uint8_t protocol)
+{
+	if (unlikely(!rt))
+		return false;
+
+	rt->protocol = protocol;
+	return true;
+}
+
+LIB_EXPORT uint8_t l_rtnl_route_get_scope(const struct l_rtnl_route *rt)
+{
+	if (unlikely(!rt))
+		return RT_SCOPE_NOWHERE;
+
+	return rt->scope;
+}
+
+LIB_EXPORT bool l_rtnl_route_set_scope(struct l_rtnl_route *rt, uint8_t scope)
+{
+	if (unlikely(!rt))
+		return false;
+
+	rt->scope = scope;
+	return true;
+}
 
 static size_t rta_add_u8(void *rta_buf, unsigned short type, uint8_t value)
 {
@@ -57,7 +546,7 @@ static size_t rta_add_u32(void *rta_buf, unsigned short type, uint32_t value)
 	return RTA_SPACE(sizeof(uint32_t));
 }
 
-static size_t rta_add_data(void *rta_buf, unsigned short type, void *data,
+static size_t rta_add_data(void *rta_buf, unsigned short type, const void *data,
 								size_t data_len)
 {
 	struct rtattr *rta = rta_buf;
@@ -67,6 +556,29 @@ static size_t rta_add_data(void *rta_buf, unsigned short type, void *data,
 	memcpy(RTA_DATA(rta), data, data_len);
 
 	return RTA_SPACE(data_len);
+}
+
+static size_t rta_add_address(void *rta_buf, unsigned short type,
+				uint8_t family,
+				const struct in6_addr *v6,
+				const struct in_addr *v4)
+{
+	struct rtattr *rta = rta_buf;
+
+	rta->rta_type = type;
+
+	switch (family) {
+	case AF_INET6:
+		rta->rta_len = RTA_LENGTH(sizeof(struct in6_addr));
+		memcpy(RTA_DATA(rta), v6, sizeof(struct in6_addr));
+		return RTA_SPACE(sizeof(struct in6_addr));
+	case AF_INET:
+		rta->rta_len = RTA_LENGTH(sizeof(struct in_addr));
+		memcpy(RTA_DATA(rta), v4, sizeof(struct in_addr));
+		return RTA_SPACE(sizeof(struct in_addr));
+	}
+
+	return 0;
 }
 
 static void l_rtnl_route_extract(const struct rtmsg *rtmsg, uint32_t len,
@@ -287,71 +799,22 @@ LIB_EXPORT uint32_t l_rtnl_ifaddr4_dump(struct l_netlink *rtnl,
 	return id;
 }
 
-static uint32_t l_rtnl_ifaddr4_change(struct l_netlink *rtnl, uint16_t nlmsg_type,
-					int ifindex, uint8_t prefix_len,
-					const char *ip, const char *broadcast,
-					l_netlink_command_func_t
-					cb, void *user_data,
-					l_netlink_destroy_func_t destroy)
-{
-	struct ifaddrmsg *rtmmsg;
-	struct in_addr in_addr;
-	void *rta_buf;
-	size_t bufsize;
-	uint32_t id;
-
-	bufsize = NLMSG_ALIGN(sizeof(struct ifaddrmsg)) +
-					RTA_SPACE(sizeof(struct in_addr)) +
-					RTA_SPACE(sizeof(struct in_addr));
-
-	rtmmsg = l_malloc(bufsize);
-	memset(rtmmsg, 0, bufsize);
-
-	rtmmsg->ifa_index = ifindex;
-	rtmmsg->ifa_family = AF_INET;
-	rtmmsg->ifa_flags = IFA_F_PERMANENT;
-	rtmmsg->ifa_scope = RT_SCOPE_UNIVERSE;
-	rtmmsg->ifa_prefixlen = prefix_len;
-
-	rta_buf = (void *) rtmmsg + NLMSG_ALIGN(sizeof(struct ifaddrmsg));
-
-	if (inet_pton(AF_INET, ip, &in_addr) < 1) {
-		l_free(rtmmsg);
-		return 0;
-	}
-
-	rta_buf += rta_add_data(rta_buf, IFA_LOCAL, &in_addr,
-							sizeof(struct in_addr));
-
-	if (broadcast) {
-		if (inet_pton(AF_INET, broadcast, &in_addr) < 1) {
-			l_free(rtmmsg);
-			return 0;
-		}
-	} else {
-		in_addr.s_addr = in_addr.s_addr |
-					htonl(0xFFFFFFFFLU >> prefix_len);
-	}
-
-	rta_buf += rta_add_data(rta_buf, IFA_BROADCAST, &in_addr,
-							sizeof(struct in_addr));
-
-	id = l_netlink_send(rtnl, nlmsg_type, 0, rtmmsg,
-						rta_buf - (void *) rtmmsg, cb,
-						user_data, destroy);
-	l_free(rtmmsg);
-
-	return id;
-}
-
 LIB_EXPORT uint32_t l_rtnl_ifaddr4_add(struct l_netlink *rtnl, int ifindex,
 				uint8_t prefix_len, const char *ip,
 				const char *broadcast,
 				l_netlink_command_func_t cb, void *user_data,
 				l_netlink_destroy_func_t destroy)
 {
-	return l_rtnl_ifaddr4_change(rtnl, RTM_NEWADDR, ifindex, prefix_len, ip,
-					broadcast, cb, user_data, destroy);
+	struct l_rtnl_address a4;
+
+	if (!rtnl_address_init(&a4, ip, prefix_len))
+		return 0;
+
+	if (broadcast)
+		if (!l_rtnl_address_set_broadcast(&a4, broadcast))
+			return 0;
+
+	return l_rtnl_ifaddr_add(rtnl, ifindex, &a4, cb, user_data, destroy);
 }
 
 LIB_EXPORT uint32_t l_rtnl_ifaddr4_delete(struct l_netlink *rtnl, int ifindex,
@@ -360,8 +823,16 @@ LIB_EXPORT uint32_t l_rtnl_ifaddr4_delete(struct l_netlink *rtnl, int ifindex,
 				l_netlink_command_func_t cb, void *user_data,
 				l_netlink_destroy_func_t destroy)
 {
-	return l_rtnl_ifaddr4_change(rtnl, RTM_DELADDR, ifindex, prefix_len, ip,
-					broadcast, cb, user_data, destroy);
+	struct l_rtnl_address a4;
+
+	if (!rtnl_address_init(&a4, ip, prefix_len))
+		return 0;
+
+	if (broadcast)
+		if (!l_rtnl_address_set_broadcast(&a4, broadcast))
+			return 0;
+
+	return l_rtnl_ifaddr_delete(rtnl, ifindex, &a4, cb, user_data, destroy);
 }
 
 LIB_EXPORT void l_rtnl_route4_extract(const struct rtmsg *rtmsg, uint32_t len,
@@ -386,80 +857,6 @@ LIB_EXPORT uint32_t l_rtnl_route4_dump(struct l_netlink *rtnl,
 					destroy);
 }
 
-static uint32_t l_rtnl_route4_add(struct l_netlink *rtnl, int ifindex,
-					uint8_t scope, uint8_t dst_len,
-					const char *dst, const char *gateway,
-					const char *src,
-					uint32_t priority_offset, uint8_t proto,
-					l_netlink_command_func_t cb,
-					void *user_data,
-					l_netlink_destroy_func_t destroy)
-{
-	L_AUTO_FREE_VAR(struct rtmsg *, rtmmsg) = NULL;
-	struct in_addr in_addr;
-	size_t bufsize;
-	void *rta_buf;
-	uint16_t flags;
-
-	if (!dst && !gateway)
-		return 0;
-
-	bufsize = NLMSG_ALIGN(sizeof(struct rtmsg)) +
-			RTA_SPACE(sizeof(uint32_t)) +
-			(priority_offset ? RTA_SPACE(sizeof(uint32_t)) : 0) +
-			(gateway ? RTA_SPACE(sizeof(struct in_addr)) : 0) +
-			(src ? RTA_SPACE(sizeof(struct in_addr)) : 0) +
-			(dst ? RTA_SPACE(sizeof(struct in_addr)) : 0);
-
-	rtmmsg = l_malloc(bufsize);
-	memset(rtmmsg, 0, bufsize);
-
-	rtmmsg->rtm_family = AF_INET;
-	rtmmsg->rtm_table = RT_TABLE_MAIN;
-	rtmmsg->rtm_protocol = proto;
-	rtmmsg->rtm_type = RTN_UNICAST;
-	rtmmsg->rtm_scope = scope;
-
-	flags = NLM_F_CREATE | NLM_F_REPLACE;
-
-	rta_buf = (void *) rtmmsg + NLMSG_ALIGN(sizeof(struct rtmsg));
-	rta_buf += rta_add_u32(rta_buf, RTA_OIF, ifindex);
-
-	if (priority_offset)
-		rta_buf += rta_add_u32(rta_buf, RTA_PRIORITY,
-						priority_offset + ifindex);
-
-	if (dst) {
-		if (inet_pton(AF_INET, dst, &in_addr) < 1)
-			return 0;
-
-		rtmmsg->rtm_dst_len = dst_len;
-		rta_buf += rta_add_data(rta_buf, RTA_DST, &in_addr,
-							sizeof(struct in_addr));
-	}
-
-	if (gateway) {
-		if (inet_pton(AF_INET, gateway, &in_addr) < 1)
-			return 0;
-
-		rta_buf += rta_add_data(rta_buf, RTA_GATEWAY, &in_addr,
-							sizeof(struct in_addr));
-	}
-
-	if (src) {
-		if (inet_pton(AF_INET, src, &in_addr) < 1)
-			return 0;
-
-		rtmmsg->rtm_src_len = 32;
-		rta_buf += rta_add_data(rta_buf, RTA_PREFSRC, &in_addr,
-							sizeof(struct in_addr));
-	}
-
-	return l_netlink_send(rtnl, RTM_NEWROUTE, flags, rtmmsg,
-				rta_buf - (void *) rtmmsg, cb, user_data,
-								destroy);
-}
-
 LIB_EXPORT uint32_t l_rtnl_route4_add_connected(struct l_netlink *rtnl,
 					int ifindex,
 					uint8_t dst_len, const char *dst,
@@ -468,8 +865,20 @@ LIB_EXPORT uint32_t l_rtnl_route4_add_connected(struct l_netlink *rtnl,
 					void *user_data,
 					l_netlink_destroy_func_t destroy)
 {
-	return l_rtnl_route4_add(rtnl, ifindex, RT_SCOPE_LINK, dst_len, dst, NULL,
-				src, 0, proto, cb, user_data, destroy);
+	struct l_rtnl_route *rt = l_rtnl_route_new_prefix(dst, dst_len);
+	uint32_t r = 0;
+
+	if (!rt)
+		return 0;
+
+	l_rtnl_route_set_protocol(rt, proto);
+	if (!l_rtnl_route_set_prefsrc(rt, src))
+		goto err;
+
+	r = l_rtnl_route_add(rtnl, ifindex, rt, cb, user_data, destroy);
+err:
+	l_rtnl_route_free(rt);
+	return r;
 }
 
 LIB_EXPORT uint32_t l_rtnl_route4_add_gateway(struct l_netlink *rtnl,
@@ -481,9 +890,18 @@ LIB_EXPORT uint32_t l_rtnl_route4_add_gateway(struct l_netlink *rtnl,
 					void *user_data,
 					l_netlink_destroy_func_t destroy)
 {
-	return l_rtnl_route4_add(rtnl, ifindex, RT_SCOPE_UNIVERSE, 0, NULL,
-				gateway, src, priority_offset, proto, cb,
-				user_data, destroy);
+	struct l_rtnl_route *rt = l_rtnl_route_new_gateway(gateway);
+	uint32_t r;
+
+	if (!rt)
+		return 0;
+
+	l_rtnl_route_set_protocol(rt, proto);
+	l_rtnl_route_set_priority(rt, priority_offset);
+
+	r = l_rtnl_route_add(rtnl, ifindex, rt, cb, user_data, destroy);
+	l_rtnl_route_free(rt);
+	return r;
 }
 
 LIB_EXPORT void l_rtnl_ifaddr6_extract(const struct ifaddrmsg *ifa, int len,
@@ -538,57 +956,17 @@ LIB_EXPORT uint32_t l_rtnl_ifaddr6_dump(struct l_netlink *rtnl,
 	return id;
 }
 
-static uint32_t l_rtnl_ifaddr6_change(struct l_netlink *rtnl,
-					uint16_t nlmsg_type,
-					int ifindex, uint8_t prefix_len,
-					const char *ip,
-					l_netlink_command_func_t cb,
-					void *user_data,
-					l_netlink_destroy_func_t destroy)
-{
-	struct ifaddrmsg *rtmmsg;
-	struct in6_addr in6_addr;
-	void *rta_buf;
-	size_t bufsize;
-	uint32_t id;
-
-	bufsize = NLMSG_ALIGN(sizeof(struct ifaddrmsg)) +
-					RTA_SPACE(sizeof(struct in6_addr));
-
-	rtmmsg = l_malloc(bufsize);
-	memset(rtmmsg, 0, bufsize);
-
-	rtmmsg->ifa_index = ifindex;
-	rtmmsg->ifa_family = AF_INET6;
-	rtmmsg->ifa_flags = IFA_F_PERMANENT;
-	rtmmsg->ifa_scope = RT_SCOPE_UNIVERSE;
-	rtmmsg->ifa_prefixlen = prefix_len;
-
-	rta_buf = (void *) rtmmsg + NLMSG_ALIGN(sizeof(struct ifaddrmsg));
-
-	if (inet_pton(AF_INET6, ip, &in6_addr) < 1) {
-		l_free(rtmmsg);
-		return 0;
-	}
-
-	rta_buf += rta_add_data(rta_buf, IFA_LOCAL, &in6_addr,
-						sizeof(struct in6_addr));
-
-	id = l_netlink_send(rtnl, nlmsg_type, 0, rtmmsg,
-						rta_buf - (void *) rtmmsg, cb,
-						user_data, destroy);
-	l_free(rtmmsg);
-
-	return id;
-}
-
 LIB_EXPORT uint32_t l_rtnl_ifaddr6_add(struct l_netlink *rtnl, int ifindex,
 				uint8_t prefix_len, const char *ip,
 				l_netlink_command_func_t cb, void *user_data,
 				l_netlink_destroy_func_t destroy)
 {
-	return l_rtnl_ifaddr6_change(rtnl, RTM_NEWADDR, ifindex, prefix_len,
-						ip, cb, user_data, destroy);
+	struct l_rtnl_address a6;
+
+	if (!rtnl_address_init(&a6, ip, prefix_len))
+		return 0;
+
+	return l_rtnl_ifaddr_add(rtnl, ifindex, &a6, cb, user_data, destroy);
 }
 
 LIB_EXPORT uint32_t l_rtnl_ifaddr6_delete(struct l_netlink *rtnl, int ifindex,
@@ -597,8 +975,12 @@ LIB_EXPORT uint32_t l_rtnl_ifaddr6_delete(struct l_netlink *rtnl, int ifindex,
 					void *user_data,
 					l_netlink_destroy_func_t destroy)
 {
-	return l_rtnl_ifaddr6_change(rtnl, RTM_DELADDR, ifindex, prefix_len,
-						ip, cb, user_data, destroy);
+	struct l_rtnl_address a6;
+
+	if (!rtnl_address_init(&a6, ip, prefix_len))
+		return 0;
+
+	return l_rtnl_ifaddr_delete(rtnl, ifindex, &a6, cb, user_data, destroy);
 }
 
 LIB_EXPORT void l_rtnl_route6_extract(const struct rtmsg *rtmsg, uint32_t len,
@@ -623,60 +1005,6 @@ LIB_EXPORT uint32_t l_rtnl_route6_dump(struct l_netlink *rtnl,
 					destroy);
 }
 
-static uint32_t l_rtnl_route6_change(struct l_netlink *rtnl,
-					uint16_t nlmsg_type, int ifindex,
-					const char *gateway,
-					uint32_t priority_offset,
-					uint8_t proto,
-					l_netlink_command_func_t cb,
-					void *user_data,
-					l_netlink_destroy_func_t destroy)
-{
-	L_AUTO_FREE_VAR(struct rtmsg *, rtmmsg) = NULL;
-	struct in6_addr in6_addr;
-	size_t bufsize;
-	void *rta_buf;
-	uint16_t flags;
-
-	if (!gateway)
-		return 0;
-
-	bufsize = NLMSG_ALIGN(sizeof(struct rtmsg)) +
-			RTA_SPACE(sizeof(uint32_t)) +
-			(priority_offset ? RTA_SPACE(sizeof(uint32_t)) : 0) +
-			RTA_SPACE(sizeof(struct in6_addr));
-
-	rtmmsg = l_malloc(bufsize);
-	memset(rtmmsg, 0, bufsize);
-
-	rtmmsg->rtm_family = AF_INET6;
-	rtmmsg->rtm_table = RT_TABLE_MAIN;
-	rtmmsg->rtm_protocol = proto;
-	rtmmsg->rtm_type = RTN_UNICAST;
-	rtmmsg->rtm_scope = RT_SCOPE_UNIVERSE;
-
-	flags = NLM_F_CREATE | NLM_F_REPLACE;
-
-	rta_buf = (void *) rtmmsg + NLMSG_ALIGN(sizeof(struct rtmsg));
-	rta_buf += rta_add_u32(rta_buf, RTA_OIF, ifindex);
-
-	if (priority_offset)
-		rta_buf += rta_add_u32(rta_buf, RTA_PRIORITY,
-						priority_offset + ifindex);
-
-	if (gateway) {
-		if (inet_pton(AF_INET6, gateway, &in6_addr) < 1)
-			return 0;
-
-		rta_buf += rta_add_data(rta_buf, RTA_GATEWAY, &in6_addr,
-						sizeof(struct in6_addr));
-	}
-
-	return l_netlink_send(rtnl, nlmsg_type, flags, rtmmsg,
-				rta_buf - (void *) rtmmsg, cb, user_data,
-								destroy);
-}
-
 LIB_EXPORT uint32_t l_rtnl_route6_add_gateway(struct l_netlink *rtnl,
 					int ifindex,
 					const char *gateway,
@@ -686,9 +1014,18 @@ LIB_EXPORT uint32_t l_rtnl_route6_add_gateway(struct l_netlink *rtnl,
 					void *user_data,
 					l_netlink_destroy_func_t destroy)
 {
-	return l_rtnl_route6_change(rtnl, RTM_NEWROUTE, ifindex, gateway,
-					priority_offset, proto, cb,
-					user_data, destroy);
+	struct l_rtnl_route *rt = l_rtnl_route_new_gateway(gateway);
+	uint32_t r;
+
+	if (!rt)
+		return 0;
+
+	l_rtnl_route_set_protocol(rt, proto);
+	l_rtnl_route_set_priority(rt, priority_offset);
+
+	r = l_rtnl_route_add(rtnl, ifindex, rt, cb, user_data, destroy);
+	l_rtnl_route_free(rt);
+	return r;
 }
 
 LIB_EXPORT uint32_t l_rtnl_route6_delete_gateway(struct l_netlink *rtnl,
@@ -700,7 +1037,204 @@ LIB_EXPORT uint32_t l_rtnl_route6_delete_gateway(struct l_netlink *rtnl,
 					void *user_data,
 					l_netlink_destroy_func_t destroy)
 {
-	return l_rtnl_route6_change(rtnl, RTM_DELROUTE, ifindex, gateway,
-					priority_offset, proto, cb,
-					user_data, destroy);
+	struct l_rtnl_route *rt = l_rtnl_route_new_gateway(gateway);
+	uint32_t r;
+
+	if (!rt)
+		return 0;
+
+	l_rtnl_route_set_protocol(rt, proto);
+	l_rtnl_route_set_priority(rt, priority_offset);
+
+	r = l_rtnl_route_delete(rtnl, ifindex, rt, cb, user_data, destroy);
+	l_rtnl_route_free(rt);
+	return r;
+}
+
+static uint32_t _rtnl_ifaddr_change(struct l_netlink *rtnl, uint16_t nlmsg_type,
+					int ifindex,
+					const struct l_rtnl_address *addr,
+					l_netlink_command_func_t cb,
+					void *user_data,
+					l_netlink_destroy_func_t destroy)
+{
+	struct ifaddrmsg *ifamsg;
+	void *buf;
+	size_t bufsize;
+	uint32_t id;
+	int flags = 0;
+
+	if  (nlmsg_type == RTM_NEWADDR)
+		flags = NLM_F_CREATE | NLM_F_REPLACE;
+
+	bufsize = NLMSG_ALIGN(sizeof(struct ifaddrmsg)) +
+					RTA_SPACE(sizeof(struct in6_addr)) +
+					RTA_SPACE(sizeof(struct in_addr)) +
+					RTA_SPACE(sizeof(uint32_t)) +
+					RTA_SPACE(IFNAMSIZ) +
+					RTA_SPACE(sizeof(struct ifa_cacheinfo));
+
+	ifamsg = l_malloc(bufsize);
+	memset(ifamsg, 0, bufsize);
+
+	ifamsg->ifa_index = ifindex;
+	ifamsg->ifa_family = addr->family;
+	ifamsg->ifa_scope = addr->scope;
+	ifamsg->ifa_prefixlen = addr->prefix_len;
+	/* Kernel ignores legacy flags in IFA_FLAGS, so set them here */
+	ifamsg->ifa_flags = addr->flags & 0xff;
+
+	buf = (void *) ifamsg + NLMSG_ALIGN(sizeof(struct ifaddrmsg));
+
+	if (addr->family == AF_INET) {
+		buf += rta_add_data(buf, IFA_LOCAL, &addr->in_addr,
+						sizeof(struct in_addr));
+		buf += rta_add_data(buf, IFA_BROADCAST, &addr->broadcast,
+						sizeof(struct in_addr));
+	} else
+		buf += rta_add_data(buf, IFA_LOCAL, &addr->in6_addr,
+						sizeof(struct in6_addr));
+
+	/* Address & Prefix length are enough to perform deletions */
+	if (nlmsg_type == RTM_DELADDR)
+		goto done;
+
+	if (addr->flags & 0xffffff00)
+		buf += rta_add_u32(buf, IFA_FLAGS, addr->flags & 0xffffff00);
+
+	if (addr->label[0])
+		buf += rta_add_data(buf, IFA_LABEL,
+					addr->label, strlen(addr->label) + 1);
+
+	if (addr->preferred_lifetime || addr->valid_lifetime) {
+		struct ifa_cacheinfo cinfo;
+
+		memset(&cinfo, 0, sizeof(cinfo));
+		cinfo.ifa_prefered = addr->preferred_lifetime;
+		cinfo.ifa_valid = addr->valid_lifetime;
+
+		buf += rta_add_data(buf, IFA_CACHEINFO, &cinfo, sizeof(cinfo));
+	}
+
+done:
+	id = l_netlink_send(rtnl, nlmsg_type, flags,
+				ifamsg, buf - (void *) ifamsg,
+				cb, user_data, destroy);
+	l_free(ifamsg);
+
+	return id;
+}
+
+LIB_EXPORT uint32_t l_rtnl_ifaddr_add(struct l_netlink *rtnl, int ifindex,
+					const struct l_rtnl_address *addr,
+					l_netlink_command_func_t cb,
+					void *user_data,
+					l_netlink_destroy_func_t destroy)
+{
+	return _rtnl_ifaddr_change(rtnl, RTM_NEWADDR, ifindex, addr,
+						cb, user_data, destroy);
+}
+
+LIB_EXPORT uint32_t l_rtnl_ifaddr_delete(struct l_netlink *rtnl, int ifindex,
+					const struct l_rtnl_address *addr,
+					l_netlink_command_func_t cb,
+					void *user_data,
+					l_netlink_destroy_func_t destroy)
+{
+	return _rtnl_ifaddr_change(rtnl, RTM_DELADDR, ifindex, addr,
+						cb, user_data, destroy);
+}
+
+static uint32_t _rtnl_route_change(struct l_netlink *rtnl,
+					uint16_t nlmsg_type, int ifindex,
+					const struct l_rtnl_route *rt,
+					l_netlink_command_func_t cb,
+					void *user_data,
+					l_netlink_destroy_func_t destroy)
+{
+	L_AUTO_FREE_VAR(struct rtmsg *, rtmmsg) = NULL;
+	size_t bufsize;
+	void *rta_buf;
+	uint16_t flags;
+
+	bufsize = NLMSG_ALIGN(sizeof(struct rtmsg)) +
+			RTA_SPACE(sizeof(uint32_t)) +        /* RTA_OIF */
+			RTA_SPACE(sizeof(uint32_t)) +        /* RTA_PRIORITY */
+			RTA_SPACE(sizeof(struct in6_addr)) + /* RTA_GATEWAY */
+			RTA_SPACE(sizeof(struct in6_addr)) + /* RTA_DST */
+			RTA_SPACE(sizeof(struct in6_addr)) + /* RTA_PREFSRC */
+			256 +                                /* RTA_METRICS */
+			RTA_SPACE(sizeof(uint8_t)) +         /* RTA_PREF */
+			RTA_SPACE(sizeof(uint32_t));         /* RTA_EXPIRES */
+
+	rtmmsg = l_malloc(bufsize);
+	memset(rtmmsg, 0, bufsize);
+
+	rtmmsg->rtm_family = rt->family;
+	rtmmsg->rtm_table = RT_TABLE_MAIN;
+	rtmmsg->rtm_protocol = rt->protocol;
+	rtmmsg->rtm_type = RTN_UNICAST;
+	rtmmsg->rtm_scope = rt->scope;
+
+	flags = NLM_F_CREATE | NLM_F_REPLACE;
+
+	rta_buf = (void *) rtmmsg + NLMSG_ALIGN(sizeof(struct rtmsg));
+	rta_buf += rta_add_u32(rta_buf, RTA_OIF, ifindex);
+
+	if (rt->priority)
+		rta_buf += rta_add_u32(rta_buf, RTA_PRIORITY,
+						rt->priority + ifindex);
+
+	if (!address_is_null(rt->family, &rt->gw.in_addr, &rt->gw.in6_addr))
+		rta_buf += rta_add_address(rta_buf, RTA_GATEWAY, rt->family,
+					&rt->gw.in6_addr, &rt->gw.in_addr);
+
+	if (rt->dst_prefix_len) {
+		rtmmsg->rtm_dst_len = rt->dst_prefix_len;
+		rta_buf += rta_add_address(rta_buf, RTA_DST, rt->family,
+					&rt->dst.in6_addr, &rt->dst.in_addr);
+	}
+
+	if (!address_is_null(rt->family, &rt->prefsrc.in_addr,
+						&rt->prefsrc.in6_addr))
+		rta_buf += rta_add_address(rta_buf, RTA_PREFSRC, rt->family,
+						&rt->prefsrc.in6_addr,
+						&rt->prefsrc.in_addr);
+
+	if (rt->mtu) {
+		uint8_t buf[256];
+		size_t written = rta_add_u32(buf, RTAX_MTU, rt->mtu);
+
+		rta_buf += rta_add_data(rta_buf, RTA_METRICS, buf, written);
+	}
+
+	if (rt->preference)
+		rta_buf += rta_add_u8(rta_buf, RTA_PREF, rt->preference);
+
+	if (rt->lifetime != 0xffffffff)
+		rta_buf += rta_add_u32(rta_buf, RTA_EXPIRES, rt->lifetime);
+
+	return l_netlink_send(rtnl, nlmsg_type, flags, rtmmsg,
+				rta_buf - (void *) rtmmsg, cb, user_data,
+								destroy);
+}
+
+LIB_EXPORT uint32_t l_rtnl_route_add(struct l_netlink *rtnl, int ifindex,
+					const struct l_rtnl_route *rt,
+					l_netlink_command_func_t cb,
+					void *user_data,
+					l_netlink_destroy_func_t destroy)
+{
+	return _rtnl_route_change(rtnl, RTM_NEWROUTE, ifindex, rt,
+						cb, user_data, destroy);
+}
+
+LIB_EXPORT uint32_t l_rtnl_route_delete(struct l_netlink *rtnl, int ifindex,
+					const struct l_rtnl_route *rt,
+					l_netlink_command_func_t cb,
+					void *user_data,
+					l_netlink_destroy_func_t destroy)
+{
+	return _rtnl_route_change(rtnl, RTM_DELROUTE, ifindex, rt,
+						cb, user_data, destroy);
 }

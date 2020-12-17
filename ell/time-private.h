@@ -1,8 +1,8 @@
 /*
  *
- *  Wireless daemon for Linux
+ *  Embedded Linux library
  *
- *  Copyright (C) 2019  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2020  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,8 +20,6 @@
  *
  */
 
-struct resolve *resolve_new(uint32_t ifindex);
-void resolve_set_dns(struct resolve *resolve, char **dns_list);
-void resolve_set_domains(struct resolve *resolve, char **domain_list);
-void resolve_revert(struct resolve *resolve);
-void resolve_free(struct resolve *resolve);
+uint64_t _time_pick_interval_secs(uint32_t min_secs, uint32_t max_secs);
+uint64_t _time_fuzz_msecs(uint64_t ms);
+uint64_t _time_fuzz_secs(uint32_t secs, uint32_t max_offset);
