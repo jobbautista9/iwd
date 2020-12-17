@@ -50,9 +50,16 @@ Files:
  ell/dbus.h
  ell/dhcp-lease.c
  ell/dhcp-private.h
+ ell/dhcp-server.c
  ell/dhcp-transport.c
+ ell/dhcp-util.c
  ell/dhcp.c
  ell/dhcp.h
+ ell/dhcp6-lease.c
+ ell/dhcp6-private.h
+ ell/dhcp6-transport.c
+ ell/dhcp6.c
+ ell/dhcp6.h
  ell/dir.c
  ell/dir.h
  ell/ecc-private.h
@@ -70,6 +77,9 @@ Files:
  ell/hashmap.h
  ell/hwdb.c
  ell/hwdb.h
+ ell/icmp6-private.h
+ ell/icmp6.c
+ ell/icmp6.h
  ell/idle.c
  ell/idle.h
  ell/io.c
@@ -81,6 +91,7 @@ Files:
  ell/main.c
  ell/main.h
  ell/missing.h
+ ell/net-private.h
  ell/net.c
  ell/net.h
  ell/netlink-private.h
@@ -94,8 +105,6 @@ Files:
  ell/pkcs5-private.h
  ell/pkcs5.c
  ell/pkcs5.h
- ell/plugin.c
- ell/plugin.h
  ell/private.h
  ell/queue.c
  ell/queue.h
@@ -117,6 +126,7 @@ Files:
  ell/strv.h
  ell/test.c
  ell/test.h
+ ell/time-private.h
  ell/time.c
  ell/time.h
  ell/timeout.c
@@ -141,8 +151,6 @@ Files:
  monitor/nlmon.h
  monitor/pcap.c
  monitor/pcap.h
- plugins/ofono.c
- plugins/sim_hardcoded.c
  src/adhoc.c
  src/agent.c
  src/agent.h
@@ -217,14 +225,13 @@ Files:
  src/nl80211cmd.h
  src/nl80211util.c
  src/nl80211util.h
+ src/ofono.c
  src/owe.c
  src/owe.h
  src/p2p.c
  src/p2p.h
  src/p2putil.c
  src/p2putil.h
- src/plugin.c
- src/plugin.h
  src/resolve.c
  src/resolve.h
  src/rfkill.c
@@ -254,7 +261,6 @@ Files:
  src/wscutil.h
  tools/hwsim.c
  tools/probe-req.c
- tools/test-runner.c
  unit/test-arc4.c
  unit/test-client.c
  unit/test-cmac-aes.c
@@ -283,7 +289,6 @@ Files:
 Copyright:
   2011-2014, Intel Corporation.
   2011-2015, Intel Corporation.
-  2012-2019, Intel Corporation.
   2013-2019, Intel Corporation.
   2014-2019, Intel Corporation.
   2015, Intel Corporation.
@@ -468,6 +473,8 @@ Files:
  monitor/iwmon.1
  monitor/iwmon.rst
  src/iwd.8
+ src/iwd.ap.5
+ src/iwd.ap.rst
  src/iwd.config.5
  src/iwd.config.rst
  src/iwd.debug.7
@@ -481,6 +488,7 @@ Files:
 Copyright:
   2013-2019, Intel Corporation
   2017-2019, Intel Corporation
+  2020, Intel Corporation
 License: UNKNOWN
  FIXME
 
