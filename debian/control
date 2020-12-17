@@ -3,7 +3,7 @@ Section: net
 Priority: optional
 Maintainer: Jonas Smedegaard <dr@jones.dk>
 Build-Depends:
- debhelper-compat (= 12),
+ debhelper-compat (= 13),
  libdbus-1-dev,
  libreadline-dev,
  openssl <!nocheck>,
