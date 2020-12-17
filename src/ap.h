@@ -52,25 +52,33 @@ struct ap_event_registration_success_data {
 	const uint8_t *mac;
 };
 
-typedef void (*ap_event_func_t)(enum ap_event_type type, const void *event_data,
-				void *user_data);
 typedef void (*ap_stopped_func_t)(void *user_data);
 
 struct ap_config {
 	char *ssid;
-	char *psk;
+	char passphrase[64];
+	uint8_t psk[32];
 	uint8_t channel;
 	uint8_t *authorized_macs;
 	unsigned int authorized_macs_num;
 	char *wsc_name;
 	struct wsc_primary_device_type wsc_primary_device_type;
+
+	char *profile;
+
 	bool no_cck_rates : 1;
+};
+
+struct ap_ops {
+	void (*handle_event)(enum ap_event_type type, const void *event_data,
+				void *user_data);
 };
 
 void ap_config_free(struct ap_config *config);
 
 struct ap_state *ap_start(struct netdev *netdev, struct ap_config *config,
-				ap_event_func_t event_func, void *user_data);
+				const struct ap_ops *ops, int *err,
+				void *user_data);
 void ap_shutdown(struct ap_state *ap, ap_stopped_func_t stopped_func,
 			void *user_data);
 void ap_free(struct ap_state *ap);

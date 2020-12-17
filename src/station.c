@@ -95,6 +95,9 @@ struct station {
 
 	struct netconfig *netconfig;
 
+	/* Set of frequencies to scan first when attempting a roam */
+	struct scan_freq_set *roam_freqs;
+
 	bool preparing_roam : 1;
 	bool roam_scan_full : 1;
 	bool signal_low : 1;
@@ -1031,9 +1034,8 @@ static void periodic_scan_stop(struct station *station)
 {
 	uint64_t id = netdev_get_wdev_id(station->netdev);
 
-	scan_periodic_stop(id);
-
-	station_property_set_scanning(station, false);
+	if (scan_periodic_stop(id))
+		station_property_set_scanning(station, false);
 }
 
 static bool station_needs_hidden_network_scan(struct station *station)
@@ -1306,6 +1308,11 @@ static void station_reset_connection_state(struct station *station)
 
 	station->connected_bss = NULL;
 	station->connected_network = NULL;
+
+	if (station->roam_freqs) {
+		scan_freq_set_free(station->roam_freqs);
+		station->roam_freqs = NULL;
+	}
 
 	l_dbus_property_changed(dbus, netdev_get_path(station->netdev),
 				IWD_STATION_INTERFACE, "ConnectedNetwork");
@@ -1880,40 +1887,16 @@ static uint32_t station_freq_from_neighbor_report(const uint8_t *country,
 	return freq;
 }
 
-static void station_neighbor_report_cb(struct netdev *netdev, int err,
+static void parse_neighbor_report(struct station *station,
 					const uint8_t *reports,
-					size_t reports_len, void *user_data)
+					size_t reports_len,
+					struct scan_freq_set **set)
 {
-	struct station *station = user_data;
 	struct ie_tlv_iter iter;
 	int count_md = 0, count_no_md = 0;
 	struct scan_freq_set *freq_set_md, *freq_set_no_md;
 	uint32_t current_freq = 0;
 	struct handshake_state *hs = netdev_get_handshake(station->netdev);
-	int r;
-
-	l_debug("ifindex: %u, error: %d(%s)",
-			netdev_get_ifindex(station->netdev),
-			err, err < 0 ? strerror(-err) : "");
-
-	/*
-	 * Check if we're still attempting to roam -- if dbus Disconnect
-	 * had been called in the meantime we just abort the attempt.
-	 */
-	if (!station->preparing_roam || err == -ENODEV)
-		return;
-
-	if (!reports || err) {
-		r = station_roam_scan_known_freqs(station);
-
-		if (r == -ENODATA)
-			l_debug("no neighbor report results or known freqs");
-
-		if (r < 0)
-			station_roam_failed(station);
-
-		return;
-	}
 
 	freq_set_md = scan_freq_set_new();
 	freq_set_no_md = scan_freq_set_new();
@@ -2001,17 +1984,53 @@ static void station_neighbor_report_cb(struct netdev *netdev, int err,
 	 */
 	if (count_md) {
 		scan_freq_set_add(freq_set_md, current_freq);
-
-		r = station_roam_scan(station, freq_set_md);
+		*set = freq_set_md;
+		scan_freq_set_free(freq_set_no_md);
 	} else if (count_no_md) {
 		scan_freq_set_add(freq_set_no_md, current_freq);
-
-		r = station_roam_scan(station, freq_set_no_md);
+		*set = freq_set_no_md;
+		scan_freq_set_free(freq_set_md);
 	} else
-		r = station_roam_scan(station, NULL);
+		*set = NULL;
+}
 
-	scan_freq_set_free(freq_set_md);
-	scan_freq_set_free(freq_set_no_md);
+static void station_neighbor_report_cb(struct netdev *netdev, int err,
+					const uint8_t *reports,
+					size_t reports_len, void *user_data)
+{
+	struct station *station = user_data;
+	struct scan_freq_set *freq_set;
+	int r;
+
+	l_debug("ifindex: %u, error: %d(%s)",
+			netdev_get_ifindex(station->netdev),
+			err, err < 0 ? strerror(-err) : "");
+
+	/*
+	 * Check if we're still attempting to roam -- if dbus Disconnect
+	 * had been called in the meantime we just abort the attempt.
+	 */
+	if (!station->preparing_roam || err == -ENODEV)
+		return;
+
+	if (!reports || err) {
+		r = station_roam_scan_known_freqs(station);
+
+		if (r == -ENODATA)
+			l_debug("no neighbor report results or known freqs");
+
+		if (r < 0)
+			station_roam_failed(station);
+
+		return;
+	}
+
+	parse_neighbor_report(station, reports, reports_len, &freq_set);
+
+	r = station_roam_scan(station, freq_set);
+
+	if (freq_set)
+		scan_freq_set_free(freq_set);
 
 	if (r < 0)
 		station_roam_failed(station);
@@ -2030,18 +2049,27 @@ static void station_roam_trigger_cb(struct l_timeout *timeout, void *user_data)
 
 	/*
 	 * If current BSS supports Neighbor Reports, narrow the scan down
-	 * to channels occupied by known neighbors in the ESS.  This isn't
+	 * to channels occupied by known neighbors in the ESS. If no neighbor
+	 * report was obtained upon connection, request one now. This isn't
 	 * 100% reliable as the neighbor lists are not required to be
 	 * complete or current.  It is likely still better than doing a
 	 * full scan.  10.11.10.1: "A neighbor report may not be exhaustive
 	 * either by choice, or due to the fact that there may be neighbor
 	 * APs not known to the AP."
 	 */
-	if (station->connected_bss->cap_rm_neighbor_report &&
-			!station->roam_no_orig_ap)
-		if (!netdev_neighbor_report_req(station->netdev,
-						station_neighbor_report_cb))
+	if (station->roam_freqs) {
+		if (station_roam_scan(station, station->roam_freqs) == 0) {
+			l_debug("Using cached neighbor report for roam");
 			return;
+		}
+	} else if (station->connected_bss->cap_rm_neighbor_report &&
+			!station->roam_no_orig_ap) {
+		if (netdev_neighbor_report_req(station->netdev,
+					station_neighbor_report_cb) == 0) {
+			l_debug("Requesting neighbor report for roam");
+			return;
+		}
+	}
 
 	r = station_roam_scan_known_freqs(station);
 	if (r == -ENODATA)
@@ -2084,29 +2112,6 @@ static bool station_cannot_roam(struct station *station)
 
 	return disabled || station->preparing_roam ||
 					station->state == STATION_STATE_ROAMING;
-}
-
-static void station_lost_beacon(struct station *station)
-{
-	l_debug("%u", netdev_get_ifindex(station->netdev));
-
-	if (station->state != STATION_STATE_ROAMING &&
-			station->state != STATION_STATE_CONNECTED)
-		return;
-
-	/*
-	 * Tell the roam mechanism to not bother requesting Neighbor Reports,
-	 * preauthenticating or performing other over-the-DS type of
-	 * authentication to target AP, even while station->connected_bss is
-	 * still non-NULL.  The current connection is in a serious condition
-	 * and we might wasting our time with those mechanisms.
-	 */
-	station->roam_no_orig_ap = true;
-
-	if (station_cannot_roam(station))
-		return;
-
-	station_roam_trigger_cb(NULL, station);
 }
 
 #define WNM_REQUEST_MODE_PREFERRED_CANDIDATE_LIST	(1 << 0)
@@ -2236,9 +2241,6 @@ static void station_netdev_event(struct netdev *netdev, enum netdev_event event,
 	case NETDEV_EVENT_ASSOCIATING:
 		l_debug("Associating");
 		break;
-	case NETDEV_EVENT_LOST_BEACON:
-		station_lost_beacon(station);
-		break;
 	case NETDEV_EVENT_DISCONNECT_BY_AP:
 	case NETDEV_EVENT_DISCONNECT_BY_SME:
 		station_disconnect_event(station, event_data);
@@ -2344,6 +2346,24 @@ static void station_connect_dbus_reply(struct station *station,
 	dbus_pending_reply(&station->connect_pending, reply);
 }
 
+static void station_early_neighbor_report_cb(struct netdev *netdev, int err,
+						const uint8_t *reports,
+						size_t reports_len,
+						void *user_data)
+{
+	struct station *station = user_data;
+
+	l_debug("ifindex: %u, error: %d(%s)",
+			netdev_get_ifindex(station->netdev),
+			err, err < 0 ? strerror(-err) : "");
+
+	if (!reports || err)
+		return;
+
+	parse_neighbor_report(station, reports, reports_len,
+				&station->roam_freqs);
+}
+
 static void station_connect_cb(struct netdev *netdev, enum netdev_result result,
 					void *event_data, void *user_data)
 {
@@ -2388,6 +2408,16 @@ static void station_connect_cb(struct netdev *netdev, enum netdev_result result,
 		return;
 	}
 
+	/*
+	 * Get a neighbor report now so future roams can avoid waiting for
+	 * a report at that time
+	 */
+	if (station->connected_bss->cap_rm_neighbor_report) {
+		if (netdev_neighbor_report_req(station->netdev,
+					station_early_neighbor_report_cb) < 0)
+			l_warn("Could not request neighbor report");
+	}
+
 	network_connected(station->connected_network);
 
 	if (station->netconfig)
@@ -2422,6 +2452,8 @@ int __station_connect_network(struct station *station, struct network *network,
 		handshake_state_free(hs);
 		return r;
 	}
+
+	l_debug("connecting to BSS "MAC, MAC_STR(bss->addr));
 
 	station->connected_bss = bss;
 	station->connected_network = network;
@@ -2746,6 +2778,15 @@ static struct l_dbus_message *station_dbus_disconnect(struct l_dbus *dbus,
 	 * the user's explicit instructions to scan and connect to the network
 	 */
 	station_set_autoconnect(station, false);
+
+	if (station->hidden_network_scan_id) {
+		scan_cancel(netdev_get_wdev_id(station->netdev),
+				station->hidden_network_scan_id);
+		dbus_pending_reply(&station->hidden_pending,
+				dbus_error_aborted(station->hidden_pending));
+
+		return l_dbus_message_new_method_return(message);
+	}
 
 	if (!station_is_busy(station))
 		return l_dbus_message_new_method_return(message);

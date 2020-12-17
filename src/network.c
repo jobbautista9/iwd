@@ -374,16 +374,18 @@ static int network_load_psk(struct network *network, bool need_passphrase)
 {
 	const char *ssid = network_get_ssid(network);
 	enum security security = network_get_security(network);
-	size_t len;
-	const char *psk = l_settings_get_value(network->settings,
-						"Security", "PreSharedKey");
+	size_t psk_len;
+	uint8_t *psk = l_settings_get_bytes(network->settings, "Security",
+						"PreSharedKey", &psk_len);
 	char *passphrase = l_settings_get_string(network->settings,
 						"Security", "Passphrase");
 	int r;
 
 	/* PSK can be generated from the passphrase but not the other way */
-	if ((!psk || need_passphrase) && !passphrase)
+	if ((!psk || need_passphrase) && !passphrase) {
+		l_free(psk);
 		return -ENOKEY;
+	}
 
 	network_reset_passphrase(network);
 	network_reset_psk(network);
@@ -392,11 +394,10 @@ static int network_load_psk(struct network *network, bool need_passphrase)
 	if (psk) {
 		char *path;
 
-		network->psk = l_util_from_hexstring(psk, &len);
-		if (network->psk && len == 32)
+		if (psk_len == 32) {
+			network->psk = psk;
 			return 0;
-
-		network_reset_psk(network);
+		}
 
 		path = storage_get_network_file_path(security, ssid);
 		l_error("%s: invalid PreSharedKey format", path);
@@ -439,15 +440,14 @@ void network_sync_psk(struct network *network)
 	fs_settings = storage_network_open(SECURITY_PSK, ssid);
 
 	if (network->psk) {
-		char *hex = l_util_hexstring(network->psk, 32);
-		l_settings_set_value(network->settings, "Security",
-						"PreSharedKey", hex);
+		l_settings_set_bytes(network->settings, "Security",
+						"PreSharedKey",
+						network->psk, 32);
 
 		if (fs_settings)
-			l_settings_set_value(fs_settings, "Security",
-						"PreSharedKey", hex);
-
-		l_free(hex);
+			l_settings_set_bytes(fs_settings, "Security",
+						"PreSharedKey",
+						network->psk, 32);
 	}
 
 	if (network->passphrase) {
@@ -1146,6 +1146,9 @@ static struct l_dbus_message *network_connect(struct l_dbus *dbus,
 		 */
 		return l_dbus_message_new_method_return(message);
 
+	if (network->agent_request)
+		return dbus_error_busy(message);
+
 	/*
 	 * Select the best BSS to use at this time.  If we have to query the
 	 * agent this may not be the final choice because BSS visibility can
@@ -1197,6 +1200,11 @@ void network_connect_new_hidden_network(struct network *network,
 	struct l_dbus_message *error;
 
 	l_debug("");
+
+	if (network->agent_request) {
+		error = dbus_error_busy(*message);
+		goto reply_error;
+	}
 
 	/*
 	 * This is not a Known Network.  If connection succeeds, either

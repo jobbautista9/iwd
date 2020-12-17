@@ -70,9 +70,36 @@ configuration has been provided for a network, \fBiwd\fP will attempt to
 obtain the dynamic addresses from the network through the built\-in
 DHCP client.
 .sp
+This also enables DHCP server when in AP mode when either
+[General].APRanges is set or an AP profile is being used.
+.sp
 The network configuration feature is disabled by default.  See
 \fB[Network]\fP settings for additional settings related to network
 configuration.
+T}
+_
+T{
+EnableIPv6
+T}	T{
+Values: true, \fBfalse\fP
+.sp
+Sets the global default that tells \fBiwd\fP whether it should configure
+IPv6 addresses and routes (either provided via static settings,
+Router Advertisements or DHCPv6 protocol).  This setting is disabled
+by default.  This setting can also be overriden on a per\-network basis.
+T}
+_
+T{
+APRanges
+T}	T{
+Values: <IP in prefix notation>
+.sp
+Sets the range of IP\(aqs used for DHCP server (AP mode). The IP should be
+in prefix notation e.g. aaa.bbb.ccc.ddd/xx. AP\(aqs which are started in a
+profile\-less configuration will use this pool of IP\(aqs to set the AP\(aqs
+interface address as well as default DHCP server options. Each AP will
+get a new subnet from the range and clients will be addressed in that
+subnet to avoid IP conflicts if multiple AP\(aqs are started.
 T}
 _
 T{
