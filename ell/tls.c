@@ -37,6 +37,7 @@
 #include "random.h"
 #include "queue.h"
 #include "pem.h"
+#include "pem-private.h"
 #include "cert.h"
 #include "cert-private.h"
 #include "tls-private.h"
@@ -679,8 +680,8 @@ static const struct asn1_oid dn_common_name_oid =
 
 #define SAN_DNS_NAME_ID ASN1_CONTEXT_IMPLICIT(2)
 
-static bool tls_cert_domains_match_mask(struct l_tls *tls, struct l_cert *cert,
-						char **mask)
+static bool tls_cert_domains_match_mask(struct l_cert *cert, char **mask,
+					char **error_msg)
 {
 	const uint8_t *san, *dn, *end;
 	size_t san_len, dn_len;
@@ -688,7 +689,8 @@ static bool tls_cert_domains_match_mask(struct l_tls *tls, struct l_cert *cert,
 	const char *cn = NULL;
 	size_t cn_len;
 	char **i;
-	bool dns_name_present = false;
+	struct l_string *dns_names = NULL;
+	int dns_name_count = 0;
 
 	/*
 	 * Locate SubjectAltName (RFC5280 Section 4.2.1.6) and descend into
@@ -698,7 +700,7 @@ static bool tls_cert_domains_match_mask(struct l_tls *tls, struct l_cert *cert,
 	if (san) {
 		san = asn1_der_find_elem(san, san_len, 0, &san_tag, &san_len);
 		if (unlikely(!san || san_tag != ASN1_ID_SEQUENCE))
-			return false;
+			goto parse_error;
 
 		end = san + san_len;
 		while (san < end) {
@@ -714,18 +716,26 @@ static bool tls_cert_domains_match_mask(struct l_tls *tls, struct l_cert *cert,
 
 			/* Type is implicitly IA5STRING */
 
-			for (i = mask; *i; i++) {
-				TLS_DEBUG("Trying to match DNSName: '%.*s'"
-						" against mask: '%s'",
-						(int) len, value, *i);
-
+			for (i = mask; *i; i++)
 				if (tls_domain_match_mask((const char *) value,
-							len, *i, strlen(*i)))
+							len, *i, strlen(*i))) {
+					l_string_free(dns_names);
 					return true;
+				}
+
+			if (!dns_names) {
+				dns_names = l_string_new(128);
+				l_string_append(dns_names, "tried DNSName(s) ");
+				l_string_append_fixed(dns_names,
+							(char *) value, len);
+			} else if (dns_name_count < 20) {
+				l_string_append(dns_names, ", ");
+				l_string_append_fixed(dns_names,
+							(char *) value, len);
 			}
 
 			san = value + len;
-			dns_name_present = true;
+			dns_name_count++;
 		}
 	}
 
@@ -744,12 +754,17 @@ static bool tls_cert_domains_match_mask(struct l_tls *tls, struct l_cert *cert,
 	 * SubjectName. If neither of these conditions holds, then
 	 * verification fails."
 	 */
-	if (unlikely(dns_name_present))
-		return false;
+	if (dns_name_count) {
+		if (dns_name_count > 20)
+			l_string_append_printf(dns_names, " and %i other",
+						dns_name_count - 20);
+
+		*error_msg = l_string_unwrap(dns_names);
+	}
 
 	dn = l_cert_get_dn(cert, &dn_len);
 	if (unlikely(!dn))
-		return false;
+		goto parse_error;
 
 	end = dn + dn_len;
 	while (dn < end) {
@@ -759,17 +774,17 @@ static bool tls_cert_domains_match_mask(struct l_tls *tls, struct l_cert *cert,
 
 		set = asn1_der_find_elem(dn, end - dn, 0, &tag, &len);
 		if (unlikely(!set || tag != ASN1_ID_SET))
-			return false;
+			goto parse_error;
 
 		dn = set + len;
 
 		seq = asn1_der_find_elem(set, len, 0, &tag, &len);
 		if (unlikely(!seq || tag != ASN1_ID_SEQUENCE))
-			return false;
+			goto parse_error;
 
 		oid = asn1_der_find_elem(seq, len, 0, &tag, &oid_len);
 		if (unlikely(!oid || tag != ASN1_ID_OID))
-			return false;
+			goto parse_error;
 
 		name = asn1_der_find_elem(seq, len, 1, &tag, &name_len);
 		if (unlikely(!name || (tag != ASN1_ID_PRINTABLESTRING &&
@@ -785,15 +800,17 @@ static bool tls_cert_domains_match_mask(struct l_tls *tls, struct l_cert *cert,
 	}
 
 	if (unlikely(!cn))
-		return false;
+		goto parse_error;
 
-	for (i = mask; *i; i++) {
-		TLS_DEBUG("Trying to match CN: '%.*s' against mask: '%s'",
-				(int) cn_len, cn, *i);
-
+	for (i = mask; *i; i++)
 		if (tls_domain_match_mask(cn, cn_len, *i, strlen(*i)))
 			return true;
-	}
+
+	*error_msg = l_strdup_printf("tried CommonName %.*s", (int) cn_len, cn);
+	return false;
+
+parse_error:
+	*error_msg = l_strdup("couldn't locate DNSName or CommonName");
 
 	return false;
 }
@@ -1886,6 +1903,7 @@ static void tls_handle_certificate(struct l_tls *tls,
 	const uint8_t *der;
 	bool dummy;
 	const char *error_str;
+	char *subject_str;
 
 	if (len < 3)
 		goto decode_error;
@@ -1925,6 +1943,19 @@ static void tls_handle_certificate(struct l_tls *tls,
 		goto done;
 	}
 
+	if (tls->cert_dump_path) {
+		int r = pem_write_certificate_chain(certchain,
+							tls->cert_dump_path);
+
+		if (r < 0)
+			TLS_DEBUG("Error %i (%s) writing the peer certchain "
+					"to %s",
+					-r, strerror(-r), tls->cert_dump_path);
+		else
+			TLS_DEBUG("Peer certchain written to %s",
+					tls->cert_dump_path);
+	}
+
 	/*
 	 * Validate the certificate chain's consistency and validate it
 	 * against our CAs if we have any.
@@ -1955,14 +1986,16 @@ static void tls_handle_certificate(struct l_tls *tls,
 		goto done;
 	}
 
-	if (tls->subject_mask && !tls_cert_domains_match_mask(tls, leaf,
-							tls->subject_mask)) {
+	if (tls->subject_mask && !tls_cert_domains_match_mask(leaf,
+							tls->subject_mask,
+							&subject_str)) {
 		char *mask = l_strjoinv(tls->subject_mask, '|');
 
 		TLS_DISCONNECT(TLS_ALERT_BAD_CERT, 0,
 				"Peer certificate's subject domain "
-				"doesn't match %s", mask);
+				"doesn't match mask %s: %s", mask, subject_str);
 		l_free(mask);
+		l_free(subject_str);
 
 		goto done;
 	}
@@ -2595,6 +2628,7 @@ LIB_EXPORT void l_tls_free(struct l_tls *tls)
 	l_tls_set_cacert(tls, NULL);
 	l_tls_set_auth_data(tls, NULL, NULL);
 	l_tls_set_domain_mask(tls, NULL);
+	l_tls_set_cert_dump_path(tls, NULL);
 
 	tls_reset_handshake(tls);
 	tls_cleanup_handshake(tls);
@@ -3083,5 +3117,12 @@ LIB_EXPORT bool l_tls_set_debug(struct l_tls *tls, l_tls_debug_cb_t function,
 	tls->debug_destroy = destroy;
 	tls->debug_data = user_data;
 
+	return true;
+}
+
+LIB_EXPORT bool l_tls_set_cert_dump_path(struct l_tls *tls, const char *path)
+{
+	l_free(tls->cert_dump_path);
+	tls->cert_dump_path = path ? l_strdup(path) : NULL;
 	return true;
 }

@@ -175,28 +175,28 @@ am__ell_libell_internal_la_SOURCES_DIST = ell/util.h ell/test.h \
 	ell/random.h ell/uintset.h ell/base64.h ell/pem.h ell/tls.h \
 	ell/uuid.h ell/key.h ell/pkcs5.h ell/file.h ell/dir.h \
 	ell/net.h ell/dhcp.h ell/cert.h ell/ecc.h ell/ecdh.h \
-	ell/time.h ell/path.h ell/icmp6.h ell/dhcp6.h ell/private.h \
-	ell/missing.h ell/util.c ell/test.c ell/strv.c ell/utf8.c \
-	ell/queue.c ell/hashmap.c ell/string.c ell/settings.c \
-	ell/main.c ell/idle.c ell/signal.c ell/timeout.c ell/io.c \
-	ell/ringbuf.c ell/log.c ell/checksum.c ell/netlink-private.h \
-	ell/netlink.c ell/genl.c ell/rtnl.c ell/dbus-private.h \
-	ell/dbus.c ell/dbus-message.c ell/dbus-util.c \
-	ell/dbus-service.c ell/dbus-client.c ell/dbus-name-cache.c \
-	ell/dbus-filter.c ell/gvariant-private.h ell/gvariant-util.c \
-	ell/siphash-private.h ell/siphash.c ell/hwdb.c ell/cipher.c \
-	ell/random.c ell/uintset.c ell/base64.c ell/asn1-private.h \
-	ell/pem.c ell/pem-private.h ell/tls-private.h ell/tls.c \
-	ell/tls-record.c ell/tls-suites.c ell/tls-extensions.c \
-	ell/uuid.c ell/key.c ell/pkcs5-private.h ell/pkcs5.c \
-	ell/file.c ell/dir.c ell/net-private.h ell/net.c \
+	ell/time.h ell/path.h ell/icmp6.h ell/dhcp6.h ell/acd.h \
+	ell/private.h ell/missing.h ell/util.c ell/test.c ell/strv.c \
+	ell/utf8.c ell/queue.c ell/hashmap.c ell/string.c \
+	ell/settings.c ell/main.c ell/idle.c ell/signal.c \
+	ell/timeout.c ell/io.c ell/ringbuf.c ell/log.c ell/checksum.c \
+	ell/netlink-private.h ell/netlink.c ell/genl.c ell/rtnl.c \
+	ell/dbus-private.h ell/dbus.c ell/dbus-message.c \
+	ell/dbus-util.c ell/dbus-service.c ell/dbus-client.c \
+	ell/dbus-name-cache.c ell/dbus-filter.c ell/gvariant-private.h \
+	ell/gvariant-util.c ell/siphash-private.h ell/siphash.c \
+	ell/hwdb.c ell/cipher.c ell/random.c ell/uintset.c \
+	ell/base64.c ell/asn1-private.h ell/pem.c ell/pem-private.h \
+	ell/tls-private.h ell/tls.c ell/tls-record.c ell/tls-suites.c \
+	ell/tls-extensions.c ell/uuid.c ell/key.c ell/pkcs5-private.h \
+	ell/pkcs5.c ell/file.c ell/dir.c ell/net-private.h ell/net.c \
 	ell/dhcp-private.h ell/dhcp.c ell/dhcp-transport.c \
 	ell/dhcp-lease.c ell/dhcp-util.c ell/dhcp-server.c \
 	ell/cert-private.h ell/cert.c ell/ecc-external.c \
 	ell/ecc-private.h ell/ecc.c ell/ecdh.c ell/time.c \
 	ell/time-private.h ell/path.c ell/dhcp6.c ell/dhcp6-private.h \
 	ell/icmp6.c ell/icmp6-private.h ell/dhcp6-lease.c \
-	ell/dhcp6-transport.c
+	ell/dhcp6-transport.c ell/acd.c
 am__objects_1 =
 am__dirstamp = $(am__leading_dot)dirstamp
 @EXTERNAL_ELL_FALSE@am__objects_2 = ell/util.lo ell/test.lo \
@@ -222,7 +222,7 @@ am__dirstamp = $(am__leading_dot)dirstamp
 @EXTERNAL_ELL_FALSE@	ell/ecc-external.lo ell/ecc.lo ell/ecdh.lo \
 @EXTERNAL_ELL_FALSE@	ell/time.lo ell/path.lo ell/dhcp6.lo \
 @EXTERNAL_ELL_FALSE@	ell/icmp6.lo ell/dhcp6-lease.lo \
-@EXTERNAL_ELL_FALSE@	ell/dhcp6-transport.lo
+@EXTERNAL_ELL_FALSE@	ell/dhcp6-transport.lo ell/acd.lo
 @EXTERNAL_ELL_FALSE@am_ell_libell_internal_la_OBJECTS =  \
 @EXTERNAL_ELL_FALSE@	$(am__objects_1) $(am__objects_2)
 ell_libell_internal_la_OBJECTS = $(am_ell_libell_internal_la_OBJECTS)
@@ -252,7 +252,9 @@ am__client_iwctl_SOURCES_DIST = client/main.c client/adapter.c \
 @CLIENT_TRUE@	client/station.$(OBJEXT)
 client_iwctl_OBJECTS = $(am_client_iwctl_OBJECTS)
 @EXTERNAL_ELL_FALSE@am__DEPENDENCIES_1 = ell/libell-internal.la
-@CLIENT_TRUE@client_iwctl_DEPENDENCIES = $(am__DEPENDENCIES_1)
+am__DEPENDENCIES_2 =
+@CLIENT_TRUE@client_iwctl_DEPENDENCIES = $(am__DEPENDENCIES_1) \
+@CLIENT_TRUE@	$(am__DEPENDENCIES_2)
 am__monitor_iwmon_SOURCES_DIST = monitor/main.c linux/nl80211.h \
 	monitor/nlmon.h monitor/nlmon.c monitor/pcap.h monitor/pcap.c \
 	monitor/display.h monitor/display.c src/ie.h src/ie.c \
@@ -366,7 +368,8 @@ am__unit_test_client_SOURCES_DIST = unit/test-client.c \
 @CLIENT_TRUE@	client/display.$(OBJEXT) client/network.$(OBJEXT) \
 @CLIENT_TRUE@	client/properties.$(OBJEXT)
 unit_test_client_OBJECTS = $(am_unit_test_client_OBJECTS)
-@CLIENT_TRUE@unit_test_client_DEPENDENCIES = $(am__DEPENDENCIES_1)
+@CLIENT_TRUE@unit_test_client_DEPENDENCIES = $(am__DEPENDENCIES_1) \
+@CLIENT_TRUE@	$(am__DEPENDENCIES_2)
 am_unit_test_cmac_aes_OBJECTS = unit/test-cmac-aes.$(OBJEXT) \
 	src/crypto.$(OBJEXT)
 unit_test_cmac_aes_OBJECTS = $(am_unit_test_cmac_aes_OBJECTS)
@@ -490,10 +493,10 @@ am__depfiles_remade = client/$(DEPDIR)/ad-hoc.Po \
 	client/$(DEPDIR)/known-networks.Po client/$(DEPDIR)/main.Po \
 	client/$(DEPDIR)/network.Po client/$(DEPDIR)/properties.Po \
 	client/$(DEPDIR)/station.Po client/$(DEPDIR)/wsc.Po \
-	ell/$(DEPDIR)/base64.Plo ell/$(DEPDIR)/cert.Plo \
-	ell/$(DEPDIR)/checksum.Plo ell/$(DEPDIR)/cipher.Plo \
-	ell/$(DEPDIR)/dbus-client.Plo ell/$(DEPDIR)/dbus-filter.Plo \
-	ell/$(DEPDIR)/dbus-message.Plo \
+	ell/$(DEPDIR)/acd.Plo ell/$(DEPDIR)/base64.Plo \
+	ell/$(DEPDIR)/cert.Plo ell/$(DEPDIR)/checksum.Plo \
+	ell/$(DEPDIR)/cipher.Plo ell/$(DEPDIR)/dbus-client.Plo \
+	ell/$(DEPDIR)/dbus-filter.Plo ell/$(DEPDIR)/dbus-message.Plo \
 	ell/$(DEPDIR)/dbus-name-cache.Plo \
 	ell/$(DEPDIR)/dbus-service.Plo ell/$(DEPDIR)/dbus-util.Plo \
 	ell/$(DEPDIR)/dbus.Plo ell/$(DEPDIR)/dhcp-lease.Plo \
@@ -952,6 +955,8 @@ PKG_CONFIG = @PKG_CONFIG@
 PKG_CONFIG_LIBDIR = @PKG_CONFIG_LIBDIR@
 PKG_CONFIG_PATH = @PKG_CONFIG_PATH@
 RANLIB = @RANLIB@
+READLINE_CFLAGS = @READLINE_CFLAGS@
+READLINE_LIBS = @READLINE_LIBS@
 RST2MAN = @RST2MAN@
 SED = @SED@
 SET_MAKE = @SET_MAKE@
@@ -1071,7 +1076,8 @@ builtin_sources = $(am__append_3)
 @EXTERNAL_ELL_FALSE@			ell/time.h \
 @EXTERNAL_ELL_FALSE@			ell/path.h \
 @EXTERNAL_ELL_FALSE@			ell/icmp6.h \
-@EXTERNAL_ELL_FALSE@			ell/dhcp6.h
+@EXTERNAL_ELL_FALSE@			ell/dhcp6.h \
+@EXTERNAL_ELL_FALSE@			ell/acd.h
 
 @EXTERNAL_ELL_FALSE@ell_sources = ell/private.h \
 @EXTERNAL_ELL_FALSE@			ell/missing.h \
@@ -1148,7 +1154,8 @@ builtin_sources = $(am__append_3)
 @EXTERNAL_ELL_FALSE@			ell/icmp6.c \
 @EXTERNAL_ELL_FALSE@			ell/icmp6-private.h \
 @EXTERNAL_ELL_FALSE@			ell/dhcp6-lease.c \
-@EXTERNAL_ELL_FALSE@			ell/dhcp6-transport.c
+@EXTERNAL_ELL_FALSE@			ell/dhcp6-transport.c \
+@EXTERNAL_ELL_FALSE@			ell/acd.c
 
 @EXTERNAL_ELL_FALSE@ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources)
 @DBUS_POLICY_TRUE@dbus_datadir = @DBUS_DATADIR@/dbus-1/system.d
@@ -1253,7 +1260,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @CLIENT_TRUE@			client/properties.h client/properties.c \
 @CLIENT_TRUE@			client/wsc.c client/station.c
 
-@CLIENT_TRUE@client_iwctl_LDADD = $(ell_ldadd) -lreadline
+@CLIENT_TRUE@client_iwctl_LDADD = $(ell_ldadd) $(READLINE_LIBS)
 @MONITOR_TRUE@monitor_iwmon_SOURCES = monitor/main.c linux/nl80211.h \
 @MONITOR_TRUE@					monitor/nlmon.h monitor/nlmon.c \
 @MONITOR_TRUE@					monitor/pcap.h monitor/pcap.c \
@@ -1411,7 +1418,7 @@ unit_test_eap_mschapv2_LDADD = $(ell_ldadd)
 @CLIENT_TRUE@				client/network.h client/network.c \
 @CLIENT_TRUE@				client/properties.h client/properties.c
 
-@CLIENT_TRUE@unit_test_client_LDADD = $(ell_ldadd) -lreadline
+@CLIENT_TRUE@unit_test_client_LDADD = $(ell_ldadd) $(READLINE_LIBS)
 unit_test_sae_SOURCES = unit/test-sae.c \
 				src/sae.h src/sae.c \
 				src/crypto.h src/crypto.c \
@@ -1703,6 +1710,7 @@ ell/icmp6.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dhcp6-lease.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dhcp6-transport.lo: ell/$(am__dirstamp) \
 	ell/$(DEPDIR)/$(am__dirstamp)
+ell/acd.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 
 ell/libell-internal.la: $(ell_libell_internal_la_OBJECTS) $(ell_libell_internal_la_DEPENDENCIES) $(EXTRA_ell_libell_internal_la_DEPENDENCIES) ell/$(am__dirstamp)
 	$(AM_V_CCLD)$(LINK) $(am_ell_libell_internal_la_rpath) $(ell_libell_internal_la_OBJECTS) $(ell_libell_internal_la_LIBADD) $(LIBS)
@@ -2060,6 +2068,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/properties.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/station.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/wsc.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/acd.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/base64.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/cert.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/checksum.Plo@am__quote@ # am--include-marker
@@ -3130,6 +3139,7 @@ distclean: distclean-am
 	-rm -f client/$(DEPDIR)/properties.Po
 	-rm -f client/$(DEPDIR)/station.Po
 	-rm -f client/$(DEPDIR)/wsc.Po
+	-rm -f ell/$(DEPDIR)/acd.Plo
 	-rm -f ell/$(DEPDIR)/base64.Plo
 	-rm -f ell/$(DEPDIR)/cert.Plo
 	-rm -f ell/$(DEPDIR)/checksum.Plo
@@ -3344,6 +3354,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f client/$(DEPDIR)/properties.Po
 	-rm -f client/$(DEPDIR)/station.Po
 	-rm -f client/$(DEPDIR)/wsc.Po
+	-rm -f ell/$(DEPDIR)/acd.Plo
 	-rm -f ell/$(DEPDIR)/base64.Plo
 	-rm -f ell/$(DEPDIR)/cert.Plo
 	-rm -f ell/$(DEPDIR)/checksum.Plo
