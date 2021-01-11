@@ -1,5 +1,5 @@
 AC_PREREQ(2.60)
-AC_INIT(iwd, 1.10)
+AC_INIT(iwd, 1.11)
 
 AC_CONFIG_HEADERS(config.h)
 AC_CONFIG_AUX_DIR(build-aux)
@@ -154,6 +154,9 @@ AC_ARG_ENABLE([client], AC_HELP_STRING([--disable-client],
 if (test "${enable_client}" != "no"); then
 	AC_CHECK_HEADERS(readline/readline.h, enable_readline=yes,
 			AC_MSG_ERROR(readline header files are required))
+	PKG_CHECK_MODULES(READLINE, readline, dummy=yes, READLINE_LIBS=-lreadline)
+	AC_SUBST(READLINE_CFLAGS)
+	AC_SUBST(READLINE_LIBS)
 fi
 AM_CONDITIONAL(CLIENT, test "${enable_client}" != "no")
 
@@ -259,7 +262,7 @@ if (test "${enable_external_ell}" = "yes"); then
 			test "${enable_monitor}" != "no" ||
 			test "${enable_wired}" = "yes" ||
 			test "${enable_hwsim}" = "yes"); then
-		ell_min_version="0.35"
+		ell_min_version="0.36"
 	else
 		ell_min_version="0.5"
 	fi

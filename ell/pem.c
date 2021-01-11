@@ -364,6 +364,51 @@ LIB_EXPORT struct l_certchain *l_pem_load_certificate_chain(
 	return pem_list_to_chain(list);
 }
 
+static bool pem_write_one_cert(struct l_cert *cert, void *user_data)
+{
+	int *fd = user_data;
+	const uint8_t *der;
+	size_t der_len;
+	struct iovec iov[3];
+	ssize_t r;
+
+	der = l_cert_get_der_data(cert, &der_len);
+
+	iov[0].iov_base = "-----BEGIN CERTIFICATE-----\n";
+	iov[0].iov_len = strlen(iov[0].iov_base);
+	iov[1].iov_base = l_base64_encode(der, der_len, 64, &iov[1].iov_len);
+	iov[2].iov_base = "\n-----END CERTIFICATE-----\n";
+	iov[2].iov_len = strlen(iov[2].iov_base);
+	r = L_TFR(writev(*fd, iov, 3));
+	l_free(iov[1].iov_base);
+
+	if (r == (ssize_t) (iov[0].iov_len + iov[1].iov_len + iov[2].iov_len))
+		return false;
+
+	if (r < 0)
+		*fd = -errno;
+	else
+		*fd = -EIO;
+
+	return true;
+}
+
+int pem_write_certificate_chain(const struct l_certchain *chain,
+				const char *filename)
+{
+	int fd = L_TFR(open(filename, O_CREAT | O_WRONLY | O_CLOEXEC, 0600));
+	int err = fd;
+
+	if (err < 0)
+		return -errno;
+
+	l_certchain_walk_from_leaf((struct l_certchain *) chain,
+					pem_write_one_cert, &err);
+	close(fd);
+
+	return err < 0 ? err : 0;
+}
+
 LIB_EXPORT struct l_queue *l_pem_load_certificate_list_from_data(
 						const void *buf, size_t len)
 {
@@ -581,18 +626,107 @@ static struct l_cipher *cipher_from_dek_info(const char *algid, const char *para
 
 	l_checksum_free(md5);
 
-	if (!ok)
-		return NULL;
+	if (!ok) {
+		cipher = NULL;
+		goto cleanup;
+	}
 
 	cipher  = l_cipher_new(type, key, key_len);
 	if (!cipher)
-		return NULL;
+		goto cleanup;
 
 	if (l_cipher_set_iv(cipher, iv, iv_len))
-		return cipher;
+		goto cleanup;
 
 	l_cipher_free(cipher);
-	return NULL;
+	cipher = NULL;
+
+cleanup:
+	explicit_bzero(key, sizeof(key));
+	return cipher;
+}
+
+struct l_key *pem_key_from_pkcs8_private_key_info(const uint8_t *der,
+							size_t der_len)
+{
+	return l_key_new(L_KEY_RSA, der, der_len);
+}
+
+struct l_key *pem_key_from_pkcs8_encrypted_private_key_info(const uint8_t *der,
+							size_t der_len,
+							const char *passphrase)
+{
+	const uint8_t *key_info, *alg_id, *data;
+	uint8_t tag;
+	size_t key_info_len, alg_id_len, data_len, tmp_len;
+	struct l_cipher *alg;
+	uint8_t *decrypted;
+	int i;
+	struct l_key *pkey;
+	bool r;
+	bool is_block;
+	size_t decrypted_len;
+
+	/* Technically this is BER, not limited to DER */
+	key_info = asn1_der_find_elem(der, der_len, 0, &tag, &key_info_len);
+	if (!key_info || tag != ASN1_ID_SEQUENCE)
+		return NULL;
+
+	alg_id = asn1_der_find_elem(key_info, key_info_len, 0, &tag,
+					&alg_id_len);
+	if (!alg_id || tag != ASN1_ID_SEQUENCE)
+		return NULL;
+
+	data = asn1_der_find_elem(key_info, key_info_len, 1, &tag, &data_len);
+	if (!data || tag != ASN1_ID_OCTET_STRING || data_len < 8 ||
+			(data_len & 7) != 0)
+		return NULL;
+
+	if (asn1_der_find_elem(der, der_len, 2, &tag, &tmp_len))
+		return NULL;
+
+	alg = pkcs5_cipher_from_alg_id(alg_id, alg_id_len, passphrase,
+					&is_block);
+	if (!alg)
+		return NULL;
+
+	decrypted = l_malloc(data_len);
+
+	r = l_cipher_decrypt(alg, data, decrypted, data_len);
+	l_cipher_free(alg);
+
+	if (!r) {
+		l_free(decrypted);
+		return NULL;
+	}
+
+	decrypted_len = data_len;
+
+	if (is_block) {
+		/*
+		 * For block ciphers strip padding as defined in RFC8018
+		 * (for PKCS#5 v1) or RFC1423 / RFC5652 (for v2).
+		 */
+		pkey = NULL;
+
+		if (decrypted[data_len - 1] >= data_len ||
+				decrypted[data_len - 1] > 16)
+			goto cleanup;
+
+		for (i = 1; i < decrypted[data_len - 1]; i++)
+			if (decrypted[data_len - 1 - i] !=
+					decrypted[data_len - 1])
+				goto cleanup;
+
+		decrypted_len -= decrypted[data_len - 1];
+	}
+
+	pkey = pem_key_from_pkcs8_private_key_info(decrypted, decrypted_len);
+
+cleanup:
+	explicit_bzero(decrypted, data_len);
+	l_free(decrypted);
+	return pkey;
 }
 
 static struct l_key *pem_load_private_key(uint8_t *content,
@@ -602,7 +736,7 @@ static struct l_key *pem_load_private_key(uint8_t *content,
 						char *headers,
 						bool *encrypted)
 {
-	struct l_key *pkey = NULL;
+	struct l_key *pkey;
 
 	/*
 	 * RFC7468 Section 10-compatible unencrypted private key label
@@ -615,6 +749,7 @@ static struct l_key *pem_load_private_key(uint8_t *content,
 		if (headers)
 			goto err;
 
+		pkey = pem_key_from_pkcs8_private_key_info(content, len);
 		goto done;
 	}
 
@@ -626,13 +761,6 @@ static struct l_key *pem_load_private_key(uint8_t *content,
 	 * pkcs8-key-parser module.
 	 */
 	if (!strcmp(label, "ENCRYPTED PRIVATE KEY")) {
-		const uint8_t *key_info, *alg_id, *data;
-		uint8_t tag;
-		size_t key_info_len, alg_id_len, data_len, tmp_len;
-		struct l_cipher *alg;
-		uint8_t *decrypted;
-		int i;
-
 		if (encrypted)
 			*encrypted = true;
 
@@ -643,59 +771,9 @@ static struct l_key *pem_load_private_key(uint8_t *content,
 		if (headers)
 			goto err;
 
-		/* Technically this is BER, not limited to DER */
-		key_info = asn1_der_find_elem(content, len, 0, &tag,
-						&key_info_len);
-		if (!key_info || tag != ASN1_ID_SEQUENCE)
-			goto err;
-
-		alg_id = asn1_der_find_elem(key_info, key_info_len, 0, &tag,
-						&alg_id_len);
-		if (!alg_id || tag != ASN1_ID_SEQUENCE)
-			goto err;
-
-		data = asn1_der_find_elem(key_info, key_info_len, 1, &tag,
-						&data_len);
-		if (!data || tag != ASN1_ID_OCTET_STRING || data_len < 8 ||
-				(data_len & 7) != 0)
-			goto err;
-
-		if (asn1_der_find_elem(content, len, 2, &tag, &tmp_len))
-			goto err;
-
-		alg = pkcs5_cipher_from_alg_id(alg_id, alg_id_len, passphrase);
-		if (!alg)
-			goto err;
-
-		decrypted = l_malloc(data_len);
-
-		if (!l_cipher_decrypt(alg, data, decrypted, data_len)) {
-			l_cipher_free(alg);
-			l_free(decrypted);
-			goto err;
-		}
-
-		l_cipher_free(alg);
-		explicit_bzero(content, len);
-		l_free(content);
-		content = decrypted;
-		len = data_len;
-
-		/*
-		 * Strip padding as defined in RFC8018 (for PKCS#5 v1) or
-		 * RFC1423 / RFC5652 (for v2).
-		 */
-
-		if (content[data_len - 1] >= data_len ||
-				content[data_len - 1] > 16)
-			goto err;
-
-		for (i = 1; i < content[data_len - 1]; i++)
-			if (content[data_len - 1 - i] != content[data_len - 1])
-				goto err;
-
-		len = data_len - content[data_len - 1];
-
+		pkey = pem_key_from_pkcs8_encrypted_private_key_info(content,
+								len,
+								passphrase);
 		goto done;
 	}
 
@@ -785,19 +863,19 @@ static struct l_key *pem_load_private_key(uint8_t *content,
 		key_data = asn1_der_find_elem(content, len, 0, &tag,
 						&key_data_len);
 		if (!key_data || tag != ASN1_ID_SEQUENCE)
-			goto done;
+			goto err;
 
 		data = asn1_der_find_elem(key_data, key_data_len, 0, &tag,
 						&data_len);
 		if (!data || tag != ASN1_ID_INTEGER || data_len != 1 ||
 				(data[0] != 0x00 && data[0] != 0x01))
-			goto done;
+			goto err;
 
 		for (i = 1; i < 9; i++) {
 			data = asn1_der_find_elem(key_data, key_data_len,
 							i, &tag, &data_len);
 			if (!data || tag != ASN1_ID_INTEGER || data_len < 1)
-				goto done;
+				goto err;
 		}
 
 		private_key = l_malloc(10 + len);
@@ -821,26 +899,22 @@ static struct l_key *pem_load_private_key(uint8_t *content,
 		ptr += sizeof(pkcs1_rsa_encryption);
 		memcpy(ptr, private_key, private_key_len);
 		ptr += private_key_len;
+		explicit_bzero(private_key, private_key_len);
 		l_free(private_key);
 
-		l_free(content);
-		content = one_asymmetric_key;
-		len = ptr - one_asymmetric_key;
+		pkey = pem_key_from_pkcs8_private_key_info(one_asymmetric_key,
+						ptr - one_asymmetric_key);
+		explicit_bzero(one_asymmetric_key, ptr - one_asymmetric_key);
+		l_free(one_asymmetric_key);
 		goto done;
 	}
 
 	/* Label not known */
-	goto err;
-
-done:
-	pkey = l_key_new(L_KEY_RSA, content, len);
-
 err:
-	if (content) {
-		explicit_bzero(content, len);
-		l_free(content);
-	}
-
+	pkey = NULL;
+done:
+	explicit_bzero(content, len);
+	l_free(content);
 	l_free(label);
 	l_free(headers);
 	return pkey;

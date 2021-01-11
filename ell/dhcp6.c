@@ -421,6 +421,7 @@ struct l_dhcp6_client {
 	bool request_pd : 1;
 	bool request_na : 1;
 	bool no_rapid_commit : 1;
+	bool lla_randomized : 1;
 };
 
 static const struct in6_addr all_nodes = DHCP6_ADDR_LINKLOCAL_ALL_NODES;
@@ -584,6 +585,25 @@ static void client_duid_generate_addr_plus_time(struct l_dhcp6_client *client)
 	l_put_be32(time_stamp, client->duid->identifier + 2);
 	memcpy(client->duid->identifier + 2 + 4, client->addr,
 							client->addr_len);
+}
+
+static void client_duid_generate_addr(struct l_dhcp6_client *client)
+{
+	if (client->duid)
+		return;
+
+	/*
+	 * RFC 7844, Section 4.3 Client Identifier DHCPv6 Option:
+	 * "When using the anonymity profile in conjunction with randomized
+	 * link-layer addresses, DHCPv6 clients MUST use DUID format
+	 * number 3 -- link-layer address.  The value of the link-layer
+	 * address should be the value currently assigned to the interface.
+	 */
+	client->duid_len = 4 + client->addr_len;
+	client->duid = l_malloc(client->duid_len);
+	client->duid->type = L_CPU_TO_BE16(DUID_TYPE_LINK_LAYER_ADDR);
+	l_put_be16(client->addr_type, client->duid->identifier);
+	memcpy(client->duid->identifier + 2, client->addr, client->addr_len);
 }
 
 static void set_retransmission_delay(struct l_dhcp6_client *client,
@@ -833,6 +853,7 @@ static inline void dhcp6_client_new_transaction(struct l_dhcp6_client *client,
 						enum dhcp6_state new_state)
 {
 	client->attempt = 0;
+	client->attempt_delay = 0;
 	client->transaction_id = l_getrandom_uint32() & 0x00FFFFFFU;
 	client->transaction_start_t = 0;
 
@@ -940,7 +961,15 @@ static void dhcp6_client_setup_lease(struct l_dhcp6_client *client)
 	uint32_t t2 = _dhcp6_lease_get_t2(client->lease);
 
 	client->lease_start_t = l_time_now();
-	dhcp6_client_event_notify(client, L_DHCP6_CLIENT_EVENT_LEASE_OBTAINED);
+
+	/* TODO: Emit IP_CHANGED if any addresses were removed / added */
+	if (client->state == DHCP6_STATE_REQUESTING ||
+			client->state == DHCP6_STATE_SOLICITING)
+		dhcp6_client_event_notify(client,
+					L_DHCP6_CLIENT_EVENT_LEASE_OBTAINED);
+	else
+		dhcp6_client_event_notify(client,
+					L_DHCP6_CLIENT_EVENT_LEASE_RENEWED);
 
 	l_timeout_remove(client->timeout_lease);
 	client->timeout_lease = NULL;
@@ -1353,13 +1382,11 @@ static void dhcp6_client_rx_message(const void *data, size_t len,
 
 		/* Fall through */
 	case DHCP6_STATE_REQUESTING:
+	case DHCP6_STATE_RENEWING:
+	case DHCP6_STATE_REBINDING:
 		r = dhcp6_client_receive_reply(client, message, len);
 		if (r < 0)
 			return;
-		break;
-	case DHCP6_STATE_RENEWING:
-		break;
-	case DHCP6_STATE_REBINDING:
 		break;
 	case DHCP6_STATE_RELEASING:
 		break;
@@ -1368,15 +1395,15 @@ static void dhcp6_client_rx_message(const void *data, size_t len,
 	if (r == (int) client->state)
 		return;
 
-	dhcp6_client_new_transaction(client, r);
-
-	if (client->state == DHCP6_STATE_BOUND) {
+	if (r == DHCP6_STATE_BOUND) {
 		l_timeout_remove(client->timeout_send);
 		client->timeout_send = NULL;
-
 		dhcp6_client_setup_lease(client);
+		dhcp6_client_new_transaction(client, r);
 		return;
 	}
+
+	dhcp6_client_new_transaction(client, r);
 
 	if (dhcp6_client_send_next(client) < 0)
 		l_dhcp6_client_stop(client);
@@ -1625,21 +1652,7 @@ LIB_EXPORT bool l_dhcp6_client_set_lla_randomized(struct l_dhcp6_client *client,
 	if (unlikely(client->state != DHCP6_STATE_INIT))
 		return false;
 
-	if (client->duid)
-		return false;
-
-	/*
-	 * RFC 7844, Section 4.3 Client Identifier DHCPv6 Option:
-	 * "When using the anonymity profile in conjunction with randomized
-	 * link-layer addresses, DHCPv6 clients MUST use DUID format
-	 * number 3 -- link-layer address.  The value of the link-layer
-	 * address should be the value currently assigned to the interface.
-	 */
-	client->duid_len = 4 + client->addr_len;
-	client->duid = l_malloc(client->duid_len);
-	client->duid->type = L_CPU_TO_BE16(DUID_TYPE_LINK_LAYER_ADDR);
-	l_put_be16(client->addr_type, client->duid->identifier);
-	memcpy(client->duid->identifier + 2, client->addr, client->addr_len);
+	client->lla_randomized = randomized;
 
 	return true;
 }
@@ -1759,7 +1772,10 @@ LIB_EXPORT bool l_dhcp6_client_start(struct l_dhcp6_client *client)
 		l_dhcp6_client_set_address(client, ARPHRD_ETHER, mac, ETH_ALEN);
 	}
 
-	client_duid_generate_addr_plus_time(client);
+	if (client->lla_randomized)
+		client_duid_generate_addr(client);
+	else
+		client_duid_generate_addr_plus_time(client);
 
 	if (!client->transport) {
 		client->transport =
@@ -1839,6 +1855,9 @@ LIB_EXPORT bool l_dhcp6_client_stop(struct l_dhcp6_client *client)
 
 	l_timeout_remove(client->timeout_lease);
 	client->timeout_lease = NULL;
+
+	l_free(client->duid);
+	client->duid = NULL;
 
 	if (client->transport && client->transport->close)
 		client->transport->close(client->transport);

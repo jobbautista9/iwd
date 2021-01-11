@@ -61,7 +61,8 @@ ell_headers = ell/util.h \
 			ell/time.h \
 			ell/path.h \
 			ell/icmp6.h \
-			ell/dhcp6.h
+			ell/dhcp6.h \
+			ell/acd.h
 
 ell_sources = ell/private.h \
 			ell/missing.h \
@@ -138,7 +139,8 @@ ell_sources = ell/private.h \
 			ell/icmp6.c \
 			ell/icmp6-private.h \
 			ell/dhcp6-lease.c \
-			ell/dhcp6-transport.c
+			ell/dhcp6-transport.c \
+			ell/acd.c
 
 ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources)
 endif
@@ -286,7 +288,7 @@ client_iwctl_SOURCES = client/main.c \
 			client/network.h client/network.c \
 			client/properties.h client/properties.c \
 			client/wsc.c client/station.c
-client_iwctl_LDADD = $(ell_ldadd) -lreadline
+client_iwctl_LDADD = $(ell_ldadd) $(READLINE_LIBS)
 
 if MANUAL_PAGES
 man_MANS += client/iwctl.1
@@ -502,7 +504,7 @@ unit_test_client_SOURCES = unit/test-client.c \
 				client/display.h client/display.c \
 				client/network.h client/network.c \
 				client/properties.h client/properties.c
-unit_test_client_LDADD = $(ell_ldadd) -lreadline
+unit_test_client_LDADD = $(ell_ldadd) $(READLINE_LIBS)
 endif
 
 unit_test_sae_SOURCES = unit/test-sae.c \

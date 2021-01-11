@@ -151,6 +151,7 @@ static enum action {
 
 static bool no_vif_attr;
 static bool p2p_attr;
+static bool no_register = false;
 static const char *radio_name_attr;
 static struct l_dbus *dbus;
 static struct l_queue *rules;
@@ -192,6 +193,62 @@ static void do_debug(const char *str, void *user_data)
 	const char *prefix = user_data;
 
 	l_info("%s%s", prefix, str);
+}
+
+static void hwsim_disable_support(const char *disable,
+		const struct hwsim_support *map, uint32_t *mask)
+{
+	char **list = l_strsplit(disable, ',');
+	char **iter = list;
+	int i;
+
+	while (*iter) {
+		for (i = 0; map[i].name; i++) {
+			if (!strcmp(map[i].name, *iter))
+				*mask &= ~(map[i].value);
+		}
+
+		iter++;
+	}
+
+	l_strfreev(list);
+}
+
+static bool is_cipher_disabled(const char *args, enum crypto_cipher cipher)
+{
+	char **list = l_strsplit(args, ',');
+	char **iter = list;
+	int i;
+
+	while (*iter) {
+		for (i = 0; cipher_map[i].name; i++) {
+			if (!strcmp(*iter, cipher_map[i].name) &&
+					cipher == cipher_map[i].value) {
+				printf("disable cipher: %s\n", cipher_map[i].name);
+				l_strfreev(list);
+				return true;
+			}
+		}
+
+		iter++;
+	}
+
+	l_strfreev(list);
+
+	return false;
+}
+
+static void hwsim_disable_ciphers(const char *disable)
+{
+	uint8_t i;
+
+	for (i = 0; i < L_ARRAY_SIZE(hwsim_supported_ciphers); i++) {
+		if (is_cipher_disabled(disable, hwsim_supported_ciphers[i]))
+			continue;
+
+		hwsim_ciphers[hwsim_num_ciphers] = hwsim_supported_ciphers[i];
+		hwsim_num_ciphers++;
+	}
 }
 
 static void create_callback(struct l_genl_msg *msg, void *user_data)
@@ -1578,7 +1635,7 @@ static void radio_manager_create_callback(struct l_genl_msg *msg,
 	 */
 	radio = l_queue_find(radio_info, radio_info_match_id,
 				L_UINT_TO_PTR(pending_create_radio_id));
-	if (radio) {
+	if (radio && pending_create_msg) {
 		const char *path = radio_get_path(radio);
 
 		reply = l_dbus_message_new_method_return(pending_create_msg);
@@ -1598,26 +1655,71 @@ static struct l_dbus_message *radio_manager_create(struct l_dbus *dbus,
 					void *user_data)
 {
 	struct l_genl_msg *new_msg;
-	const char *name;
-	bool p2p;
+	struct l_dbus_message_iter dict;
+	struct l_dbus_message_iter variant;
+	const char *key;
+	const char *name = NULL;
+	bool p2p = false;
+	const char *disabled_iftypes = NULL;
+	const char *disabled_ciphers = NULL;
 
 	if (pending_create_msg)
 		return dbus_error_busy(message);
 
-	if (!l_dbus_message_get_arguments(message, "sb", &name, &p2p))
-		return dbus_error_invalid_args(message);
+	if (!l_dbus_message_get_arguments(message, "a{sv}", &dict))
+		goto invalid;
 
-	new_msg = l_genl_msg_new_sized(HWSIM_CMD_NEW_RADIO, 16 + strlen(name));
+	while (l_dbus_message_iter_next_entry(&dict, &key, &variant)) {
+		bool ret = false;
+
+		if (!strcmp(key, "Name"))
+			ret = l_dbus_message_iter_get_variant(&variant,
+								"s", &name);
+		else if (!strcmp(key, "P2P"))
+			ret = l_dbus_message_iter_get_variant(&variant,
+								"b", &p2p);
+		else if (!strcmp(key, "InterfaceTypeDisable"))
+			ret = l_dbus_message_iter_get_variant(&variant, "s",
+							&disabled_iftypes);
+		else if (!strcmp(key, "CipherTypeDisable"))
+			ret = l_dbus_message_iter_get_variant(&variant, "s",
+							&disabled_ciphers);
+		if (!ret)
+			goto invalid;
+	}
+
+	new_msg = l_genl_msg_new_sized(HWSIM_CMD_NEW_RADIO,
+					16 + name ? strlen(name) : 0);
 	l_genl_msg_append_attr(new_msg, HWSIM_ATTR_DESTROY_RADIO_ON_CLOSE,
 				0, NULL);
 
-	if (name[0])
+	if (name)
 		l_genl_msg_append_attr(new_msg, HWSIM_ATTR_RADIO_NAME,
 					strlen(name) + 1, name);
 
 	if (p2p)
 		l_genl_msg_append_attr(new_msg, HWSIM_ATTR_SUPPORT_P2P_DEVICE,
 					0, NULL);
+
+	if (disabled_iftypes) {
+		hwsim_disable_support(disabled_iftypes, iftype_map,
+						&hwsim_iftypes);
+
+		if (hwsim_iftypes != HWSIM_DEFAULT_IFTYPES)
+			l_genl_msg_append_attr(new_msg,
+						HWSIM_ATTR_IFTYPE_SUPPORT,
+						4, &hwsim_iftypes);
+	}
+
+	if (disabled_ciphers) {
+		hwsim_disable_ciphers(disabled_ciphers);
+
+		if (hwsim_num_ciphers)
+			l_genl_msg_append_attr(new_msg, HWSIM_ATTR_CIPHER_SUPPORT,
+					sizeof(uint32_t) * hwsim_num_ciphers,
+					hwsim_ciphers);
+
+	}
 
 	l_genl_family_send(hwsim, new_msg, radio_manager_create_callback,
 				pending_create_msg, NULL);
@@ -1626,12 +1728,15 @@ static struct l_dbus_message *radio_manager_create(struct l_dbus *dbus,
 	pending_create_radio_id = 0;
 
 	return NULL;
+
+invalid:
+	return dbus_error_invalid_args(message);
 }
 
 static void setup_radio_manager_interface(struct l_dbus_interface *interface)
 {
 	l_dbus_interface_method(interface, "CreateRadio", 0,
-				radio_manager_create, "o", "sb",
+				radio_manager_create, "o", "a{sv}",
 				"path", "name", "p2p_device");
 }
 
@@ -2347,6 +2452,9 @@ static void get_interface_done_initial(void *user_data)
 {
 	struct l_genl_msg *msg;
 
+	if (no_register)
+		return;
+
 	msg = l_genl_msg_new_sized(HWSIM_CMD_REGISTER, 4);
 	l_genl_family_send(hwsim, msg, register_callback, NULL, NULL);
 }
@@ -2500,62 +2608,6 @@ error:
 	l_main_quit();
 }
 
-static void hwsim_disable_support(char *disable,
-		const struct hwsim_support *map, uint32_t *mask)
-{
-	char **list = l_strsplit(disable, ',');
-	char **iter = list;
-	int i;
-
-	while (*iter) {
-		for (i = 0; map[i].name; i++) {
-			if (!strcmp(map[i].name, *iter))
-				*mask &= ~(map[i].value);
-		}
-
-		iter++;
-	}
-
-	l_strfreev(list);
-}
-
-static bool is_cipher_disabled(char *args, enum crypto_cipher cipher)
-{
-	char **list = l_strsplit(args, ',');
-	char **iter = list;
-	int i;
-
-	while (*iter) {
-		for (i = 0; cipher_map[i].name; i++) {
-			if (!strcmp(*iter, cipher_map[i].name) &&
-					cipher == cipher_map[i].value) {
-				printf("disable cipher: %s\n", cipher_map[i].name);
-				l_strfreev(list);
-				return true;
-			}
-		}
-
-		iter++;
-	}
-
-	l_strfreev(list);
-
-	return false;
-}
-
-static void hwsim_disable_ciphers(char *disable)
-{
-	uint8_t i;
-
-	for (i = 0; i < L_ARRAY_SIZE(hwsim_supported_ciphers); i++) {
-		if (is_cipher_disabled(disable, hwsim_supported_ciphers[i]))
-			continue;
-
-		hwsim_ciphers[hwsim_num_ciphers] = hwsim_supported_ciphers[i];
-		hwsim_num_ciphers++;
-	}
-}
-
 static void family_discovered(const struct l_genl_family_info *info,
 							void *user_data)
 {
@@ -2625,6 +2677,7 @@ static const struct option main_options[] = {
 	{ "version",	 no_argument,		NULL, 'v' },
 	{ "iftype-disable", required_argument,	NULL, 't' },
 	{ "cipher-disable", required_argument,	NULL, 'c' },
+	{ "no-register", no_argument,		NULL, 'r' },
 	{ "help",	 no_argument,		NULL, 'h' },
 	{ }
 };
@@ -2636,7 +2689,7 @@ int main(int argc, char *argv[])
 	for (;;) {
 		int opt;
 
-		opt = getopt_long(argc, argv, ":L:CD:kndetc:ipvh", main_options,
+		opt = getopt_long(argc, argv, ":L:CD:kndetrc:ipvh", main_options,
 									NULL);
 		if (opt < 0)
 			break;
@@ -2681,6 +2734,9 @@ int main(int argc, char *argv[])
 			break;
 		case 'c':
 			hwsim_disable_ciphers(optarg);
+			break;
+		case 'r':
+			no_register = true;
 			break;
 		case 'v':
 			printf("%s\n", VERSION);

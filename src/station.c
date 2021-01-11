@@ -98,6 +98,10 @@ struct station {
 	/* Set of frequencies to scan first when attempting a roam */
 	struct scan_freq_set *roam_freqs;
 
+	/* Frequencies split into subsets by priority */
+	struct scan_freq_set *scan_freqs_order[3];
+	unsigned int dbus_scan_subset_idx;
+
 	bool preparing_roam : 1;
 	bool roam_scan_full : 1;
 	bool signal_low : 1;
@@ -606,7 +610,8 @@ static bool station_start_anqp(struct station *station, struct network *network,
  */
 void station_set_scan_results(struct station *station,
 						struct l_queue *new_bss_list,
-						bool add_to_autoconnect)
+						bool add_to_autoconnect,
+						bool expire)
 {
 	const struct l_queue_entry *bss_entry;
 	struct network *network;
@@ -620,7 +625,8 @@ void station_set_scan_results(struct station *station,
 	l_queue_destroy(station->autoconnect_list, l_free);
 	station->autoconnect_list = l_queue_new();
 
-	station_bss_list_remove_expired_bsses(station);
+	if (expire)
+		station_bss_list_remove_expired_bsses(station);
 
 	for (bss_entry = l_queue_get_entries(station->bss_list); bss_entry;
 						bss_entry = bss_entry->next) {
@@ -1018,7 +1024,7 @@ static bool new_scan_results(int err, struct l_queue *bss_list, void *userdata)
 		return false;
 
 	autoconnect = station_is_autoconnecting(station);
-	station_set_scan_results(station, bss_list, autoconnect);
+	station_set_scan_results(station, bss_list, autoconnect, true);
 
 	return true;
 }
@@ -1084,7 +1090,7 @@ static bool station_quick_scan_results(int err, struct l_queue *bss_list,
 		goto done;
 
 	autoconnect = station_is_autoconnecting(station);
-	station_set_scan_results(station, bss_list, autoconnect);
+	station_set_scan_results(station, bss_list, autoconnect, true);
 
 done:
 	if (station->state == STATION_STATE_AUTOCONNECT_QUICK)
@@ -2885,6 +2891,24 @@ static struct l_dbus_message *station_dbus_get_hidden_access_points(
 	return reply;
 }
 
+static void station_dbus_scan_done(struct station *station, bool expired)
+{
+	station->dbus_scan_id = 0;
+
+	if (!expired) {
+		/*
+		 * We haven't dropped old BSS records from bss_list during
+		 * this scan yet so do it now.  Call station_set_scan_results
+		 * with an empty new BSS list to do this.  Not the cheapest
+		 * but this should only happen when station_dbus_scan_done is
+		 * called early, i.e. due to an error.
+		 */
+		station_set_scan_results(station, l_queue_new(), false, true);
+	}
+
+	station_property_set_scanning(station, false);
+}
+
 static void station_dbus_scan_triggered(int err, void *user_data)
 {
 	struct station *station = user_data;
@@ -2893,25 +2917,68 @@ static void station_dbus_scan_triggered(int err, void *user_data)
 	l_debug("station_scan_triggered: %i", err);
 
 	if (err < 0) {
-		reply = dbus_error_from_errno(err, station->scan_pending);
-		dbus_pending_reply(&station->scan_pending, reply);
+		if (station->scan_pending) {
+			reply = dbus_error_from_errno(err,
+							station->scan_pending);
+			dbus_pending_reply(&station->scan_pending, reply);
+		}
+
+		station_dbus_scan_done(station, false);
 		return;
 	}
 
-	l_debug("Scan triggered for %s", netdev_get_name(station->netdev));
+	l_debug("Scan triggered for %s subset %i",
+		netdev_get_name(station->netdev),
+		station->dbus_scan_subset_idx);
 
-	reply = l_dbus_message_new_method_return(station->scan_pending);
-	l_dbus_message_set_arguments(reply, "");
-	dbus_pending_reply(&station->scan_pending, reply);
+	if (station->scan_pending) {
+		reply = l_dbus_message_new_method_return(station->scan_pending);
+		l_dbus_message_set_arguments(reply, "");
+		dbus_pending_reply(&station->scan_pending, reply);
+	}
 
 	station_property_set_scanning(station, true);
 }
 
-static void station_dbus_scan_destroy(void *userdata)
+static bool station_dbus_scan_subset(struct station *station);
+
+static bool station_dbus_scan_results(int err, struct l_queue *bss_list, void *userdata)
 {
 	struct station *station = userdata;
+	unsigned int next_idx = station->dbus_scan_subset_idx + 1;
+	bool autoconnect;
+	bool last_subset;
 
-	station->dbus_scan_id = 0;
+	if (err) {
+		station_dbus_scan_done(station, false);
+		return false;
+	}
+
+	autoconnect = station_is_autoconnecting(station);
+	last_subset = next_idx >= L_ARRAY_SIZE(station->scan_freqs_order) ||
+		station->scan_freqs_order[next_idx] == NULL;
+
+	station_set_scan_results(station, bss_list, autoconnect, last_subset);
+
+	station->dbus_scan_subset_idx = next_idx;
+
+	if (last_subset || !station_dbus_scan_subset(station))
+		station_dbus_scan_done(station, last_subset);
+
+	return true;
+}
+
+static bool station_dbus_scan_subset(struct station *station)
+{
+	unsigned int idx = station->dbus_scan_subset_idx;
+
+	station->dbus_scan_id = station_scan_trigger(station,
+						station->scan_freqs_order[idx],
+						station_dbus_scan_triggered,
+						station_dbus_scan_results,
+						NULL);
+
+	return station->dbus_scan_id != 0;
 }
 
 static struct l_dbus_message *station_dbus_scan(struct l_dbus *dbus,
@@ -2928,12 +2995,9 @@ static struct l_dbus_message *station_dbus_scan(struct l_dbus *dbus,
 	if (station->state == STATION_STATE_CONNECTING)
 		return dbus_error_busy(message);
 
-	station->dbus_scan_id = station_scan_trigger(station, NULL,
-						station_dbus_scan_triggered,
-						new_scan_results,
-						station_dbus_scan_destroy);
+	station->dbus_scan_subset_idx = 0;
 
-	if (!station->dbus_scan_id)
+	if (!station_dbus_scan_subset(station))
 		return dbus_error_failed(message);
 
 	station->scan_pending = l_dbus_message_ref(message);
@@ -3209,6 +3273,41 @@ struct scan_bss *station_get_connected_bss(struct station *station)
 	return station->connected_bss;
 }
 
+static void station_add_one_freq(uint32_t freq, void *user_data)
+{
+	struct station *station = user_data;
+
+	if (freq > 3000)
+		scan_freq_set_add(station->scan_freqs_order[1], freq);
+	else if (!scan_freq_set_contains(station->scan_freqs_order[0], freq))
+		scan_freq_set_add(station->scan_freqs_order[2], freq);
+}
+
+static void station_fill_scan_freq_subsets(struct station *station)
+{
+	const struct scan_freq_set *supported =
+		wiphy_get_supported_freqs(station->wiphy);
+
+	/*
+	 * Scan the 2.4GHz "social channels" first, 5GHz second, if supported,
+	 * all other 2.4GHz channels last.  To be refined as needed.
+	 */
+	station->scan_freqs_order[0] = scan_freq_set_new();
+	scan_freq_set_add(station->scan_freqs_order[0], 2412);
+	scan_freq_set_add(station->scan_freqs_order[0], 2437);
+	scan_freq_set_add(station->scan_freqs_order[0], 2462);
+
+	station->scan_freqs_order[1] = scan_freq_set_new();
+	station->scan_freqs_order[2] = scan_freq_set_new();
+	scan_freq_set_foreach(supported, station_add_one_freq, station);
+
+	if (scan_freq_set_isempty(station->scan_freqs_order[1])) {
+		scan_freq_set_free(station->scan_freqs_order[1]);
+		station->scan_freqs_order[1] = station->scan_freqs_order[2];
+		station->scan_freqs_order[2] = NULL;
+	}
+}
+
 static struct station *station_create(struct netdev *netdev)
 {
 	struct station *station;
@@ -3239,6 +3338,8 @@ static struct station *station_create(struct netdev *netdev)
 		station->netconfig = netconfig_new(netdev_get_ifindex(netdev));
 
 	station->anqp_pending = l_queue_new();
+
+	station_fill_scan_freq_subsets(station);
 
 	return station;
 }
@@ -3305,6 +3406,12 @@ static void station_free(struct station *station)
 	watchlist_destroy(&station->state_watches);
 
 	l_queue_destroy(station->anqp_pending, remove_anqp);
+
+	scan_freq_set_free(station->scan_freqs_order[0]);
+	scan_freq_set_free(station->scan_freqs_order[1]);
+
+	if (station->scan_freqs_order[2])
+		scan_freq_set_free(station->scan_freqs_order[2]);
 
 	l_free(station);
 }
