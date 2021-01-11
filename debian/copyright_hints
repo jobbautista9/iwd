@@ -29,6 +29,8 @@ Files:
  client/properties.h
  client/station.c
  client/wsc.c
+ ell/acd.c
+ ell/acd.h
  ell/asn1-private.h
  ell/base64.c
  ell/base64.h
@@ -37,7 +39,6 @@ Files:
  ell/cert.h
  ell/checksum.c
  ell/checksum.h
- ell/cipher.c
  ell/cipher.h
  ell/dbus-filter.c
  ell/dbus-message.c
@@ -322,6 +323,14 @@ Copyright:
   2015, Christophe Meessen
   The MIT License (MIT)
 License: Expat and/or LGPL-2.1+
+ FIXME
+
+Files:
+ ell/cipher.c
+Copyright:
+  2001, Niels MÃ¶ller
+  2015, Intel Corporation.
+License: LGPL-2.1+
  FIXME
 
 Files:
