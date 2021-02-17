@@ -38,11 +38,11 @@
 #include "queue.h"
 #include "pem.h"
 #include "pem-private.h"
+#include "asn1-private.h"
 #include "cert.h"
 #include "cert-private.h"
 #include "tls-private.h"
 #include "key.h"
-#include "asn1-private.h"
 #include "strv.h"
 #include "missing.h"
 #include "string.h"
@@ -569,10 +569,14 @@ static struct tls_compression_method *tls_find_compression_method(
 }
 
 const struct tls_hash_algorithm tls_handshake_hash_data[] = {
-	[HANDSHAKE_HASH_SHA384]	= { 5, L_CHECKSUM_SHA384, "SHA384" },
-	[HANDSHAKE_HASH_SHA256]	= { 4, L_CHECKSUM_SHA256, "SHA256" },
-	[HANDSHAKE_HASH_MD5]	= { 1, L_CHECKSUM_MD5, "MD5" },
-	[HANDSHAKE_HASH_SHA1]	= { 2, L_CHECKSUM_SHA1, "SHA1" },
+	[HANDSHAKE_HASH_SHA384]	= { 5, HANDSHAKE_HASH_SHA384,
+						L_CHECKSUM_SHA384, "SHA384" },
+	[HANDSHAKE_HASH_SHA256]	= { 4, HANDSHAKE_HASH_SHA256,
+						L_CHECKSUM_SHA256, "SHA256" },
+	[HANDSHAKE_HASH_MD5]	= { 1, HANDSHAKE_HASH_MD5,
+						L_CHECKSUM_MD5, "MD5" },
+	[HANDSHAKE_HASH_SHA1]	= { 2, HANDSHAKE_HASH_SHA1,
+						L_CHECKSUM_SHA1, "SHA1" },
 };
 
 static bool tls_init_handshake_hash(struct l_tls *tls)
@@ -760,6 +764,7 @@ static bool tls_cert_domains_match_mask(struct l_cert *cert, char **mask,
 						dns_name_count - 20);
 
 		*error_msg = l_string_unwrap(dns_names);
+		return false;
 	}
 
 	dn = l_cert_get_dn(cert, &dn_len);
@@ -1374,13 +1379,7 @@ static void tls_send_finished(struct l_tls *tls)
 
 	if (tls->negotiated_version >= L_TLS_V12) {
 		/* Same hash type as that used for the PRF (usually SHA256) */
-		enum handshake_hash_type hash;
-
-		for (hash = 0; hash < __HANDSHAKE_HASH_COUNT; hash++)
-			if (&tls_handshake_hash_data[hash] == tls->prf_hmac)
-				break;
-
-		tls_get_handshake_hash(tls, hash, seed);
+		tls_get_handshake_hash(tls, tls->prf_hmac->type, seed);
 		seed_len = l_checksum_digest_length(tls->prf_hmac->l_id);
 	} else {
 		tls_get_handshake_hash(tls, HANDSHAKE_HASH_MD5, seed + 0);
@@ -1414,11 +1413,7 @@ static bool tls_verify_finished(struct l_tls *tls, const uint8_t *received,
 	}
 
 	if (tls->negotiated_version >= L_TLS_V12) {
-		enum handshake_hash_type hash;
-
-		for (hash = 0; hash < __HANDSHAKE_HASH_COUNT; hash++)
-			if (&tls_handshake_hash_data[hash] == tls->prf_hmac)
-				break;
+		enum handshake_hash_type hash = tls->prf_hmac->type;
 
 		seed = tls->prev_digest[hash];
 		seed_len = l_checksum_digest_length(tls->prf_hmac->l_id);

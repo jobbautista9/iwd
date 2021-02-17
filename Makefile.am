@@ -50,7 +50,6 @@ ell_headers = ell/util.h \
 			ell/tls.h \
 			ell/uuid.h \
 			ell/key.h \
-			ell/pkcs5.h \
 			ell/file.h \
 			ell/dir.h \
 			ell/net.h \
@@ -113,8 +112,6 @@ ell_sources = ell/private.h \
 			ell/tls-extensions.c \
 			ell/uuid.c \
 			ell/key.c \
-			ell/pkcs5-private.h \
-			ell/pkcs5.c \
 			ell/file.c \
 			ell/dir.c \
 			ell/net-private.h \
@@ -127,6 +124,7 @@ ell_sources = ell/private.h \
 			ell/dhcp-server.c \
 			ell/cert-private.h \
 			ell/cert.c \
+			ell/cert-crypto.c \
 			ell/ecc-external.c \
 			ell/ecc-private.h \
 			ell/ecc.c \
@@ -241,6 +239,7 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h src/missing.h \
 					src/frame-xchg.h src/frame-xchg.c \
 					src/eap-wsc.c src/eap-wsc.h \
 					src/wscutil.h src/wscutil.c \
+					src/diagnostic.h src/diagnostic.c \
 					$(eap_sources) \
 					$(builtin_sources)
 
@@ -287,7 +286,8 @@ client_iwctl_SOURCES = client/main.c \
 			client/known-networks.c \
 			client/network.h client/network.c \
 			client/properties.h client/properties.c \
-			client/wsc.c client/station.c
+			client/wsc.c client/station.c \
+			client/diagnostic.c client/diagnostic.h
 client_iwctl_LDADD = $(ell_ldadd) $(READLINE_LIBS)
 
 if MANUAL_PAGES
@@ -543,7 +543,6 @@ endif
 CLEANFILES = src/iwd.service wired/ead.service
 
 DISTCHECK_CONFIGURE_FLAGS = --disable-dbus-policy --disable-systemd-service \
-				--enable-sim-hardcoded \
 				--enable-ofono \
 				--enable-wired \
 				--enable-hwsim \

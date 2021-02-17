@@ -1,8 +1,8 @@
 /*
  *
- *  Embedded Linux library
+ *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2021  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,19 +20,33 @@
  *
  */
 
-struct pkcs12_hash {
-	enum l_checksum_type alg;
-	unsigned int len;
-	unsigned int u;
-	unsigned int v;
-	struct asn1_oid oid;
+enum diagnostic_mcs_type {
+	DIAGNOSTIC_MCS_TYPE_NONE,
+	DIAGNOSTIC_MCS_TYPE_HT,
+	DIAGNOSTIC_MCS_TYPE_VHT,
+	DIAGNOSTIC_MCS_TYPE_HE,
 };
 
-uint8_t *pkcs12_pbkdf(const char *password, const struct pkcs12_hash *hash,
-			const uint8_t *salt, size_t salt_len,
-			unsigned int iterations, uint8_t id, size_t key_len);
+struct diagnostic_station_info {
+	uint8_t addr[6];
+	int8_t cur_rssi;
 
-struct l_cipher *pkcs5_cipher_from_alg_id(const uint8_t *id_asn1,
-						size_t id_asn1_len,
-						const char *password,
-						bool *out_is_block);
+	enum diagnostic_mcs_type rx_mcs_type;
+	uint32_t rx_bitrate;
+	uint8_t rx_mcs;
+	enum diagnostic_mcs_type tx_mcs_type;
+	uint32_t tx_bitrate;
+	uint8_t tx_mcs;
+
+	uint32_t expected_throughput;
+
+	bool have_cur_rssi : 1;
+	bool have_rx_mcs : 1;
+	bool have_tx_mcs : 1;
+	bool have_rx_bitrate : 1;
+	bool have_tx_bitrate : 1;
+	bool have_expected_throughput : 1;
+};
+
+bool diagnostic_info_to_dict(const struct diagnostic_station_info *info,
+				struct l_dbus_message_builder *builder);

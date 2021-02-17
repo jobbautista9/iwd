@@ -61,6 +61,7 @@
 #include "src/fils.h"
 #include "src/auth-proto.h"
 #include "src/frame-xchg.h"
+#include "src/diagnostic.h"
 
 #ifndef ENOTSUPP
 #define ENOTSUPP 524
@@ -132,14 +133,21 @@ struct netdev {
 	void *set_powered_user_data;
 	netdev_destroy_func_t set_powered_destroy;
 
+	uint32_t get_station_cmd_id;
+	netdev_get_station_cb_t get_station_cb;
+	void *get_station_data;
+	netdev_destroy_func_t get_station_destroy;
+
 	struct watchlist station_watches;
 
 	struct l_io *pae_io;  /* for drivers without EAPoL over NL80211 */
 
 	struct l_genl_msg *connect_cmd;
+	struct l_genl_msg *auth_cmd;
 	struct wiphy_radio_work_item work;
 
 	bool connected : 1;
+	bool associated : 1;
 	bool operational : 1;
 	bool rekey_offload_support : 1;
 	bool pae_over_nl80211 : 1;
@@ -150,6 +158,7 @@ struct netdev {
 	bool expect_connect_failure : 1;
 	bool aborting : 1;
 	bool events_ready : 1;
+	bool retry_auth : 1;
 };
 
 struct netdev_preauth_state {
@@ -363,6 +372,131 @@ int netdev_set_powered(struct netdev *netdev, bool powered,
 	return 0;
 }
 
+static bool netdev_parse_bitrate(struct l_genl_attr *attr,
+					enum diagnostic_mcs_type *type_out,
+					uint32_t *rate_out,
+					uint8_t *mcs_out)
+{
+	uint16_t type, len;
+	const void *data;
+	uint32_t rate = 0;
+	uint8_t mcs = 0;
+	enum diagnostic_mcs_type mcs_type = DIAGNOSTIC_MCS_TYPE_NONE;
+
+	while (l_genl_attr_next(attr, &type, &len, &data)) {
+		switch (type) {
+		case NL80211_RATE_INFO_BITRATE32:
+			if (len != 4)
+				return false;
+
+			rate = l_get_u32(data);
+
+			break;
+
+		case NL80211_RATE_INFO_MCS:
+			if (len != 1)
+				return false;
+
+			mcs = l_get_u8(data);
+			mcs_type = DIAGNOSTIC_MCS_TYPE_HT;
+
+			break;
+
+		case NL80211_RATE_INFO_VHT_MCS:
+			if (len != 1)
+				return false;
+
+			mcs = l_get_u8(data);
+			mcs_type = DIAGNOSTIC_MCS_TYPE_VHT;
+
+			break;
+
+		case NL80211_RATE_INFO_HE_MCS:
+			if (len != 1)
+				return false;
+
+			mcs = l_get_u8(data);
+			mcs_type = DIAGNOSTIC_MCS_TYPE_HE;
+
+			break;
+		}
+	}
+
+	if (!rate)
+		return false;
+
+	*type_out = mcs_type;
+	*rate_out = rate;
+
+	if (mcs_type != DIAGNOSTIC_MCS_TYPE_NONE)
+		*mcs_out = mcs;
+
+	return true;
+}
+
+static bool netdev_parse_sta_info(struct l_genl_attr *attr,
+					struct diagnostic_station_info *info)
+{
+	uint16_t type, len;
+	const void *data;
+	struct l_genl_attr nested;
+
+	while (l_genl_attr_next(attr, &type, &len, &data)) {
+		switch (type) {
+		case NL80211_STA_INFO_SIGNAL_AVG:
+			if (len != 1)
+				return false;
+
+			info->cur_rssi = *(const int8_t *) data;
+			info->have_cur_rssi = true;
+
+			break;
+		case NL80211_STA_INFO_RX_BITRATE:
+			if (!l_genl_attr_recurse(attr, &nested))
+				return false;
+
+			if (!netdev_parse_bitrate(&nested, &info->rx_mcs_type,
+							&info->rx_bitrate,
+							&info->rx_mcs))
+				return false;
+
+			info->have_rx_bitrate = true;
+
+			if (info->rx_mcs_type != DIAGNOSTIC_MCS_TYPE_NONE)
+				info->have_rx_mcs = true;
+
+			break;
+
+		case NL80211_STA_INFO_TX_BITRATE:
+			if (!l_genl_attr_recurse(attr, &nested))
+				return false;
+
+			if (!netdev_parse_bitrate(&nested, &info->tx_mcs_type,
+							&info->tx_bitrate,
+							&info->tx_mcs))
+				return false;
+
+			info->have_tx_bitrate = true;
+
+			if (info->tx_mcs_type != DIAGNOSTIC_MCS_TYPE_NONE)
+				info->have_tx_mcs = true;
+
+			break;
+
+		case NL80211_STA_INFO_EXPECTED_THROUGHPUT:
+			if (len != 4)
+				return false;
+
+			info->expected_throughput = l_get_u32(data);
+			info->have_expected_throughput = true;
+
+			break;
+		}
+	}
+
+	return true;
+}
+
 static void netdev_set_rssi_level_idx(struct netdev *netdev)
 {
 	uint8_t new_level;
@@ -381,6 +515,7 @@ static void netdev_rssi_poll_cb(struct l_genl_msg *msg, void *user_data)
 	uint16_t type, len;
 	const void *data;
 	bool found;
+	struct diagnostic_station_info info;
 	uint8_t prev_rssi_level_idx = netdev->cur_rssi_level_idx;
 
 	netdev->rssi_poll_cmd_id = 0;
@@ -393,28 +528,20 @@ static void netdev_rssi_poll_cb(struct l_genl_msg *msg, void *user_data)
 		if (type != NL80211_ATTR_STA_INFO)
 			continue;
 
+		if (!l_genl_attr_recurse(&attr, &nested))
+			goto done;
+
+		if (!netdev_parse_sta_info(&nested, &info))
+			goto done;
+
 		found = true;
 		break;
 	}
 
-	if (!found || !l_genl_attr_recurse(&attr, &nested))
+	if (!found || !info.have_cur_rssi)
 		goto done;
 
-	found = false;
-	while (l_genl_attr_next(&nested, &type, &len, &data)) {
-		if (type != NL80211_STA_INFO_SIGNAL_AVG)
-			continue;
-
-		if (len != 1)
-			continue;
-
-		found = true;
-		netdev->cur_rssi = *(const int8_t *) data;
-		break;
-	}
-
-	if (!found)
-		goto done;
+	netdev->cur_rssi = info.cur_rssi;
 
 	/*
 	 * Note we don't have to handle LOW_SIGNAL_THRESHOLD here.  The
@@ -525,6 +652,7 @@ static void netdev_connect_free(struct netdev *netdev)
 		netdev->group_handshake_timeout = NULL;
 	}
 
+	netdev->associated = false;
 	netdev->operational = false;
 	netdev->connected = false;
 	netdev->connect_cb = NULL;
@@ -535,6 +663,7 @@ static void netdev_connect_free(struct netdev *netdev)
 	netdev->in_ft = false;
 	netdev->ignore_connect_event = false;
 	netdev->expect_connect_failure = false;
+	netdev->cur_rssi_low = false;
 
 	if (netdev->connect_cmd) {
 		l_genl_msg_unref(netdev->connect_cmd);
@@ -634,6 +763,11 @@ static void netdev_free(void *data)
 	if (netdev->mac_change_cmd_id) {
 		l_netlink_cancel(rtnl, netdev->mac_change_cmd_id);
 		netdev->mac_change_cmd_id = 0;
+	}
+
+	if (netdev->get_station_cmd_id) {
+		l_genl_family_cancel(nl80211, netdev->get_station_cmd_id);
+		netdev->get_station_cmd_id = 0;
 	}
 
 	if (netdev->events_ready)
@@ -926,7 +1060,52 @@ static struct l_genl_msg *netdev_build_cmd_disconnect(struct netdev *netdev,
 static void netdev_deauthenticate_event(struct l_genl_msg *msg,
 							struct netdev *netdev)
 {
+	struct l_genl_attr attr;
+	uint16_t type, len;
+	const void *data;
+	const struct mmpdu_header *hdr = NULL;
+	uint16_t reason_code;
+
 	l_debug("");
+
+	/*
+	 * If we got to the association phase, process the connect event
+	 * instead
+	 */
+	if (!netdev->connected || netdev->associated)
+		return;
+
+	/*
+	 * Handle the bizarre case of AP accepting authentication, then
+	 * deauthenticating immediately afterwards
+	 */
+
+	if (L_WARN_ON(!l_genl_attr_init(&attr, msg)))
+		return;
+
+	while (l_genl_attr_next(&attr, &type, &len, &data)) {
+		switch (type) {
+		case NL80211_ATTR_FRAME:
+			hdr = mpdu_validate(data, len);
+			break;
+		}
+	}
+
+	if (L_WARN_ON(!hdr))
+		return;
+
+	/* Ignore any locally generated frames */
+	if (!memcmp(hdr->address_2, netdev->addr, sizeof(netdev->addr)))
+		return;
+
+	reason_code = l_get_u8(mmpdu_body(hdr));
+
+	l_info("deauth event, src="MAC" dest="MAC" bssid="MAC" reason=%u",
+			MAC_STR(hdr->address_2), MAC_STR(hdr->address_1),
+			MAC_STR(hdr->address_3), reason_code);
+
+	netdev_connect_failed(netdev, NETDEV_RESULT_AUTHENTICATION_FAILED,
+					MMPDU_STATUS_CODE_UNSPECIFIED);
 }
 
 static struct l_genl_msg *netdev_build_cmd_deauthenticate(struct netdev *netdev,
@@ -2025,8 +2204,10 @@ static void netdev_associate_event(struct l_genl_msg *msg,
 	if (!netdev->connected || netdev->aborting)
 		return;
 
-	if (!netdev->ap)
+	if (!netdev->ap) {
+		netdev->associated = true;
 		return;
+	}
 
 	if (!l_genl_attr_init(&attr, msg)) {
 		l_debug("attr init failed");
@@ -2082,6 +2263,7 @@ static void netdev_associate_event(struct l_genl_msg *msg,
 								false);
 
 			netdev->in_ft = false;
+			netdev->associated = true;
 			return;
 		} else if (ret == -EAGAIN) {
 			/*
@@ -2155,18 +2337,73 @@ static struct l_genl_msg *netdev_build_cmd_authenticate(struct netdev *netdev,
 	return msg;
 }
 
-static void netdev_auth_cb(struct l_genl_msg *msg, void *user_data)
+static void netdev_scan_cb(struct l_genl_msg *msg, void *user_data)
 {
 	struct netdev *netdev = user_data;
 
 	if (l_genl_msg_get_error(msg) < 0) {
-		l_error("Error sending CMD_AUTHENTICATE");
-
 		netdev_connect_failed(netdev,
 					NETDEV_RESULT_AUTHENTICATION_FAILED,
 					MMPDU_STATUS_CODE_UNSPECIFIED);
 		return;
 	}
+
+	netdev->retry_auth = true;
+}
+
+static void netdev_auth_cb(struct l_genl_msg *msg, void *user_data)
+{
+	struct netdev *netdev = user_data;
+	struct handshake_state *hs = netdev->handshake;
+	int err = l_genl_msg_get_error(msg);
+	struct l_genl_msg *scan_msg;
+
+	if (!err) {
+		l_genl_msg_unref(netdev->auth_cmd);
+		netdev->auth_cmd = NULL;
+		return;
+	}
+
+	l_debug("Error during auth: %d", err);
+
+	if (!netdev->auth_cmd || err != -ENOENT) {
+		netdev_connect_failed(netdev,
+					NETDEV_RESULT_AUTHENTICATION_FAILED,
+					MMPDU_STATUS_CODE_UNSPECIFIED);
+		return;
+	}
+
+	/* Kernel can't find the BSS in its cache, scan and retry */
+	scan_msg = scan_build_trigger_scan_bss(netdev->index, netdev->wiphy,
+						netdev->frequency,
+						hs->ssid, hs->ssid_len);
+
+	if (!l_genl_family_send(nl80211, scan_msg,
+					netdev_scan_cb, netdev, NULL)) {
+		l_genl_msg_unref(scan_msg);
+		netdev_connect_failed(netdev,
+					NETDEV_RESULT_AUTHENTICATION_FAILED,
+					MMPDU_STATUS_CODE_UNSPECIFIED);
+	}
+}
+
+static void netdev_new_scan_results_event(struct l_genl_msg *msg,
+							struct netdev *netdev)
+{
+	if (!netdev->retry_auth)
+		return;
+
+	l_debug("");
+
+	if (!l_genl_family_send(nl80211, netdev->auth_cmd,
+					netdev_auth_cb, netdev, NULL)) {
+		netdev_connect_failed(netdev,
+					NETDEV_RESULT_AUTHENTICATION_FAILED,
+					MMPDU_STATUS_CODE_UNSPECIFIED);
+		return;
+	}
+
+	netdev->auth_cmd = NULL;
 }
 
 static void netdev_assoc_cb(struct l_genl_msg *msg, void *user_data)
@@ -2188,7 +2425,6 @@ static void netdev_sae_tx_authenticate(const uint8_t *body,
 	struct l_genl_msg *msg;
 
 	msg = netdev_build_cmd_authenticate(netdev, NL80211_AUTHTYPE_SAE);
-
 	l_genl_msg_append_attr(msg, NL80211_ATTR_AUTH_DATA, body_len, body);
 
 	if (!l_genl_family_send(nl80211, msg, netdev_auth_cb, netdev, NULL)) {
@@ -2196,7 +2432,10 @@ static void netdev_sae_tx_authenticate(const uint8_t *body,
 		netdev_connect_failed(netdev,
 					NETDEV_RESULT_AUTHENTICATION_FAILED,
 					MMPDU_STATUS_CODE_UNSPECIFIED);
+		return;
 	}
+
+	netdev->auth_cmd = l_genl_msg_ref(msg);
 }
 
 static void netdev_sae_tx_associate(void *user_data)
@@ -2241,7 +2480,10 @@ static void netdev_owe_tx_authenticate(void *user_data)
 		netdev_connect_failed(netdev,
 					NETDEV_RESULT_AUTHENTICATION_FAILED,
 					MMPDU_STATUS_CODE_UNSPECIFIED);
+		return;
 	}
+
+	netdev->auth_cmd = l_genl_msg_ref(msg);
 }
 
 static void netdev_owe_tx_associate(struct iovec *ie_iov, size_t iov_len,
@@ -2279,7 +2521,10 @@ static void netdev_fils_tx_authenticate(const uint8_t *body,
 		netdev_connect_failed(netdev,
 					NETDEV_RESULT_AUTHENTICATION_FAILED,
 					MMPDU_STATUS_CODE_UNSPECIFIED);
+		return;
 	}
+
+	netdev->auth_cmd = l_genl_msg_ref(msg);
 }
 
 static void netdev_fils_tx_associate(struct iovec *iov, size_t iov_len,
@@ -2641,6 +2886,8 @@ static bool netdev_connection_work_ready(struct wiphy_radio_work_item *item)
 {
 	struct netdev *netdev = l_container_of(item, struct netdev, work);
 
+	netdev->retry_auth = false;
+
 	if (mac_per_ssid) {
 		int ret = netdev_start_powered_mac_change(netdev);
 
@@ -2662,8 +2909,21 @@ failed:
 	return true;
 }
 
+static void netdev_connection_work_destroy(struct wiphy_radio_work_item *item)
+{
+	struct netdev *netdev = l_container_of(item, struct netdev, work);
+
+	if (netdev->auth_cmd) {
+		l_genl_msg_unref(netdev->auth_cmd);
+		netdev->auth_cmd = NULL;
+	}
+
+	netdev->retry_auth = false;
+}
+
 static const struct wiphy_radio_work_item_ops connect_work_ops = {
 	.do_work = netdev_connection_work_ready,
+	.destroy = netdev_connection_work_destroy,
 };
 
 static int netdev_connect_common(struct netdev *netdev,
@@ -2681,7 +2941,6 @@ static int netdev_connect_common(struct netdev *netdev,
 	netdev->handshake = hs;
 	netdev->sm = sm;
 	netdev->frequency = bss->frequency;
-	netdev->cur_rssi_low = false; /* Gets updated on the 1st CQM event */
 	netdev->cur_rssi = bss->signal_strength / 100;
 	netdev_rssi_level_init(netdev);
 
@@ -2841,6 +3100,7 @@ int netdev_reassociate(struct netdev *netdev, struct scan_bss *target_bss,
 
 	memcpy(netdev->prev_bssid, orig_bss->addr, ETH_ALEN);
 
+	netdev->associated = false;
 	netdev->operational = false;
 
 	netdev_rssi_polling_update(netdev);
@@ -3203,6 +3463,7 @@ static int fast_transition(struct netdev *netdev, struct scan_bss *target_bss,
 							target_bss->rsne);
 	memcpy(netdev->handshake->mde + 2, target_bss->mde, 3);
 
+	netdev->associated = false;
 	netdev->operational = false;
 	netdev->in_ft = true;
 	netdev->connect_cb = cb;
@@ -3624,6 +3885,26 @@ static void netdev_station_event(struct l_genl_msg *msg,
 			netdev_station_watch_func_t, netdev, mac, added);
 }
 
+static void netdev_scan_notify(struct l_genl_msg *msg, void *user_data)
+{
+	struct netdev *netdev = NULL;
+	uint32_t ifindex;
+
+	if (nl80211_parse_attrs(msg, NL80211_ATTR_IFINDEX, &ifindex,
+					NL80211_ATTR_UNSPEC) < 0)
+		return;
+
+	netdev = netdev_find(ifindex);
+	if (!netdev)
+		return;
+
+	switch (l_genl_msg_get_command(msg)) {
+	case NL80211_CMD_NEW_SCAN_RESULTS:
+		netdev_new_scan_results_event(msg, netdev);
+		break;
+	}
+}
+
 static void netdev_mlme_notify(struct l_genl_msg *msg, void *user_data)
 {
 	struct netdev *netdev = NULL;
@@ -4022,6 +4303,122 @@ done:
 	return 0;
 }
 
+static void netdev_get_station_cb(struct l_genl_msg *msg, void *user_data)
+{
+	struct netdev *netdev = user_data;
+	struct l_genl_attr attr, nested;
+	uint16_t type, len;
+	const void *data;
+	struct diagnostic_station_info info;
+
+	netdev->get_station_cmd_id = 0;
+
+	if (!l_genl_attr_init(&attr, msg))
+		goto parse_error;
+
+	while (l_genl_attr_next(&attr, &type, &len, &data)) {
+		switch (type) {
+		case NL80211_ATTR_STA_INFO:
+			if (!l_genl_attr_recurse(&attr, &nested))
+				goto parse_error;
+
+			if (!netdev_parse_sta_info(&nested, &info))
+				goto parse_error;
+
+			break;
+
+		case NL80211_ATTR_MAC:
+			if (len != 6)
+				goto parse_error;
+
+			memcpy(info.addr, data, 6);
+
+			break;
+		}
+	}
+
+	if (netdev->get_station_cb)
+		netdev->get_station_cb(&info, netdev->get_station_data);
+
+	return;
+
+parse_error:
+	if (netdev->get_station_cb)
+		netdev->get_station_cb(NULL, netdev->get_station_data);
+}
+
+static void netdev_get_station_destroy(void *user_data)
+{
+	struct netdev *netdev = user_data;
+
+	netdev->get_station_cmd_id = 0;
+
+	if (netdev->get_station_destroy)
+		netdev->get_station_destroy(netdev->get_station_data);
+}
+
+int netdev_get_station(struct netdev *netdev, const uint8_t *mac,
+			netdev_get_station_cb_t cb, void *user_data,
+			netdev_destroy_func_t destroy)
+{
+	struct l_genl_msg *msg;
+
+	if (netdev->get_station_cmd_id)
+		return -EBUSY;
+
+	msg = l_genl_msg_new_sized(NL80211_CMD_GET_STATION, 64);
+	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &netdev->index);
+	l_genl_msg_append_attr(msg, NL80211_ATTR_MAC, ETH_ALEN, mac);
+
+	netdev->get_station_cmd_id = l_genl_family_send(nl80211, msg,
+						netdev_get_station_cb, netdev,
+						netdev_get_station_destroy);
+	if (!netdev->get_station_cmd_id) {
+		l_genl_msg_unref(msg);
+		return -EIO;
+	}
+
+	netdev->get_station_cb = cb;
+	netdev->get_station_data = user_data;
+	netdev->get_station_destroy = destroy;
+
+	return 0;
+}
+
+int netdev_get_current_station(struct netdev *netdev,
+			netdev_get_station_cb_t cb, void *user_data,
+			netdev_destroy_func_t destroy)
+{
+	return netdev_get_station(netdev, netdev->handshake->aa, cb,
+					user_data, destroy);
+}
+
+int netdev_get_all_stations(struct netdev *netdev, netdev_get_station_cb_t cb,
+				void *user_data, netdev_destroy_func_t destroy)
+{
+	struct l_genl_msg *msg;
+
+	if (netdev->get_station_cmd_id)
+		return -EBUSY;
+
+	msg = l_genl_msg_new_sized(NL80211_CMD_GET_STATION, 64);
+	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &netdev->index);
+
+	netdev->get_station_cmd_id = l_genl_family_dump(nl80211, msg,
+						netdev_get_station_cb, netdev,
+						netdev_get_station_destroy);
+	if (!netdev->get_station_cmd_id) {
+		l_genl_msg_unref(msg);
+		return -EIO;
+	}
+
+	netdev->get_station_cb = cb;
+	netdev->get_station_data = user_data;
+	netdev->get_station_destroy = destroy;
+
+	return 0;
+}
+
 static int netdev_cqm_rssi_update(struct netdev *netdev)
 {
 	struct l_genl_msg *msg;
@@ -4030,9 +4427,10 @@ static int netdev_cqm_rssi_update(struct netdev *netdev)
 
 	if (!wiphy_has_ext_feature(netdev->wiphy,
 					NL80211_EXT_FEATURE_CQM_RSSI_LIST))
-		return 0;
-
-	msg = netdev_build_cmd_cqm_rssi_update(netdev, netdev->rssi_levels,
+		msg = netdev_build_cmd_cqm_rssi_update(netdev, NULL, 0);
+	else
+		msg = netdev_build_cmd_cqm_rssi_update(netdev,
+						netdev->rssi_levels,
 						netdev->rssi_levels_num);
 	if (!msg)
 		return -EINVAL;
@@ -4809,6 +5207,10 @@ static int netdev_init(void)
 								NULL, NULL))
 		l_error("Registering for MLME notification failed");
 
+	if (!l_genl_family_register(nl80211, "scan", netdev_scan_notify,
+								NULL, NULL))
+		l_error("Registering for scan notifications failed");
+
 	return 0;
 
 fail_netlink:
@@ -4827,6 +5229,7 @@ static void netdev_exit(void)
 	l_genl_remove_unicast_watch(genl, unicast_watch);
 
 	watchlist_destroy(&netdev_watches);
+	l_queue_destroy(netdev_list, netdev_free);
 
 	l_genl_family_free(nl80211);
 	nl80211 = NULL;
@@ -4836,12 +5239,19 @@ static void netdev_exit(void)
 
 void netdev_shutdown(void)
 {
+	struct netdev *netdev;
+
 	if (!rtnl)
 		return;
 
 	l_queue_foreach(netdev_list, netdev_shutdown_one, NULL);
 
-	l_queue_destroy(netdev_list, netdev_free);
+	while ((netdev = l_queue_peek_head(netdev_list))) {
+		netdev_free(netdev);
+		l_queue_pop_head(netdev_list);
+	}
+
+	l_queue_destroy(netdev_list, NULL);
 	netdev_list = NULL;
 }
 

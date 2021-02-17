@@ -153,6 +153,16 @@ This can be used to control how aggressively \fBiwd\fP roams.
 T}
 _
 T{
+RoamRetryInterval
+T}	T{
+Value: unsigned int value in seconds (default: \fB60\fP)
+.sp
+Specifies how long \fBiwd\fP will wait before attempting to roam again if
+the last roam attempt failed, or if the signal of the newly connected BSS
+is still considered weak.
+T}
+_
+T{
 ManagementFrameProtection
 T}	T{
 Values: 0, \fB1\fP or 2
@@ -239,6 +249,18 @@ the default routes. The route with lower priority offset is preferred.
 If not specified, \fB300\fP is used as default.
 T}
 _
+T{
+MulticastDNS
+T}	T{
+Values: true, false, resolve
+.sp
+Configures multicast DNS on each interface. If not specified,
+systemd\-resolved\(aqs default value will remain untouched.
+See \fBman 5 systemd.network\fP for details.
+.sp
+Only applies when \fBNameResolvingService=systemd\fP\&.
+T}
+_
 .TE
 .SS Blacklist
 .sp
@@ -318,6 +340,22 @@ Disable periodic scan. Setting this option to \(aqtrue\(aq will prevent
 \fBiwd\fP from issuing the periodic scans for the available networks while
 disconnected.  The behavior of the user\-initiated scans isn\(aqt affected.
 The periodic scan is enabled by default.
+T}
+_
+T{
+InitialPeriodicScanInterval
+T}	T{
+Values: unsigned int value in seconds (default: \fB10\fP)
+.sp
+The initial periodic scan interval upon disconnect.
+T}
+_
+T{
+MaximumPeriodicScanInterval
+T}	T{
+Values: unsigned int value in seconds (default: \fB300\fP)
+.sp
+The maximum periodic scan interval.
 T}
 _
 T{

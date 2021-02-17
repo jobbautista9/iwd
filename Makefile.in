@@ -173,30 +173,29 @@ am__ell_libell_internal_la_SOURCES_DIST = ell/util.h ell/test.h \
 	ell/netlink.h ell/genl.h ell/dbus.h ell/rtnl.h \
 	ell/dbus-service.h ell/dbus-client.h ell/hwdb.h ell/cipher.h \
 	ell/random.h ell/uintset.h ell/base64.h ell/pem.h ell/tls.h \
-	ell/uuid.h ell/key.h ell/pkcs5.h ell/file.h ell/dir.h \
-	ell/net.h ell/dhcp.h ell/cert.h ell/ecc.h ell/ecdh.h \
-	ell/time.h ell/path.h ell/icmp6.h ell/dhcp6.h ell/acd.h \
-	ell/private.h ell/missing.h ell/util.c ell/test.c ell/strv.c \
-	ell/utf8.c ell/queue.c ell/hashmap.c ell/string.c \
-	ell/settings.c ell/main.c ell/idle.c ell/signal.c \
-	ell/timeout.c ell/io.c ell/ringbuf.c ell/log.c ell/checksum.c \
-	ell/netlink-private.h ell/netlink.c ell/genl.c ell/rtnl.c \
-	ell/dbus-private.h ell/dbus.c ell/dbus-message.c \
-	ell/dbus-util.c ell/dbus-service.c ell/dbus-client.c \
-	ell/dbus-name-cache.c ell/dbus-filter.c ell/gvariant-private.h \
-	ell/gvariant-util.c ell/siphash-private.h ell/siphash.c \
-	ell/hwdb.c ell/cipher.c ell/random.c ell/uintset.c \
-	ell/base64.c ell/asn1-private.h ell/pem.c ell/pem-private.h \
-	ell/tls-private.h ell/tls.c ell/tls-record.c ell/tls-suites.c \
-	ell/tls-extensions.c ell/uuid.c ell/key.c ell/pkcs5-private.h \
-	ell/pkcs5.c ell/file.c ell/dir.c ell/net-private.h ell/net.c \
-	ell/dhcp-private.h ell/dhcp.c ell/dhcp-transport.c \
+	ell/uuid.h ell/key.h ell/file.h ell/dir.h ell/net.h ell/dhcp.h \
+	ell/cert.h ell/ecc.h ell/ecdh.h ell/time.h ell/path.h \
+	ell/icmp6.h ell/dhcp6.h ell/acd.h ell/private.h ell/missing.h \
+	ell/util.c ell/test.c ell/strv.c ell/utf8.c ell/queue.c \
+	ell/hashmap.c ell/string.c ell/settings.c ell/main.c \
+	ell/idle.c ell/signal.c ell/timeout.c ell/io.c ell/ringbuf.c \
+	ell/log.c ell/checksum.c ell/netlink-private.h ell/netlink.c \
+	ell/genl.c ell/rtnl.c ell/dbus-private.h ell/dbus.c \
+	ell/dbus-message.c ell/dbus-util.c ell/dbus-service.c \
+	ell/dbus-client.c ell/dbus-name-cache.c ell/dbus-filter.c \
+	ell/gvariant-private.h ell/gvariant-util.c \
+	ell/siphash-private.h ell/siphash.c ell/hwdb.c ell/cipher.c \
+	ell/random.c ell/uintset.c ell/base64.c ell/asn1-private.h \
+	ell/pem.c ell/pem-private.h ell/tls-private.h ell/tls.c \
+	ell/tls-record.c ell/tls-suites.c ell/tls-extensions.c \
+	ell/uuid.c ell/key.c ell/file.c ell/dir.c ell/net-private.h \
+	ell/net.c ell/dhcp-private.h ell/dhcp.c ell/dhcp-transport.c \
 	ell/dhcp-lease.c ell/dhcp-util.c ell/dhcp-server.c \
-	ell/cert-private.h ell/cert.c ell/ecc-external.c \
-	ell/ecc-private.h ell/ecc.c ell/ecdh.c ell/time.c \
-	ell/time-private.h ell/path.c ell/dhcp6.c ell/dhcp6-private.h \
-	ell/icmp6.c ell/icmp6-private.h ell/dhcp6-lease.c \
-	ell/dhcp6-transport.c ell/acd.c
+	ell/cert-private.h ell/cert.c ell/cert-crypto.c \
+	ell/ecc-external.c ell/ecc-private.h ell/ecc.c ell/ecdh.c \
+	ell/time.c ell/time-private.h ell/path.c ell/dhcp6.c \
+	ell/dhcp6-private.h ell/icmp6.c ell/icmp6-private.h \
+	ell/dhcp6-lease.c ell/dhcp6-transport.c ell/acd.c
 am__objects_1 =
 am__dirstamp = $(am__leading_dot)dirstamp
 @EXTERNAL_ELL_FALSE@am__objects_2 = ell/util.lo ell/test.lo \
@@ -214,11 +213,11 @@ am__dirstamp = $(am__leading_dot)dirstamp
 @EXTERNAL_ELL_FALSE@	ell/random.lo ell/uintset.lo ell/base64.lo \
 @EXTERNAL_ELL_FALSE@	ell/pem.lo ell/tls.lo ell/tls-record.lo \
 @EXTERNAL_ELL_FALSE@	ell/tls-suites.lo ell/tls-extensions.lo \
-@EXTERNAL_ELL_FALSE@	ell/uuid.lo ell/key.lo ell/pkcs5.lo \
-@EXTERNAL_ELL_FALSE@	ell/file.lo ell/dir.lo ell/net.lo \
-@EXTERNAL_ELL_FALSE@	ell/dhcp.lo ell/dhcp-transport.lo \
-@EXTERNAL_ELL_FALSE@	ell/dhcp-lease.lo ell/dhcp-util.lo \
-@EXTERNAL_ELL_FALSE@	ell/dhcp-server.lo ell/cert.lo \
+@EXTERNAL_ELL_FALSE@	ell/uuid.lo ell/key.lo ell/file.lo \
+@EXTERNAL_ELL_FALSE@	ell/dir.lo ell/net.lo ell/dhcp.lo \
+@EXTERNAL_ELL_FALSE@	ell/dhcp-transport.lo ell/dhcp-lease.lo \
+@EXTERNAL_ELL_FALSE@	ell/dhcp-util.lo ell/dhcp-server.lo \
+@EXTERNAL_ELL_FALSE@	ell/cert.lo ell/cert-crypto.lo \
 @EXTERNAL_ELL_FALSE@	ell/ecc-external.lo ell/ecc.lo ell/ecdh.lo \
 @EXTERNAL_ELL_FALSE@	ell/time.lo ell/path.lo ell/dhcp6.lo \
 @EXTERNAL_ELL_FALSE@	ell/icmp6.lo ell/dhcp6-lease.lo \
@@ -238,7 +237,8 @@ am__client_iwctl_SOURCES_DIST = client/main.c client/adapter.c \
 	client/dbus-proxy.c client/device.h client/device.c \
 	client/display.h client/display.c client/known-networks.c \
 	client/network.h client/network.c client/properties.h \
-	client/properties.c client/wsc.c client/station.c
+	client/properties.c client/wsc.c client/station.c \
+	client/diagnostic.c client/diagnostic.h
 @CLIENT_TRUE@am_client_iwctl_OBJECTS = client/main.$(OBJEXT) \
 @CLIENT_TRUE@	client/adapter.$(OBJEXT) client/agent.$(OBJEXT) \
 @CLIENT_TRUE@	client/agent-manager.$(OBJEXT) \
@@ -249,7 +249,8 @@ am__client_iwctl_SOURCES_DIST = client/main.c client/adapter.c \
 @CLIENT_TRUE@	client/known-networks.$(OBJEXT) \
 @CLIENT_TRUE@	client/network.$(OBJEXT) \
 @CLIENT_TRUE@	client/properties.$(OBJEXT) client/wsc.$(OBJEXT) \
-@CLIENT_TRUE@	client/station.$(OBJEXT)
+@CLIENT_TRUE@	client/station.$(OBJEXT) \
+@CLIENT_TRUE@	client/diagnostic.$(OBJEXT)
 client_iwctl_OBJECTS = $(am_client_iwctl_OBJECTS)
 @EXTERNAL_ELL_FALSE@am__DEPENDENCIES_1 = ell/libell-internal.la
 am__DEPENDENCIES_2 =
@@ -294,14 +295,14 @@ am__src_iwd_SOURCES_DIST = src/main.c linux/nl80211.h src/iwd.h \
 	src/p2p.h src/p2p.c src/p2putil.h src/p2putil.c src/module.h \
 	src/module.c src/rrm.c src/frame-xchg.h src/frame-xchg.c \
 	src/eap-wsc.c src/eap-wsc.h src/wscutil.h src/wscutil.c \
-	src/eap.c src/eap.h src/eap-private.h src/eap-md5.c \
-	src/eap-tls.c src/eap-ttls.c src/eap-mschapv2.c \
-	src/eap-mschapv2.h src/eap-sim.c src/eap-aka.c src/eap-peap.c \
-	src/eap-gtc.c src/eap-pwd.c src/util.h src/util.c src/crypto.h \
-	src/crypto.c src/simutil.h src/simutil.c src/simauth.h \
-	src/simauth.c src/watchlist.h src/watchlist.c \
-	src/eap-tls-common.h src/eap-tls-common.c src/mschaputil.h \
-	src/mschaputil.c src/ofono.c
+	src/diagnostic.h src/diagnostic.c src/eap.c src/eap.h \
+	src/eap-private.h src/eap-md5.c src/eap-tls.c src/eap-ttls.c \
+	src/eap-mschapv2.c src/eap-mschapv2.h src/eap-sim.c \
+	src/eap-aka.c src/eap-peap.c src/eap-gtc.c src/eap-pwd.c \
+	src/util.h src/util.c src/crypto.h src/crypto.c src/simutil.h \
+	src/simutil.c src/simauth.h src/simauth.c src/watchlist.h \
+	src/watchlist.c src/eap-tls-common.h src/eap-tls-common.c \
+	src/mschaputil.h src/mschaputil.c src/ofono.c
 am__objects_3 = src/eap.$(OBJEXT) src/eap-md5.$(OBJEXT) \
 	src/eap-tls.$(OBJEXT) src/eap-ttls.$(OBJEXT) \
 	src/eap-mschapv2.$(OBJEXT) src/eap-sim.$(OBJEXT) \
@@ -335,7 +336,8 @@ am__objects_5 = $(am__objects_4)
 @DAEMON_TRUE@	src/p2putil.$(OBJEXT) src/module.$(OBJEXT) \
 @DAEMON_TRUE@	src/rrm.$(OBJEXT) src/frame-xchg.$(OBJEXT) \
 @DAEMON_TRUE@	src/eap-wsc.$(OBJEXT) src/wscutil.$(OBJEXT) \
-@DAEMON_TRUE@	$(am__objects_3) $(am__objects_5)
+@DAEMON_TRUE@	src/diagnostic.$(OBJEXT) $(am__objects_3) \
+@DAEMON_TRUE@	$(am__objects_5)
 src_iwd_OBJECTS = $(am_src_iwd_OBJECTS)
 am__tools_hwsim_SOURCES_DIST = tools/hwsim.c src/mpdu.h src/util.h \
 	src/util.c src/storage.h src/storage.c src/common.h \
@@ -489,11 +491,12 @@ am__depfiles_remade = client/$(DEPDIR)/ad-hoc.Po \
 	client/$(DEPDIR)/adapter.Po client/$(DEPDIR)/agent-manager.Po \
 	client/$(DEPDIR)/agent.Po client/$(DEPDIR)/ap.Po \
 	client/$(DEPDIR)/command.Po client/$(DEPDIR)/dbus-proxy.Po \
-	client/$(DEPDIR)/device.Po client/$(DEPDIR)/display.Po \
-	client/$(DEPDIR)/known-networks.Po client/$(DEPDIR)/main.Po \
-	client/$(DEPDIR)/network.Po client/$(DEPDIR)/properties.Po \
-	client/$(DEPDIR)/station.Po client/$(DEPDIR)/wsc.Po \
-	ell/$(DEPDIR)/acd.Plo ell/$(DEPDIR)/base64.Plo \
+	client/$(DEPDIR)/device.Po client/$(DEPDIR)/diagnostic.Po \
+	client/$(DEPDIR)/display.Po client/$(DEPDIR)/known-networks.Po \
+	client/$(DEPDIR)/main.Po client/$(DEPDIR)/network.Po \
+	client/$(DEPDIR)/properties.Po client/$(DEPDIR)/station.Po \
+	client/$(DEPDIR)/wsc.Po ell/$(DEPDIR)/acd.Plo \
+	ell/$(DEPDIR)/base64.Plo ell/$(DEPDIR)/cert-crypto.Plo \
 	ell/$(DEPDIR)/cert.Plo ell/$(DEPDIR)/checksum.Plo \
 	ell/$(DEPDIR)/cipher.Plo ell/$(DEPDIR)/dbus-client.Plo \
 	ell/$(DEPDIR)/dbus-filter.Plo ell/$(DEPDIR)/dbus-message.Plo \
@@ -513,25 +516,25 @@ am__depfiles_remade = client/$(DEPDIR)/ad-hoc.Po \
 	ell/$(DEPDIR)/key.Plo ell/$(DEPDIR)/log.Plo \
 	ell/$(DEPDIR)/main.Plo ell/$(DEPDIR)/net.Plo \
 	ell/$(DEPDIR)/netlink.Plo ell/$(DEPDIR)/path.Plo \
-	ell/$(DEPDIR)/pem.Plo ell/$(DEPDIR)/pkcs5.Plo \
-	ell/$(DEPDIR)/queue.Plo ell/$(DEPDIR)/random.Plo \
-	ell/$(DEPDIR)/ringbuf.Plo ell/$(DEPDIR)/rtnl.Plo \
-	ell/$(DEPDIR)/settings.Plo ell/$(DEPDIR)/signal.Plo \
-	ell/$(DEPDIR)/siphash.Plo ell/$(DEPDIR)/string.Plo \
-	ell/$(DEPDIR)/strv.Plo ell/$(DEPDIR)/test.Plo \
-	ell/$(DEPDIR)/time.Plo ell/$(DEPDIR)/timeout.Plo \
-	ell/$(DEPDIR)/tls-extensions.Plo ell/$(DEPDIR)/tls-record.Plo \
-	ell/$(DEPDIR)/tls-suites.Plo ell/$(DEPDIR)/tls.Plo \
-	ell/$(DEPDIR)/uintset.Plo ell/$(DEPDIR)/utf8.Plo \
-	ell/$(DEPDIR)/util.Plo ell/$(DEPDIR)/uuid.Plo \
-	monitor/$(DEPDIR)/display.Po monitor/$(DEPDIR)/main.Po \
-	monitor/$(DEPDIR)/nlmon.Po monitor/$(DEPDIR)/pcap.Po \
-	src/$(DEPDIR)/adhoc.Po src/$(DEPDIR)/agent.Po \
-	src/$(DEPDIR)/anqp.Po src/$(DEPDIR)/anqputil.Po \
-	src/$(DEPDIR)/ap.Po src/$(DEPDIR)/backtrace.Po \
-	src/$(DEPDIR)/blacklist.Po src/$(DEPDIR)/common.Po \
-	src/$(DEPDIR)/crypto.Po src/$(DEPDIR)/dbus.Po \
-	src/$(DEPDIR)/device.Po src/$(DEPDIR)/eap-aka.Po \
+	ell/$(DEPDIR)/pem.Plo ell/$(DEPDIR)/queue.Plo \
+	ell/$(DEPDIR)/random.Plo ell/$(DEPDIR)/ringbuf.Plo \
+	ell/$(DEPDIR)/rtnl.Plo ell/$(DEPDIR)/settings.Plo \
+	ell/$(DEPDIR)/signal.Plo ell/$(DEPDIR)/siphash.Plo \
+	ell/$(DEPDIR)/string.Plo ell/$(DEPDIR)/strv.Plo \
+	ell/$(DEPDIR)/test.Plo ell/$(DEPDIR)/time.Plo \
+	ell/$(DEPDIR)/timeout.Plo ell/$(DEPDIR)/tls-extensions.Plo \
+	ell/$(DEPDIR)/tls-record.Plo ell/$(DEPDIR)/tls-suites.Plo \
+	ell/$(DEPDIR)/tls.Plo ell/$(DEPDIR)/uintset.Plo \
+	ell/$(DEPDIR)/utf8.Plo ell/$(DEPDIR)/util.Plo \
+	ell/$(DEPDIR)/uuid.Plo monitor/$(DEPDIR)/display.Po \
+	monitor/$(DEPDIR)/main.Po monitor/$(DEPDIR)/nlmon.Po \
+	monitor/$(DEPDIR)/pcap.Po src/$(DEPDIR)/adhoc.Po \
+	src/$(DEPDIR)/agent.Po src/$(DEPDIR)/anqp.Po \
+	src/$(DEPDIR)/anqputil.Po src/$(DEPDIR)/ap.Po \
+	src/$(DEPDIR)/backtrace.Po src/$(DEPDIR)/blacklist.Po \
+	src/$(DEPDIR)/common.Po src/$(DEPDIR)/crypto.Po \
+	src/$(DEPDIR)/dbus.Po src/$(DEPDIR)/device.Po \
+	src/$(DEPDIR)/diagnostic.Po src/$(DEPDIR)/eap-aka.Po \
 	src/$(DEPDIR)/eap-gtc.Po src/$(DEPDIR)/eap-md5.Po \
 	src/$(DEPDIR)/eap-mschapv2.Po src/$(DEPDIR)/eap-peap.Po \
 	src/$(DEPDIR)/eap-pwd.Po src/$(DEPDIR)/eap-sim.Po \
@@ -1065,7 +1068,6 @@ builtin_sources = $(am__append_3)
 @EXTERNAL_ELL_FALSE@			ell/tls.h \
 @EXTERNAL_ELL_FALSE@			ell/uuid.h \
 @EXTERNAL_ELL_FALSE@			ell/key.h \
-@EXTERNAL_ELL_FALSE@			ell/pkcs5.h \
 @EXTERNAL_ELL_FALSE@			ell/file.h \
 @EXTERNAL_ELL_FALSE@			ell/dir.h \
 @EXTERNAL_ELL_FALSE@			ell/net.h \
@@ -1128,8 +1130,6 @@ builtin_sources = $(am__append_3)
 @EXTERNAL_ELL_FALSE@			ell/tls-extensions.c \
 @EXTERNAL_ELL_FALSE@			ell/uuid.c \
 @EXTERNAL_ELL_FALSE@			ell/key.c \
-@EXTERNAL_ELL_FALSE@			ell/pkcs5-private.h \
-@EXTERNAL_ELL_FALSE@			ell/pkcs5.c \
 @EXTERNAL_ELL_FALSE@			ell/file.c \
 @EXTERNAL_ELL_FALSE@			ell/dir.c \
 @EXTERNAL_ELL_FALSE@			ell/net-private.h \
@@ -1142,6 +1142,7 @@ builtin_sources = $(am__append_3)
 @EXTERNAL_ELL_FALSE@			ell/dhcp-server.c \
 @EXTERNAL_ELL_FALSE@			ell/cert-private.h \
 @EXTERNAL_ELL_FALSE@			ell/cert.c \
+@EXTERNAL_ELL_FALSE@			ell/cert-crypto.c \
 @EXTERNAL_ELL_FALSE@			ell/ecc-external.c \
 @EXTERNAL_ELL_FALSE@			ell/ecc-private.h \
 @EXTERNAL_ELL_FALSE@			ell/ecc.c \
@@ -1239,6 +1240,7 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @DAEMON_TRUE@					src/frame-xchg.h src/frame-xchg.c \
 @DAEMON_TRUE@					src/eap-wsc.c src/eap-wsc.h \
 @DAEMON_TRUE@					src/wscutil.h src/wscutil.c \
+@DAEMON_TRUE@					src/diagnostic.h src/diagnostic.c \
 @DAEMON_TRUE@					$(eap_sources) \
 @DAEMON_TRUE@					$(builtin_sources)
 
@@ -1258,7 +1260,8 @@ eap_sources = src/eap.c src/eap.h src/eap-private.h \
 @CLIENT_TRUE@			client/known-networks.c \
 @CLIENT_TRUE@			client/network.h client/network.c \
 @CLIENT_TRUE@			client/properties.h client/properties.c \
-@CLIENT_TRUE@			client/wsc.c client/station.c
+@CLIENT_TRUE@			client/wsc.c client/station.c \
+@CLIENT_TRUE@			client/diagnostic.c client/diagnostic.h
 
 @CLIENT_TRUE@client_iwctl_LDADD = $(ell_ldadd) $(READLINE_LIBS)
 @MONITOR_TRUE@monitor_iwmon_SOURCES = monitor/main.c linux/nl80211.h \
@@ -1447,7 +1450,6 @@ AM_CFLAGS = $(ell_cflags) -fvisibility=hidden \
 	-DCERTDIR=\""$(top_builddir)/unit/"\" $(am__append_25)
 CLEANFILES = src/iwd.service wired/ead.service
 DISTCHECK_CONFIGURE_FLAGS = --disable-dbus-policy --disable-systemd-service \
-				--enable-sim-hardcoded \
 				--enable-ofono \
 				--enable-wired \
 				--enable-hwsim \
@@ -1689,7 +1691,6 @@ ell/tls-extensions.lo: ell/$(am__dirstamp) \
 	ell/$(DEPDIR)/$(am__dirstamp)
 ell/uuid.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/key.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
-ell/pkcs5.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/file.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dir.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/net.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
@@ -1700,6 +1701,7 @@ ell/dhcp-lease.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dhcp-util.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/dhcp-server.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/cert.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
+ell/cert-crypto.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/ecc-external.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/ecc.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
 ell/ecdh.lo: ell/$(am__dirstamp) ell/$(DEPDIR)/$(am__dirstamp)
@@ -1749,6 +1751,8 @@ client/properties.$(OBJEXT): client/$(am__dirstamp) \
 client/wsc.$(OBJEXT): client/$(am__dirstamp) \
 	client/$(DEPDIR)/$(am__dirstamp)
 client/station.$(OBJEXT): client/$(am__dirstamp) \
+	client/$(DEPDIR)/$(am__dirstamp)
+client/diagnostic.$(OBJEXT): client/$(am__dirstamp) \
 	client/$(DEPDIR)/$(am__dirstamp)
 
 client/iwctl$(EXEEXT): $(client_iwctl_OBJECTS) $(client_iwctl_DEPENDENCIES) $(EXTRA_client_iwctl_DEPENDENCIES) client/$(am__dirstamp)
@@ -1849,6 +1853,8 @@ src/rrm.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/frame-xchg.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/eap-wsc.$(OBJEXT): src/$(am__dirstamp) \
+	src/$(DEPDIR)/$(am__dirstamp)
+src/diagnostic.$(OBJEXT): src/$(am__dirstamp) \
 	src/$(DEPDIR)/$(am__dirstamp)
 src/eap.$(OBJEXT): src/$(am__dirstamp) src/$(DEPDIR)/$(am__dirstamp)
 src/eap-md5.$(OBJEXT): src/$(am__dirstamp) \
@@ -2061,6 +2067,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/command.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/dbus-proxy.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/device.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/diagnostic.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/display.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/known-networks.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/main.Po@am__quote@ # am--include-marker
@@ -2070,6 +2077,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@client/$(DEPDIR)/wsc.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/acd.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/base64.Plo@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/cert-crypto.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/cert.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/checksum.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/cipher.Plo@am__quote@ # am--include-marker
@@ -2107,7 +2115,6 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/netlink.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/path.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/pem.Plo@am__quote@ # am--include-marker
-@AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/pkcs5.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/queue.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/random.Plo@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@ell/$(DEPDIR)/ringbuf.Plo@am__quote@ # am--include-marker
@@ -2143,6 +2150,7 @@ distclean-compile:
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/crypto.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/dbus.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/device.Po@am__quote@ # am--include-marker
+@AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/diagnostic.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-aka.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-gtc.Po@am__quote@ # am--include-marker
 @AMDEP_TRUE@@am__include@ @am__quote@src/$(DEPDIR)/eap-md5.Po@am__quote@ # am--include-marker
@@ -3132,6 +3140,7 @@ distclean: distclean-am
 	-rm -f client/$(DEPDIR)/command.Po
 	-rm -f client/$(DEPDIR)/dbus-proxy.Po
 	-rm -f client/$(DEPDIR)/device.Po
+	-rm -f client/$(DEPDIR)/diagnostic.Po
 	-rm -f client/$(DEPDIR)/display.Po
 	-rm -f client/$(DEPDIR)/known-networks.Po
 	-rm -f client/$(DEPDIR)/main.Po
@@ -3141,6 +3150,7 @@ distclean: distclean-am
 	-rm -f client/$(DEPDIR)/wsc.Po
 	-rm -f ell/$(DEPDIR)/acd.Plo
 	-rm -f ell/$(DEPDIR)/base64.Plo
+	-rm -f ell/$(DEPDIR)/cert-crypto.Plo
 	-rm -f ell/$(DEPDIR)/cert.Plo
 	-rm -f ell/$(DEPDIR)/checksum.Plo
 	-rm -f ell/$(DEPDIR)/cipher.Plo
@@ -3178,7 +3188,6 @@ distclean: distclean-am
 	-rm -f ell/$(DEPDIR)/netlink.Plo
 	-rm -f ell/$(DEPDIR)/path.Plo
 	-rm -f ell/$(DEPDIR)/pem.Plo
-	-rm -f ell/$(DEPDIR)/pkcs5.Plo
 	-rm -f ell/$(DEPDIR)/queue.Plo
 	-rm -f ell/$(DEPDIR)/random.Plo
 	-rm -f ell/$(DEPDIR)/ringbuf.Plo
@@ -3214,6 +3223,7 @@ distclean: distclean-am
 	-rm -f src/$(DEPDIR)/crypto.Po
 	-rm -f src/$(DEPDIR)/dbus.Po
 	-rm -f src/$(DEPDIR)/device.Po
+	-rm -f src/$(DEPDIR)/diagnostic.Po
 	-rm -f src/$(DEPDIR)/eap-aka.Po
 	-rm -f src/$(DEPDIR)/eap-gtc.Po
 	-rm -f src/$(DEPDIR)/eap-md5.Po
@@ -3347,6 +3357,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f client/$(DEPDIR)/command.Po
 	-rm -f client/$(DEPDIR)/dbus-proxy.Po
 	-rm -f client/$(DEPDIR)/device.Po
+	-rm -f client/$(DEPDIR)/diagnostic.Po
 	-rm -f client/$(DEPDIR)/display.Po
 	-rm -f client/$(DEPDIR)/known-networks.Po
 	-rm -f client/$(DEPDIR)/main.Po
@@ -3356,6 +3367,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f client/$(DEPDIR)/wsc.Po
 	-rm -f ell/$(DEPDIR)/acd.Plo
 	-rm -f ell/$(DEPDIR)/base64.Plo
+	-rm -f ell/$(DEPDIR)/cert-crypto.Plo
 	-rm -f ell/$(DEPDIR)/cert.Plo
 	-rm -f ell/$(DEPDIR)/checksum.Plo
 	-rm -f ell/$(DEPDIR)/cipher.Plo
@@ -3393,7 +3405,6 @@ maintainer-clean: maintainer-clean-am
 	-rm -f ell/$(DEPDIR)/netlink.Plo
 	-rm -f ell/$(DEPDIR)/path.Plo
 	-rm -f ell/$(DEPDIR)/pem.Plo
-	-rm -f ell/$(DEPDIR)/pkcs5.Plo
 	-rm -f ell/$(DEPDIR)/queue.Plo
 	-rm -f ell/$(DEPDIR)/random.Plo
 	-rm -f ell/$(DEPDIR)/ringbuf.Plo
@@ -3429,6 +3440,7 @@ maintainer-clean: maintainer-clean-am
 	-rm -f src/$(DEPDIR)/crypto.Po
 	-rm -f src/$(DEPDIR)/dbus.Po
 	-rm -f src/$(DEPDIR)/device.Po
+	-rm -f src/$(DEPDIR)/diagnostic.Po
 	-rm -f src/$(DEPDIR)/eap-aka.Po
 	-rm -f src/$(DEPDIR)/eap-gtc.Po
 	-rm -f src/$(DEPDIR)/eap-md5.Po

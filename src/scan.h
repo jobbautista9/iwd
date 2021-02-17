@@ -20,6 +20,14 @@
  *
  */
 
+struct scan_freq_set;
+struct ie_rsn_info;
+struct p2p_probe_resp;
+struct p2p_probe_req;
+struct p2p_beacon;
+struct mmpdu_header;
+struct wiphy;
+
 enum scan_band {
 	SCAN_BAND_2_4_GHZ =	0x1,
 	SCAN_BAND_5_GHZ =	0x2,
@@ -30,20 +38,6 @@ enum scan_state {
 	SCAN_STATE_PASSIVE,
 	SCAN_STATE_ACTIVE,
 };
-
-typedef void (*scan_func_t)(struct l_genl_msg *msg, void *user_data);
-typedef void (*scan_trigger_func_t)(int, void *);
-typedef bool (*scan_notify_func_t)(int err, struct l_queue *bss_list,
-					void *userdata);
-typedef void (*scan_destroy_func_t)(void *userdata);
-typedef void (*scan_freq_set_func_t)(uint32_t freq, void *userdata);
-
-struct scan_freq_set;
-struct ie_rsn_info;
-struct p2p_probe_resp;
-struct p2p_probe_req;
-struct p2p_beacon;
-struct mmpdu_header;
 
 enum scan_bss_frame_type {
 	SCAN_BSS_PROBE_RESP,
@@ -107,6 +101,14 @@ struct scan_parameters {
 	const uint8_t *source_mac;
 };
 
+typedef void (*scan_func_t)(struct l_genl_msg *msg, void *user_data);
+typedef void (*scan_trigger_func_t)(int, void *);
+typedef bool (*scan_notify_func_t)(int err, struct l_queue *bss_list,
+					const struct scan_freq_set *freqs,
+					void *userdata);
+typedef void (*scan_destroy_func_t)(void *userdata);
+typedef void (*scan_freq_set_func_t)(uint32_t freq, void *userdata);
+
 static inline int scan_bss_addr_cmp(const struct scan_bss *a1,
 					const struct scan_bss *a2)
 {
@@ -118,6 +120,12 @@ static inline bool scan_bss_addr_eq(const struct scan_bss *a1,
 {
 	return !memcmp(a1->addr, a2->addr, sizeof(a1->addr));
 }
+
+struct l_genl_msg *scan_build_trigger_scan_bss(uint32_t ifindex,
+						struct wiphy *wiphy,
+						uint32_t frequency,
+						const uint8_t *ssid,
+						uint32_t ssid_len);
 
 uint32_t scan_passive(uint64_t wdev_id, struct scan_freq_set *freqs,
 			scan_trigger_func_t trigger, scan_notify_func_t notify,
@@ -161,7 +169,7 @@ enum scan_band scan_oper_class_to_band(const uint8_t *country,
 struct scan_freq_set *scan_freq_set_new(void);
 void scan_freq_set_free(struct scan_freq_set *freqs);
 bool scan_freq_set_add(struct scan_freq_set *freqs, uint32_t freq);
-bool scan_freq_set_contains(struct scan_freq_set *freqs, uint32_t freq);
+bool scan_freq_set_contains(const struct scan_freq_set *freqs, uint32_t freq);
 uint32_t scan_freq_set_get_bands(struct scan_freq_set *freqs);
 void scan_freq_set_foreach(const struct scan_freq_set *freqs,
 				scan_freq_set_func_t func, void *user_data);

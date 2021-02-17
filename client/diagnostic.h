@@ -1,8 +1,8 @@
 /*
  *
- *  Embedded Linux library
+ *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2021  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,28 +20,7 @@
  *
  */
 
-#ifndef __ELL_PKCS5_H
-#define __ELL_PKCS5_H
+struct l_dbus_message_iter;
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-#include <stdbool.h>
-#include <stdint.h>
-
-bool l_pkcs5_pbkdf1(enum l_checksum_type type, const char *password,
-			const uint8_t *salt, size_t salt_len,
-			unsigned int iter_count,
-			uint8_t *out_dk, size_t dk_len);
-
-bool l_pkcs5_pbkdf2(enum l_checksum_type type, const char *password,
-			const uint8_t *salt, size_t salt_len,
-			unsigned int iter_count,
-			uint8_t *out_dk, size_t dk_len);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* __ELL_PKCS5_H */
+void diagnostic_display(struct l_dbus_message_iter *dict, const char *margin,
+			int name_column_width, int value_column_width);

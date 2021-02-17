@@ -27,6 +27,7 @@ struct scan_bss;
 struct handshake_state;
 struct eapol_sm;
 struct mmpdu_header;
+struct diagnostic_station_info;
 
 enum netdev_result {
 	NETDEV_RESULT_OK,
@@ -114,6 +115,10 @@ typedef void (*netdev_station_watch_func_t)(struct netdev *netdev,
 					const uint8_t *mac, bool added,
 					void *user_data);
 
+typedef void (*netdev_get_station_cb_t)(
+				const struct diagnostic_station_info *info,
+				void *user_data);
+
 struct wiphy *netdev_get_wiphy(struct netdev *netdev);
 const uint8_t *netdev_get_address(struct netdev *netdev);
 uint32_t netdev_get_ifindex(struct netdev *netdev);
@@ -173,6 +178,15 @@ int netdev_neighbor_report_req(struct netdev *netdev,
 
 int netdev_set_rssi_report_levels(struct netdev *netdev, const int8_t *levels,
 					size_t levels_num);
+
+int netdev_get_station(struct netdev *netdev, const uint8_t *mac,
+			netdev_get_station_cb_t cb, void *user_data,
+			netdev_destroy_func_t destroy);
+int netdev_get_current_station(struct netdev *netdev,
+			netdev_get_station_cb_t cb, void *user_data,
+			netdev_destroy_func_t destroy);
+int netdev_get_all_stations(struct netdev *netdev, netdev_get_station_cb_t cb,
+				void *user_data, netdev_destroy_func_t destroy);
 
 void netdev_handshake_failed(struct handshake_state *hs, uint16_t reason_code);
 

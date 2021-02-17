@@ -211,20 +211,27 @@ authentication configuration.
    * - EAP-TLS-ClientCert
      - absolute file path or embedded pem
 
-       Path to a PEM-formatted client X.509 certificate or certificate chain
-       to send on server request.
+       Path to the client X.509 certificate or certificate chain to send on
+       server request.
    * - EAP-TLS-ClientKey
      - absolute file path or embedded pem
 
-       Path to a PEM-formatted client PKCS#8 private key corresponding to the
-       public key provided in *EAP-TLS-ClientCert*.
+       Path to the client private key corresponding to the public key provided
+       in *EAP-TLS-ClientCert*.  The recommended format is PKCS#8 PEM.
+   * - EAP-TLS-ClientKeyBundle
+     - absolute file path
+
+       As an alternative to *EAP-TLS-ClientCert* and *EAP-TLS-ClientKey* IWD
+       can load both the certificate and the private key from a container file
+       pointed by this setting.  The recommended format is PKCS#12 when this
+       is used.
    * - | EAP-TLS-
        | ClientKeyPassphrase
      - string
 
-       Decryption key for the client private key file.  This is used if the
-       private key given by *EAP-TLS-ClientKey* is encrypted.  If not provided,
-       then the agent is asked for the passphrase at connection time.
+       Decryption key for the client key files.  This should be used if the
+       certificate or the private key in the files mentioned above is encrypted.
+       When not given, the agent is asked for the passphrase at connection time.
    * - | EAP-TLS-ServerDomainMask,
        | EAP-TTLS-ServerDomainMask,
        | EAP-PEAP-ServerDomainMask
@@ -294,9 +301,9 @@ network configuration with the static addresses.
        The IPv4 address of the gateway (router). This field is `required` for
        the static configuration.
    * - DNS
-     - IPv4 address string
+     - IPv4 address string list, space delimited
 
-       The IPv4 address of the Domain Name System (DNS). This field is
+       The IPv4 address(es) of the Domain Name System (DNS). This field is
        `optional`. DNS setting can be used to override the DNS entries received
        from the DHCP server.
    * - Netmask
@@ -345,9 +352,9 @@ network configuration.
        The IPv6 address of the gateway (router). This field is `required` for
        the static configuration.
    * - DNS
-     - IPv6 address string
+     - IPv6 address string list, space delimited
 
-       The IPv6 address of the Domain Name System (DNS). This field is
+       The IPv6 address(es) of the Domain Name System (DNS). This field is
        `optional`. DNS setting can be used to override the DNS entries received
        from the DHCPv6 server or via Router Advertisements.
    * - DomainName

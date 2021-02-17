@@ -133,6 +133,13 @@ The group ``[General]`` contains general settings.
 
        This can be used to control how aggressively **iwd** roams.
 
+   * - RoamRetryInterval
+     - Value: unsigned int value in seconds (default: **60**)
+
+       Specifies how long **iwd** will wait before attempting to roam again if
+       the last roam attempt failed, or if the signal of the newly connected BSS
+       is still considered weak.
+
    * - ManagementFrameProtection
      - Values: 0, **1** or 2
 
@@ -204,6 +211,15 @@ The group ``[Network]`` contains network configuration related settings.
        the default routes. The route with lower priority offset is preferred.
 
        If not specified, ``300`` is used as default.
+
+   * - MulticastDNS
+     - Values: true, false, resolve
+
+       Configures multicast DNS on each interface. If not specified,
+       systemd-resolved's default value will remain untouched.
+       See ``man 5 systemd.network`` for details.
+
+       Only applies when ``NameResolvingService=systemd``.
 
 Blacklist
 ---------
@@ -277,6 +293,17 @@ No modification from defaults is normally required.
        **iwd** from issuing the periodic scans for the available networks while
        disconnected.  The behavior of the user-initiated scans isn't affected.
        The periodic scan is enabled by default.
+
+   * - InitialPeriodicScanInterval
+     - Values: unsigned int value in seconds (default: **10**)
+
+       The initial periodic scan interval upon disconnect.
+
+   * - MaximumPeriodicScanInterval
+     - Values: unsigned int value in seconds (default: **300**)
+
+       The maximum periodic scan interval.
+
    * - DisableRoamingScan
      - Values: true, **false**
 
