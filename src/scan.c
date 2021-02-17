@@ -50,8 +50,10 @@
 #include "src/mpdu.h"
 #include "src/scan.h"
 
-#define SCAN_MAX_INTERVAL 320
-#define SCAN_INIT_INTERVAL 10
+/* User configurable options */
+static double RANK_5G_FACTOR;
+static uint32_t SCAN_MAX_INTERVAL;
+static uint32_t SCAN_INIT_INTERVAL;
 
 static struct l_queue *scan_contexts;
 
@@ -115,6 +117,7 @@ struct scan_context {
 struct scan_results {
 	struct scan_context *sc;
 	struct l_queue *bss_list;
+	struct scan_freq_set *freqs;
 	uint64_t time_stamp;
 	struct scan_request *sr;
 };
@@ -159,7 +162,7 @@ static void scan_request_failed(struct scan_context *sc,
 	if (sr->trigger)
 		sr->trigger(err, sr->userdata);
 	else if (sr->callback)
-		sr->callback(err, NULL, sr->userdata);
+		sr->callback(err, NULL, NULL, sr->userdata);
 
 	wiphy_radio_work_done(sc->wiphy, sr->work.id);
 }
@@ -435,6 +438,35 @@ done:
 	return msg;
 }
 
+struct l_genl_msg *scan_build_trigger_scan_bss(uint32_t ifindex,
+						struct wiphy *wiphy,
+						uint32_t frequency,
+						const uint8_t *ssid,
+						uint32_t ssid_len)
+{
+	struct l_genl_msg *msg = l_genl_msg_new(NL80211_CMD_TRIGGER_SCAN);
+	uint32_t flags = 0;
+
+	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &ifindex);
+
+	l_genl_msg_enter_nested(msg, NL80211_ATTR_SCAN_FREQUENCIES);
+	l_genl_msg_append_attr(msg, 0, 4, &frequency);
+	l_genl_msg_leave_nested(msg);
+
+	if (wiphy_has_ext_feature(wiphy, NL80211_EXT_FEATURE_SCAN_RANDOM_SN))
+		flags |= NL80211_SCAN_FLAG_RANDOM_SN;
+
+	if (flags)
+		l_genl_msg_append_attr(msg, NL80211_ATTR_SCAN_FLAGS, 4, &flags);
+
+	/* direct probe request scan */
+	l_genl_msg_enter_nested(msg, NL80211_ATTR_SCAN_SSIDS);
+	l_genl_msg_append_attr(msg, 0, ssid_len, ssid);
+	l_genl_msg_leave_nested(msg);
+
+	return msg;
+}
+
 struct scan_cmds_add_data {
 	struct scan_context *sc;
 	const struct scan_parameters *params;
@@ -682,6 +714,7 @@ static void scan_periodic_triggered(int err, void *user_data)
 }
 
 static bool scan_periodic_notify(int err, struct l_queue *bss_list,
+					const struct scan_freq_set *freqs,
 					void *user_data)
 {
 	struct scan_context *sc = user_data;
@@ -689,7 +722,7 @@ static bool scan_periodic_notify(int err, struct l_queue *bss_list,
 	scan_periodic_rearm(sc);
 
 	if (sc->sp.callback)
-		return sc->sp.callback(err, bss_list, sc->sp.userdata);
+		return sc->sp.callback(err, bss_list, freqs, sc->sp.userdata);
 
 	return false;
 }
@@ -818,6 +851,8 @@ static void scan_periodic_timeout(struct l_timeout *timeout, void *user_data)
 	l_debug("scan_periodic_timeout: %" PRIx64, sc->wdev_id);
 
 	sc->sp.interval *= 2;
+	if (sc->sp.interval > SCAN_MAX_INTERVAL)
+		sc->sp.interval = SCAN_MAX_INTERVAL;
 
 	scan_periodic_queue(sc);
 }
@@ -1119,7 +1154,8 @@ static bool scan_parse_bss_information_elements(struct scan_bss *bss,
 	return have_ssid;
 }
 
-static struct scan_bss *scan_parse_attr_bss(struct l_genl_attr *attr)
+static struct scan_bss *scan_parse_attr_bss(struct l_genl_attr *attr,
+						uint32_t *out_seen_ms_ago)
 {
 	uint16_t type, len;
 	const void *data;
@@ -1176,6 +1212,18 @@ static struct scan_bss *scan_parse_attr_bss(struct l_genl_attr *attr)
 			beacon_ies = data;
 			beacon_ies_len = len;
 			break;
+		case NL80211_BSS_SEEN_MS_AGO:
+			if (L_WARN_ON(len != sizeof(uint32_t)))
+				break;
+
+			*out_seen_ms_ago = l_get_u32(data);
+			break;
+		case NL80211_BSS_LAST_SEEN_BOOTTIME:
+			if (L_WARN_ON(len != sizeof(uint64_t)))
+				break;
+
+			bss->time_stamp = l_get_u64(data);
+			break;
 		}
 	}
 
@@ -1200,8 +1248,31 @@ fail:
 	return NULL;
 }
 
+static struct scan_freq_set *scan_parse_attr_scan_frequencies(
+						struct l_genl_attr *attr)
+{
+	uint16_t type, len;
+	const void *data;
+	struct scan_freq_set *set;
+
+	set = scan_freq_set_new();
+
+	while (l_genl_attr_next(attr, &type, &len, &data)) {
+		uint32_t freq;
+
+		if (len != sizeof(uint32_t))
+			continue;
+
+		freq = *((uint32_t *) data);
+		scan_freq_set_add(set, freq);
+	}
+
+	return set;
+}
+
 static struct scan_bss *scan_parse_result(struct l_genl_msg *msg,
-						uint64_t *out_wdev)
+						uint64_t *out_wdev,
+						uint32_t *out_seen_ms_ago)
 {
 	struct l_genl_attr attr, nested;
 	uint16_t type, len;
@@ -1225,7 +1296,7 @@ static struct scan_bss *scan_parse_result(struct l_genl_msg *msg,
 			if (!l_genl_attr_recurse(&attr, &nested))
 				return NULL;
 
-			bss = scan_parse_attr_bss(&nested);
+			bss = scan_parse_attr_bss(&nested, out_seen_ms_ago);
 			break;
 		}
 	}
@@ -1243,9 +1314,6 @@ static struct scan_bss *scan_parse_result(struct l_genl_msg *msg,
 
 	return bss;
 }
-
-/* User configurable options */
-static double RANK_5G_FACTOR;
 
 static void scan_bss_compute_rank(struct scan_bss *bss)
 {
@@ -1436,10 +1504,11 @@ static void get_scan_callback(struct l_genl_msg *msg, void *user_data)
 	struct scan_context *sc = results->sc;
 	struct scan_bss *bss;
 	uint64_t wdev_id;
+	uint32_t seen_ms_ago = 0;
 
 	l_debug("get_scan_callback");
 
-	bss = scan_parse_result(msg, &wdev_id);
+	bss = scan_parse_result(msg, &wdev_id, &seen_ms_ago);
 	if (!bss)
 		return;
 
@@ -1449,7 +1518,9 @@ static void get_scan_callback(struct l_genl_msg *msg, void *user_data)
 		return;
 	}
 
-	bss->time_stamp = results->time_stamp;
+	if (!bss->time_stamp)
+		bss->time_stamp = results->time_stamp -
+					seen_ms_ago * L_USEC_PER_MSEC;
 
 	scan_bss_compute_rank(bss);
 	l_queue_insert(results->bss_list, bss, scan_bss_rank_compare, NULL);
@@ -1473,6 +1544,7 @@ static void discover_hidden_network_bsses(struct scan_context *sc,
 
 static void scan_finished(struct scan_context *sc,
 				int err, struct l_queue *bss_list,
+				const struct scan_freq_set *freqs,
 				struct scan_request *sr)
 {
 	bool new_owner = false;
@@ -1486,7 +1558,8 @@ static void scan_finished(struct scan_context *sc,
 		sc->work_started = false;
 
 		if (sr->callback)
-			new_owner = sr->callback(err, bss_list, sr->userdata);
+			new_owner = sr->callback(err, bss_list,
+							freqs, sr->userdata);
 
 		/*
 		 * Can start a new scan now that we've removed this one from
@@ -1497,7 +1570,8 @@ static void scan_finished(struct scan_context *sc,
 		 */
 		wiphy_radio_work_done(sc->wiphy, sr->work.id);
 	} else if (sc->sp.callback)
-		new_owner = sc->sp.callback(err, bss_list, sc->sp.userdata);
+		new_owner = sc->sp.callback(err, bss_list,
+						freqs, sc->sp.userdata);
 
 	if (bss_list && !new_owner)
 		l_queue_destroy(bss_list,
@@ -1514,10 +1588,14 @@ static void get_scan_done(void *user)
 	sc->get_scan_cmd_id = 0;
 
 	if (l_queue_peek_head(sc->requests) == results->sr)
-		scan_finished(sc, 0, results->bss_list, results->sr);
+		scan_finished(sc, 0, results->bss_list,
+						results->freqs, results->sr);
 	else
 		l_queue_destroy(results->bss_list,
 				(l_queue_destroy_func_t) scan_bss_free);
+
+	if (results->freqs)
+		scan_freq_set_free(results->freqs);
 
 	l_free(results);
 }
@@ -1536,6 +1614,31 @@ static bool scan_parse_flush_flag_from_msg(struct l_genl_msg *msg)
 			return true;
 
 	return false;
+}
+
+static void scan_parse_new_scan_results(struct l_genl_msg *msg,
+					struct scan_results *results)
+{
+	struct l_genl_attr attr, nested;
+	uint16_t type, len;
+	const void *data;
+
+	if (!l_genl_attr_init(&attr, msg))
+		return;
+
+	while (l_genl_attr_next(&attr, &type, &len, &data)) {
+		switch (type) {
+		case NL80211_ATTR_SCAN_FREQUENCIES:
+			if (!l_genl_attr_recurse(&attr, &nested)) {
+				l_warn("Failed to parse ATTR_SCAN_FREQUENCIES");
+				break;
+			}
+
+			results->freqs =
+				scan_parse_attr_scan_frequencies(&nested);
+			break;
+		}
+	}
 }
 
 static void scan_notify(struct l_genl_msg *msg, void *user_data)
@@ -1601,7 +1704,7 @@ static void scan_notify(struct l_genl_msg *msg, void *user_data)
 			sc->triggered = false;
 
 			if (!sr->callback) {
-				scan_finished(sc, -ECANCELED, NULL, sr);
+				scan_finished(sc, -ECANCELED, NULL, NULL, sr);
 				break;
 			}
 
@@ -1624,7 +1727,7 @@ static void scan_notify(struct l_genl_msg *msg, void *user_data)
 
 			/* An external scan may have flushed our results */
 			if (sc->started && scan_parse_flush_flag_from_msg(msg))
-				scan_finished(sc, -EAGAIN, NULL, sr);
+				scan_finished(sc, -EAGAIN, NULL, NULL, sr);
 			else
 				send_next = true;
 
@@ -1656,6 +1759,8 @@ static void scan_notify(struct l_genl_msg *msg, void *user_data)
 		results->sr = sr;
 		results->bss_list = l_queue_new();
 
+		scan_parse_new_scan_results(msg, results);
+
 		scan_msg = l_genl_msg_new_sized(NL80211_CMD_GET_SCAN, 8);
 		l_genl_msg_append_attr(scan_msg, NL80211_ATTR_WDEV, 8,
 					&sc->wdev_id);
@@ -1686,7 +1791,7 @@ static void scan_notify(struct l_genl_msg *msg, void *user_data)
 		if (sc->triggered) {
 			sc->triggered = false;
 
-			scan_finished(sc, -ECANCELED, NULL, sr);
+			scan_finished(sc, -ECANCELED, NULL, NULL, sr);
 		} else {
 			/*
 			 * If this was an external scan that got aborted
@@ -1937,7 +2042,7 @@ bool scan_freq_set_add(struct scan_freq_set *freqs, uint32_t freq)
 	return false;
 }
 
-bool scan_freq_set_contains(struct scan_freq_set *freqs, uint32_t freq)
+bool scan_freq_set_contains(const struct scan_freq_set *freqs, uint32_t freq)
 {
 	enum scan_band band;
 	uint8_t channel;
@@ -2108,6 +2213,20 @@ static int scan_init(void)
 	if (!l_settings_get_double(config, "Rank", "BandModifier5Ghz",
 					&RANK_5G_FACTOR))
 		RANK_5G_FACTOR = 1.0;
+
+	if (!l_settings_get_uint(config, "Scan", "InitialPeriodicScanInterval",
+					&SCAN_INIT_INTERVAL))
+		SCAN_INIT_INTERVAL = 10;
+
+	if (SCAN_INIT_INTERVAL > UINT16_MAX)
+		SCAN_INIT_INTERVAL = UINT16_MAX;
+
+	if (!l_settings_get_uint(config, "Scan", "MaximumPeriodicScanInterval",
+					&SCAN_MAX_INTERVAL))
+		SCAN_MAX_INTERVAL = 300;
+
+	if (SCAN_MAX_INTERVAL > UINT16_MAX)
+		SCAN_MAX_INTERVAL = UINT16_MAX;
 
 	return 0;
 }

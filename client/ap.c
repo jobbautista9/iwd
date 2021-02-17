@@ -30,9 +30,11 @@
 #include "client/dbus-proxy.h"
 #include "client/device.h"
 #include "client/display.h"
+#include "client/diagnostic.h"
 
 struct ap {
 	bool started;
+	char *name;
 };
 
 static void *ap_create(void)
@@ -43,6 +45,9 @@ static void *ap_create(void)
 static void ap_destroy(void *data)
 {
 	struct ap *ap = data;
+
+	if (ap->name)
+		l_free(ap->name);
 
 	l_free(ap);
 }
@@ -73,8 +78,35 @@ static void update_started(void *data, struct l_dbus_message_iter *variant)
 	ap->started = value;
 }
 
+static const char *get_name_tostr(const void *data)
+{
+	const struct ap *ap = data;
+
+	if (!ap->name)
+		return "";
+
+	return ap->name;
+}
+
+static void update_name(void *data, struct l_dbus_message_iter *variant)
+{
+	struct ap *ap = data;
+	const char *name;
+
+	if (ap->name)
+		l_free(ap->name);
+
+	if (!l_dbus_message_iter_get_variant(variant, "s", &name)) {
+		ap->name = NULL;
+		return;
+	}
+
+	ap->name = l_strdup(name);
+}
+
 static const struct proxy_interface_property ap_properties[] = {
 	{ "Started",  "b", update_started,  get_started_tostr },
+	{ "Name",     "s", update_name, get_name_tostr },
 	{ }
 };
 
@@ -189,13 +221,96 @@ static enum cmd_status cmd_stop(const char *device_name, char **argv, int argc)
 	return CMD_STATUS_TRIGGERED;
 }
 
+static struct proxy_interface_type ap_diagnostic_interface_type = {
+	.interface = IWD_AP_DIAGNOSTIC_INTERFACE,
+};
+
+static void ap_get_diagnostics_callback(struct l_dbus_message *message,
+					void *user_data)
+{
+	struct l_dbus_message_iter array;
+	struct l_dbus_message_iter iter;
+	uint16_t idx = 0;
+	char client_num[15];
+
+	if (dbus_message_has_error(message))
+		return;
+
+	if (!l_dbus_message_get_arguments(message, "aa{sv}", &array)) {
+		display("Failed to parse GetDiagnostics message");
+		return;
+	}
+
+	while (l_dbus_message_iter_next_entry(&array, &iter)) {
+		sprintf(client_num, "Client %u", idx++);
+		display_table_header(client_num, "            %-*s%-*s",
+					20, "Property", 20, "Value");
+		diagnostic_display(&iter, "            ", 20, 20);
+		display_table_footer();
+	}
+}
+
+static enum cmd_status cmd_show(const char *device_name, char **argv, int argc)
+{
+	const struct proxy_interface *ap_diagnostic =
+		device_proxy_find(device_name, IWD_AP_DIAGNOSTIC_INTERFACE);
+	const struct proxy_interface *ap_i =
+		device_proxy_find(device_name, IWD_ACCESS_POINT_INTERFACE);
+
+	if (!ap_i) {
+		display("No ap on device: '%s'\n", device_name);
+		return CMD_STATUS_INVALID_VALUE;
+	}
+
+	proxy_properties_display(ap_i, "Access Point Interface", MARGIN, 20, 20);
+	display_table_footer();
+
+	if (!ap_diagnostic)
+		return CMD_STATUS_DONE;
+
+	proxy_interface_method_call(ap_diagnostic, "GetDiagnostics", "",
+					ap_get_diagnostics_callback);
+
+	return CMD_STATUS_TRIGGERED;
+}
+
+static enum cmd_status cmd_start_profile(const char *device_name,
+						char **argv, int argc)
+{
+	const struct proxy_interface *ap_i;
+
+	if (argc < 1)
+		return CMD_STATUS_INVALID_ARGS;
+
+	if (strlen(argv[0]) > 32) {
+		display("Network name cannot exceed 32 characters.\n");
+
+		return CMD_STATUS_INVALID_VALUE;
+	}
+
+	ap_i = device_proxy_find(device_name, IWD_ACCESS_POINT_INTERFACE);
+	if (!ap_i) {
+		display("No ap on device: '%s'\n", device_name);
+		return CMD_STATUS_INVALID_VALUE;
+	}
+
+	proxy_interface_method_call(ap_i, "StartProfile", "s",
+						check_errors_method_callback,
+						argv[0]);
+
+	return CMD_STATUS_TRIGGERED;
+}
+
 static const struct command ap_commands[] = {
 	{ NULL, "list", NULL, cmd_list, "List devices in AP mode", true },
 	{ "<wlan>", "start", "<\"network name\"> <passphrase>", cmd_start,
 		"Start an access point\n\t\t\t\t\t\t    called \"network "
 		"name\" with\n\t\t\t\t\t\t    a passphrase" },
+	{ "<wlan>", "start-profile", "<\"network name\">", cmd_start_profile,
+		"Start an access point based on a disk profile" },
 	{ "<wlan>", "stop", NULL,   cmd_stop, "Stop a started access\n"
 		"\t\t\t\t\t\t    point" },
+	{ "<wlan", "show", NULL, cmd_show, "Show AP info", false },
 	{ }
 };
 
@@ -236,6 +351,7 @@ COMMAND_FAMILY(ap_command_family, ap_command_family_init,
 static int ap_interface_init(void)
 {
 	proxy_interface_type_register(&ap_interface_type);
+	proxy_interface_type_register(&ap_diagnostic_interface_type);
 
 	return 0;
 }
@@ -243,6 +359,7 @@ static int ap_interface_init(void)
 static void ap_interface_exit(void)
 {
 	proxy_interface_type_unregister(&ap_interface_type);
+	proxy_interface_type_unregister(&ap_diagnostic_interface_type);
 }
 
 INTERFACE_TYPE(ap_interface_type, ap_interface_init, ap_interface_exit)

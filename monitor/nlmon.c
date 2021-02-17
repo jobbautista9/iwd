@@ -82,6 +82,8 @@
 #define BSS_CAPABILITY_APSD		(1<<11)
 #define BSS_CAPABILITY_DSSS_OFDM	(1<<13)
 
+struct nlmon *cur_nlmon;
+
 enum msg_type {
 	MSG_REQUEST,
 	MSG_RESPONSE,
@@ -99,6 +101,7 @@ struct nlmon {
 	bool nortnl;
 	bool nowiphy;
 	bool noscan;
+	bool noies;
 };
 
 struct nlmon_req {
@@ -2124,6 +2127,9 @@ static void print_ie(unsigned int level, const char *label,
 			}
 		}
 
+		if (cur_nlmon && cur_nlmon->noies && tag != IE_TYPE_SSID)
+			continue;
+
 		if (entry && entry->function)
 			entry->function(level + 1, entry->str,
 					iter.data, iter.len);
@@ -3966,6 +3972,9 @@ static void print_management_ies(unsigned int level, const char *label,
 
 	print_ie(level, label, data, size);
 
+	if (cur_nlmon && cur_nlmon->noies)
+		return;
+
 	wsc_data = ie_tlv_extract_wsc_payload(data, size, &wsc_len);
 	if (wsc_data) {
 		print_wsc_attributes(level + 1, "WSC Payload",
@@ -4881,6 +4890,9 @@ static const struct attr_entry bss_table[] = {
 	{ NL80211_BSS_BEACON_TSF,	"Beacon TSF",	ATTR_U64	},
 	{ NL80211_BSS_PRESP_DATA,	"Probe Response", ATTR_FLAG	},
 	{ NL80211_BSS_PARENT_TSF,	"Parent TSF",	ATTR_U64	},
+	{ NL80211_BSS_PARENT_BSSID,	"Parent BSSID", ATTR_ADDRESS	},
+	{ NL80211_BSS_LAST_SEEN_BOOTTIME, "Timestamp",	ATTR_U64	},
+	{ NL80211_BSS_FREQUENCY_OFFSET,	"Freq Offset",	ATTR_U32	},
 	{ }
 };
 
@@ -5426,6 +5438,43 @@ static const struct attr_entry control_port_attr_table[] = {
 			"Wiphy", ATTR_U32 },
 };
 
+static const struct attr_entry scan_flag_table[] = {
+	{ NL80211_SCAN_FLAG_LOW_PRIORITY,	"LowPriority",	ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_FLUSH,		"Flush",	ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_AP,			"AP",		ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_RANDOM_ADDR,	"RandomMAC",	ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_FILS_MAX_CHANNEL_TIME,
+						"FILSMaxTime",	ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_ACCEPT_BCAST_PROBE_RESP,
+						"BcastPrespOK", ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_OCE_PROBE_REQ_HIGH_TX_RATE,
+						"OCEHighTX",	ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_OCE_PROBE_REQ_DEFERRAL_SUPPRESSION,
+						"OCEDeferSupp",	ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_LOW_SPAN,		"LowSpan",	ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_LOW_POWER,		"LowPower",	ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_HIGH_ACCURACY,	"HighAccuracy", ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_RANDOM_SN,		"RandomSN",	ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_MIN_PREQ_CONTENT,	"MinPreqCont",	ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_FREQ_KHZ,		"FreqKHz",	ATTR_FLAG },
+	{ NL80211_SCAN_FLAG_COLOCATED_6GHZ,	"Colocated6G",	ATTR_FLAG },
+	{ }
+};
+
+static void print_scan_flags(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	const uint32_t *flags = data;
+	unsigned int i;
+
+	print_attr(level, "%s: Mask: 0x%08x len %u", label, *flags, size);
+
+	for (i = 0; scan_flag_table[i].str; i++) {
+		if (*flags & scan_flag_table[i].attr)
+			print_attr(level + 2, "%s", scan_flag_table[i].str);
+	}
+}
+
 static const struct attr_entry attr_table[] = {
 	{ NL80211_ATTR_WIPHY,
 			"Wiphy", ATTR_U32 },
@@ -5759,8 +5808,8 @@ static const struct attr_entry attr_table[] = {
 			"Auth Data" },
 	{ NL80211_ATTR_VHT_CAPABILITY,
 			"VHT Capability" },
-	{ NL80211_ATTR_SCAN_FLAGS,
-			"Scan Flags", ATTR_U32 },
+	{ NL80211_ATTR_SCAN_FLAGS, "Scan Flags", ATTR_CUSTOM,
+					{ .function = print_scan_flags } },
 	{ NL80211_ATTR_CHANNEL_WIDTH,
 			"Channel Width", ATTR_U32 },
 	{ NL80211_ATTR_CENTER_FREQ1,
@@ -5929,6 +5978,10 @@ static const struct attr_entry attr_table[] = {
 			"Scan Start Time", ATTR_U64 },
 	{ NL80211_ATTR_SCAN_START_TIME_TSF_BSSID,
 			"Scan Start Time BSSID", ATTR_ADDRESS },
+	{ NL80211_ATTR_MEASUREMENT_DURATION,
+			"Scan Duration", ATTR_U16 },
+	{ NL80211_ATTR_MEASUREMENT_DURATION_MANDATORY,
+			"Scan Duration Mandatory", ATTR_FLAG },
 	{ }
 };
 
@@ -6288,6 +6341,8 @@ static void print_message(struct nlmon *nlmon, const struct timeval *tv,
 	case MSG_REQUEST:
 	case MSG_RESULT:
 	case MSG_EVENT:
+		cur_nlmon = nlmon;
+
 		switch (cmd) {
 		case NL80211_CMD_CONTROL_PORT_FRAME:
 			print_attributes(0, control_port_attr_table, data, len);
@@ -6295,6 +6350,8 @@ static void print_message(struct nlmon *nlmon, const struct timeval *tv,
 		default:
 			print_attributes(0, attr_table, data, len);
 		}
+
+		cur_nlmon = NULL;
 		break;
 	case MSG_RESPONSE:
 		print_field("Status: %s (%d)", strerror(status), status);
@@ -7655,6 +7712,7 @@ struct nlmon *nlmon_open(const char *ifname, uint16_t id, const char *pathname,
 	nlmon->nortnl = config->nortnl;
 	nlmon->nowiphy = config->nowiphy;
 	nlmon->noscan = config->noscan;
+	nlmon->noies = config->noies;
 
 	l_io_set_read_handler(nlmon->io, nlmon_receive, nlmon, NULL);
 	l_io_set_read_handler(nlmon->pae_io, pae_receive, nlmon, NULL);
