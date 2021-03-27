@@ -1,7 +1,6 @@
 Source: iwd
 Section: net
 Priority: optional
-
 Origin: Devuan
 Maintainer: Job Bautista <jobbautista9@protonmail.com>
 Build-Depends: debhelper-compat (= 12),
