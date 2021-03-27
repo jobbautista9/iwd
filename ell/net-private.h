@@ -2,7 +2,7 @@
  *
  *  Embedded Linux library
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2020  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,6 +20,5 @@
  *
  */
 
-struct l_cipher *pkcs5_cipher_from_alg_id(const uint8_t *id_asn1,
-						size_t id_asn1_len,
-						const char *password);
+char *net_domain_name_parse(const uint8_t *raw, size_t raw_len);
+char **net_domain_list_parse(const uint8_t *raw, size_t raw_len);

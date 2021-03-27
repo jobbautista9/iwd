@@ -374,16 +374,18 @@ static int network_load_psk(struct network *network, bool need_passphrase)
 {
 	const char *ssid = network_get_ssid(network);
 	enum security security = network_get_security(network);
-	size_t len;
-	const char *psk = l_settings_get_value(network->settings,
-						"Security", "PreSharedKey");
+	size_t psk_len;
+	uint8_t *psk = l_settings_get_bytes(network->settings, "Security",
+						"PreSharedKey", &psk_len);
 	char *passphrase = l_settings_get_string(network->settings,
 						"Security", "Passphrase");
 	int r;
 
 	/* PSK can be generated from the passphrase but not the other way */
-	if ((!psk || need_passphrase) && !passphrase)
+	if ((!psk || need_passphrase) && !passphrase) {
+		l_free(psk);
 		return -ENOKEY;
+	}
 
 	network_reset_passphrase(network);
 	network_reset_psk(network);
@@ -392,11 +394,12 @@ static int network_load_psk(struct network *network, bool need_passphrase)
 	if (psk) {
 		char *path;
 
-		network->psk = l_util_from_hexstring(psk, &len);
-		if (network->psk && len == 32)
+		if (psk_len == 32) {
+			network->psk = psk;
 			return 0;
+		}
 
-		network_reset_psk(network);
+		l_free(psk);
 
 		path = storage_get_network_file_path(security, ssid);
 		l_error("%s: invalid PreSharedKey format", path);
@@ -439,15 +442,14 @@ void network_sync_psk(struct network *network)
 	fs_settings = storage_network_open(SECURITY_PSK, ssid);
 
 	if (network->psk) {
-		char *hex = l_util_hexstring(network->psk, 32);
-		l_settings_set_value(network->settings, "Security",
-						"PreSharedKey", hex);
+		l_settings_set_bytes(network->settings, "Security",
+						"PreSharedKey",
+						network->psk, 32);
 
 		if (fs_settings)
-			l_settings_set_value(fs_settings, "Security",
-						"PreSharedKey", hex);
-
-		l_free(hex);
+			l_settings_set_bytes(fs_settings, "Security",
+						"PreSharedKey",
+						network->psk, 32);
 	}
 
 	if (network->passphrase) {
@@ -679,6 +681,11 @@ void network_bss_list_clear(struct network *network)
 {
 	l_queue_destroy(network->bss_list, NULL);
 	network->bss_list = l_queue_new();
+}
+
+struct scan_bss *network_bss_list_pop(struct network *network)
+{
+	return l_queue_pop_head(network->bss_list);
 }
 
 struct scan_bss *network_bss_find_by_addr(struct network *network,
@@ -1146,6 +1153,9 @@ static struct l_dbus_message *network_connect(struct l_dbus *dbus,
 		 */
 		return l_dbus_message_new_method_return(message);
 
+	if (network->agent_request)
+		return dbus_error_busy(message);
+
 	/*
 	 * Select the best BSS to use at this time.  If we have to query the
 	 * agent this may not be the final choice because BSS visibility can
@@ -1189,14 +1199,22 @@ static struct l_dbus_message *network_connect(struct l_dbus *dbus,
 	}
 }
 
-void network_connect_new_hidden_network(struct network *network,
-						struct l_dbus_message **message)
+/*
+ * Returns an error message in case an error occurs.  Otherwise this function
+ * returns NULL and takes a reference to message.  Callers should unref
+ * their copy in this case
+ */
+struct l_dbus_message *network_connect_new_hidden_network(
+						struct network *network,
+						struct l_dbus_message *message)
 {
 	struct station *station = network->station;
 	struct scan_bss *bss;
-	struct l_dbus_message *error;
 
 	l_debug("");
+
+	if (network->agent_request)
+		return dbus_error_busy(message);
 
 	/*
 	 * This is not a Known Network.  If connection succeeds, either
@@ -1205,34 +1223,24 @@ void network_connect_new_hidden_network(struct network *network,
 	 */
 
 	bss = network_bss_select(network, true);
-	if (!bss) {
-		/* This should never happened for the hidden networks. */
-		error = dbus_error_not_supported(*message);
-		goto reply_error;
-	}
+	/* This should never happened for the hidden networks. */
+	if (!bss)
+		return dbus_error_not_supported(message);
 
 	network->settings = l_settings_new();
 	l_settings_set_bool(network->settings, "Settings", "Hidden", true);
 
 	switch (network_get_security(network)) {
 	case SECURITY_PSK:
-		error = network_connect_psk(network, bss, *message);
-		break;
+		return network_connect_psk(network, bss, message);
 	case SECURITY_NONE:
-		station_connect_network(station, network, bss, *message);
-		return;
+		station_connect_network(station, network, bss, message);
+		return NULL;
 	default:
-		error = dbus_error_not_supported(*message);
 		break;
 	}
 
-	if (error)
-		goto reply_error;
-
-	return;
-
-reply_error:
-	dbus_pending_reply(message, error);
+	return dbus_error_not_supported(message);
 }
 
 void network_blacklist_add(struct network *network, struct scan_bss *bss)
@@ -1436,22 +1444,30 @@ static void network_unset_hotspot(struct network *network, void *user_data)
 	network_set_info(network, NULL);
 }
 
-static void emit_known_network_changed(struct station *station, void *user_data)
+static void emit_known_network_removed(struct station *station, void *user_data)
 {
 	struct network_info *info = user_data;
-	struct network *network;
+	bool was_hidden = info->is_hidden;
+	struct network *connected_network;
+	struct network *network = NULL;
 
-	if (!info->is_hotspot) {
+	/* Clear network info, as this network is no longer known */
+	if (info->is_hotspot)
+		station_network_foreach(station, network_unset_hotspot, info);
+	else {
 		network = station_network_find(station, info->ssid, info->type);
 		if (!network)
 			return;
 
 		network_set_info(network, NULL);
-		return;
 	}
 
-	/* This is a removed hotspot */
-	station_network_foreach(station, network_unset_hotspot, info);
+	connected_network = station_get_connected_network(station);
+	if (connected_network && connected_network->info == NULL)
+		station_disconnect(station);
+
+	if (network && was_hidden)
+		station_hide_network(station, network);
 }
 
 static void network_update_hotspot(struct network *network, void *user_data)
@@ -1479,17 +1495,6 @@ static void match_known_network(struct station *station, void *user_data)
 	station_network_foreach(station, network_update_hotspot, info);
 }
 
-static void disconnect_no_longer_known(struct station *station, void *user_data)
-{
-	struct network_info *info = user_data;
-	struct network *network;
-
-	network = station_get_connected_network(station);
-
-	if (network && network->info == info)
-		station_disconnect(station);
-}
-
 static void known_networks_changed(enum known_networks_event event,
 					const struct network_info *info,
 					void *user_data)
@@ -1502,8 +1507,7 @@ static void known_networks_changed(enum known_networks_event event,
 		known_network_frequency_sync((struct network_info *)info);
 		break;
 	case KNOWN_NETWORKS_EVENT_REMOVED:
-		station_foreach(disconnect_no_longer_known, (void *) info);
-		station_foreach(emit_known_network_changed, (void *) info);
+		station_foreach(emit_known_network_removed, (void *) info);
 		break;
 	}
 }

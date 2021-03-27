@@ -31,6 +31,7 @@
 #include "client/device.h"
 #include "client/network.h"
 #include "client/display.h"
+#include "client/diagnostic.h"
 
 struct station {
 	bool scanning;
@@ -130,6 +131,10 @@ static struct proxy_interface_type station_interface_type = {
 	.ops = &station_ops,
 };
 
+static struct proxy_interface_type station_diagnostic_interface = {
+	.interface = IWD_STATION_DIAGNOSTIC_INTERFACE,
+};
+
 static void check_errors_method_callback(struct l_dbus_message *message,
 								void *user_data)
 {
@@ -145,10 +150,16 @@ static void display_station(const char *device_name,
 	proxy_properties_display(proxy, caption, MARGIN, 20, 47);
 	l_free(caption);
 
-	if (station->connected_network)
+	if (station->connected_network) {
 		display("%s%*s  %-*s%-*s\n", MARGIN, 8, "", 20,
 				"Connected network", 47,
 				network_get_name(station->connected_network));
+		/*
+		 * If connected the diagnostic interface is presumably up so
+		 * don't add the table footer just yet.
+		 */
+		return;
+	}
 
 	display_table_footer();
 }
@@ -583,11 +594,35 @@ static enum cmd_status cmd_scan(const char *device_name,
 	return CMD_STATUS_TRIGGERED;
 }
 
+static void get_diagnostics_callback(struct l_dbus_message *message,
+					void *user_data)
+{
+	struct l_dbus_message_iter iter;
+
+	if (dbus_message_has_error(message))
+		return;
+
+	if (!l_dbus_message_get_arguments(message, "a{sv}", &iter)) {
+		l_error("Failed to parse GetDiagnostics message");
+		goto done;
+	}
+
+	diagnostic_display(&iter, "            ", 20, 20);
+
+done:
+	/* Finish the table started by cmd_show */
+	display_table_footer();
+	display_refresh_reset();
+}
+
 static enum cmd_status cmd_show(const char *device_name,
 						char **argv, int argc)
 {
 	const struct proxy_interface *station =
 			device_proxy_find(device_name, IWD_STATION_INTERFACE);
+	const struct proxy_interface *diagnostic =
+					device_proxy_find(device_name,
+					IWD_STATION_DIAGNOSTIC_INTERFACE);
 
 	if (!station) {
 		display("No station on device: '%s'\n", device_name);
@@ -596,7 +631,21 @@ static enum cmd_status cmd_show(const char *device_name,
 
 	display_station(device_name, station);
 
-	return CMD_STATUS_DONE;
+	/*
+	 * No need to query additional diagnostic information if IWD has
+	 * no diagnostic interface.
+	 */
+	if (!diagnostic) {
+		display_table_footer();
+		display_refresh_reset();
+		return CMD_STATUS_DONE;
+	}
+
+	proxy_interface_method_call(diagnostic, "GetDiagnostics", "",
+					get_diagnostics_callback);
+
+	/* Don't display table footer, this will be done in the callback */
+	return CMD_STATUS_TRIGGERED;
 }
 
 static const struct command station_commands[] = {
@@ -663,6 +712,7 @@ COMMAND_FAMILY(station_command_family, station_command_family_init,
 static int station_interface_init(void)
 {
 	proxy_interface_type_register(&station_interface_type);
+	proxy_interface_type_register(&station_diagnostic_interface);
 
 	return 0;
 }
@@ -670,6 +720,7 @@ static int station_interface_init(void)
 static void station_interface_exit(void)
 {
 	proxy_interface_type_unregister(&station_interface_type);
+	proxy_interface_type_unregister(&station_diagnostic_interface);
 }
 
 INTERFACE_TYPE(station_interface_type,

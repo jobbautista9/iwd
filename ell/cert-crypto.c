@@ -2,7 +2,7 @@
  *
  *  Embedded Linux library
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2020  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -33,17 +33,19 @@
 #include "checksum.h"
 #include "cipher.h"
 #include "util.h"
+#include "utf8.h"
 #include "asn1-private.h"
-#include "pkcs5.h"
-#include "pkcs5-private.h"
 #include "private.h"
 #include "missing.h"
+#include "cert.h"
+#include "cert-private.h"
 
 /* RFC8018 section 5.1 */
-LIB_EXPORT bool l_pkcs5_pbkdf1(enum l_checksum_type type, const char *password,
-				const uint8_t *salt, size_t salt_len,
-				unsigned int iter_count,
-				uint8_t *out_dk, size_t dk_len)
+LIB_EXPORT bool l_cert_pkcs5_pbkdf1(enum l_checksum_type type,
+					const char *password,
+					const uint8_t *salt, size_t salt_len,
+					unsigned int iter_count,
+					uint8_t *out_dk, size_t dk_len)
 {
 	size_t hash_len, t_len;
 	uint8_t t[20 + salt_len + strlen(password)];
@@ -102,10 +104,11 @@ LIB_EXPORT bool l_pkcs5_pbkdf1(enum l_checksum_type type, const char *password,
 }
 
 /* RFC8018 section 5.2 */
-LIB_EXPORT bool l_pkcs5_pbkdf2(enum l_checksum_type type, const char *password,
-				const uint8_t *salt, size_t salt_len,
-				unsigned int iter_count,
-				uint8_t *out_dk, size_t dk_len)
+LIB_EXPORT bool l_cert_pkcs5_pbkdf2(enum l_checksum_type type,
+					const char *password,
+					const uint8_t *salt, size_t salt_len,
+					unsigned int iter_count,
+					uint8_t *out_dk, size_t dk_len)
 {
 	size_t h_len;
 	struct l_checksum *checksum;
@@ -182,14 +185,147 @@ LIB_EXPORT bool l_pkcs5_pbkdf2(enum l_checksum_type type, const char *password,
 	return !dk_len;
 }
 
+/* RFC7292 Appendix B */
+uint8_t *cert_pkcs12_pbkdf(const char *password,
+				const struct cert_pkcs12_hash *hash,
+				const uint8_t *salt, size_t salt_len,
+				unsigned int iterations, uint8_t id,
+				size_t key_len)
+{
+	/* All lengths in bytes instead of bits */
+	size_t passwd_len = password ? 2 * strlen(password) + 2 : 0;
+	uint8_t *bmpstring;
+	/* Documented as v(ceiling(s/v)), usually will just equal v */
+	unsigned int s_len = (salt_len + hash->v - 1) & ~(hash->v - 1);
+	/* Documented as p(ceiling(s/p)), usually will just equal v */
+	unsigned int p_len = password ?
+			(passwd_len + hash->v - 1) & ~(hash->v - 1) : 0;
+	uint8_t di[hash->v + s_len + p_len];
+	uint8_t *ptr;
+	unsigned int j;
+	uint8_t *key;
+	unsigned int bytes;
+	struct l_checksum *h = l_checksum_new(hash->alg);
+
+	if (!h)
+		return NULL;
+
+	/*
+	 * The BMPString encoding, in practice same as UCS-2, can end up
+	 * at 2 * strlen(password) + 2 bytes or shorter depending on the
+	 * characters used.  Recalculate p_len after we know it.
+	 * Important: The password must be valid UTF-8 here.
+	 */
+	if (password) {
+		if (!(bmpstring = l_utf8_to_ucs2be(password, &passwd_len))) {
+			l_checksum_free(h);
+			return NULL;
+		}
+
+		p_len = (passwd_len + hash->v - 1) & ~(hash->v - 1);
+	}
+
+	memset(di, id, hash->v);
+	ptr = di + hash->v;
+
+	for (j = salt_len; j < s_len; j += salt_len, ptr += salt_len)
+		memcpy(ptr, salt, salt_len);
+
+	if (s_len) {
+		memcpy(ptr, salt, s_len + salt_len - j);
+		ptr += s_len + salt_len - j;
+	}
+
+	if (p_len) {
+		for (j = passwd_len; j < p_len;
+					j += passwd_len, ptr += passwd_len)
+			memcpy(ptr, bmpstring, passwd_len);
+
+		memcpy(ptr, bmpstring, p_len + passwd_len - j);
+
+		explicit_bzero(bmpstring, passwd_len);
+		l_free(bmpstring);
+	}
+
+	key = l_malloc(key_len + hash->len);
+
+	for (bytes = 0; bytes < key_len; bytes += hash->u) {
+		uint8_t b[hash->v];
+		uint8_t *input = di;
+		unsigned int input_len = hash->v + s_len + p_len;
+
+		for (j = 0; j < iterations; j++) {
+			if (!l_checksum_update(h, input, input_len) ||
+					l_checksum_get_digest(h,
+							key + bytes,
+							hash->len) <= 0) {
+				l_checksum_free(h);
+				l_free(key);
+				return NULL;
+			}
+
+			input = key + bytes;
+			input_len = hash->u;
+			l_checksum_reset(h);
+		}
+
+		if (bytes + hash->u >= key_len)
+			break;
+
+		for (j = 0; j < hash->v - hash->u; j += hash->u)
+			memcpy(b + j, input, hash->u);
+
+		memcpy(b + j, input, hash->v - j);
+
+		ptr = di + hash->v;
+		for (j = 0; j < s_len + p_len; j += hash->v, ptr += hash->v) {
+			unsigned int k;
+			uint16_t carry = 1;
+
+			/*
+			 * Not specified in the RFC7292 but implementations
+			 * sum these octet strings as big-endian integers.
+			 * We could use 64-bit additions here but the benefit
+			 * may not compensate the cost of the byteswapping.
+			 */
+			for (k = hash->v - 1; k > 0; k--) {
+				carry = ptr[k] + b[k] + carry;
+				ptr[k] = carry;
+				carry >>= 8;
+			}
+
+			ptr[k] += b[k] + carry;
+			explicit_bzero(&carry, sizeof(carry));
+		}
+
+		explicit_bzero(b, sizeof(b));
+	}
+
+	explicit_bzero(di, sizeof(di));
+	l_checksum_free(h);
+	return key;
+}
+
+/* RFC7292 Appendix A */
+static const struct cert_pkcs12_hash pkcs12_sha1_hash = {
+	.alg = L_CHECKSUM_SHA1,
+	.len = 20,
+	.u   = 20,
+	.v   = 64,
+	.oid = { 5, { 0x2b, 0x0e, 0x03, 0x02, 0x1a } },
+};
+
+/* RFC8018 Section A.2 */
 static struct asn1_oid pkcs5_pbkdf2_oid = {
 	9, { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05, 0x0c }
 };
 
+/* RFC8018 Section A.4 */
 static struct asn1_oid pkcs5_pbes2_oid = {
 	9, { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05, 0x0d }
 };
 
+/* RFC8018 Section A.3 */
 static const struct pkcs5_pbes1_encryption_oid {
 	enum l_checksum_type checksum_type;
 	enum l_cipher_type cipher_type;
@@ -204,6 +340,74 @@ static const struct pkcs5_pbes1_encryption_oid {
 		{ 9, { 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x05, 0x0a } },
 	},
 	/* MD2- and RC2-based schemes 1, 4, 6 and 11 not supported */
+};
+
+/* RFC7292 Appendix C */
+static const struct pkcs12_encryption_oid {
+	enum l_cipher_type cipher_type;
+	unsigned int key_length;
+	unsigned int iv_length;
+	bool copy_k1;	/* Expand the 2-Key 3DES key for 3-Key 3DES */
+	bool is_block;
+	struct asn1_oid oid;
+} pkcs12_encryption_oids[] = {
+	{ /* pbeWithSHAAnd128BitRC4 */
+		.cipher_type = L_CIPHER_ARC4,
+		.key_length = 16,
+		.oid = { 10, {
+			0x2a, 0x86, 0x48, 0x86, 0xf7,
+			0x0d, 0x01, 0x0c, 0x01, 0x01,
+		} }
+	},
+	{ /* pbeWithSHAAnd40BitRC4 */
+		.cipher_type = L_CIPHER_ARC4,
+		.key_length = 5,
+		.oid = { 10, {
+			0x2a, 0x86, 0x48, 0x86, 0xf7,
+			0x0d, 0x01, 0x0c, 0x01, 0x02,
+		} }
+	},
+	{ /* pbeWithSHAAnd3-KeyTripleDES-CBC */
+		.cipher_type = L_CIPHER_DES3_EDE_CBC,
+		.key_length = 24,
+		.iv_length = 8,
+		.is_block = true,
+		.oid = { 10, {
+			0x2a, 0x86, 0x48, 0x86, 0xf7,
+			0x0d, 0x01, 0x0c, 0x01, 0x03,
+		} }
+	},
+	{ /* pbeWithSHAAnd2-KeyTripleDES-CBC */
+		.cipher_type = L_CIPHER_DES3_EDE_CBC,
+		.key_length = 16,
+		.iv_length = 8,
+		.copy_k1 = true,
+		.is_block = true,
+		.oid = { 10, {
+			0x2a, 0x86, 0x48, 0x86, 0xf7,
+			0x0d, 0x01, 0x0c, 0x01, 0x04,
+		} }
+	},
+	{ /* pbeWithSHAAnd128BitRC2-CBC */
+		.cipher_type = L_CIPHER_RC2_CBC,
+		.key_length = 16,
+		.iv_length = 8,
+		.is_block = true,
+		.oid = { 10, {
+			0x2a, 0x86, 0x48, 0x86, 0xf7,
+			0x0d, 0x01, 0x0c, 0x01, 0x05,
+		} }
+	},
+	{ /* pbeWithSHAAnd40BitRC2-CBC */
+		.cipher_type = L_CIPHER_RC2_CBC,
+		.key_length = 5,
+		.iv_length = 8,
+		.is_block = true,
+		.oid = { 10, {
+			0x2a, 0x86, 0x48, 0x86, 0xf7,
+			0x0d, 0x01, 0x0c, 0x01, 0x06,
+		} }
+	},
 };
 
 static const struct pkcs5_digest_alg_oid {
@@ -261,7 +465,7 @@ static const struct pkcs5_enc_alg_oid {
 	},
 };
 
-static struct l_cipher *pkcs5_cipher_from_pbes2_params(
+static struct l_cipher *cipher_from_pkcs5_pbes2_params(
 						const uint8_t *pbes2_params,
 						size_t pbes2_params_len,
 						const char *password)
@@ -382,8 +586,8 @@ static struct l_cipher *pkcs5_cipher_from_pbes2_params(
 	/* RFC8018 section B.2 */
 
 	/*
-	 * Since we don't support RC2/RC5, all our PKCS#5 ciphers only
-	 * have an obligatory OCTET STRING IV parameter and a fixed key
+	 * Since we don't support the RC2/RC5 PBES2 ciphers, our parameters
+	 * only have an obligatory OCTET STRING IV parameter and a fixed key
 	 * length.
 	 */
 	if (tag != ASN1_ID_OCTET_STRING || params_len != enc_scheme->iv_size)
@@ -399,8 +603,8 @@ static struct l_cipher *pkcs5_cipher_from_pbes2_params(
 
 	/* RFC8018 section 6.2 */
 
-	if (!l_pkcs5_pbkdf2(prf_alg, password, salt, salt_len, iter_count,
-				derived_key, key_len))
+	if (!l_cert_pkcs5_pbkdf2(prf_alg, password, salt, salt_len, iter_count,
+					derived_key, key_len))
 		return NULL;
 
 	cipher = l_cipher_new(enc_scheme->cipher_type, derived_key, key_len);
@@ -413,9 +617,98 @@ static struct l_cipher *pkcs5_cipher_from_pbes2_params(
 	return cipher;
 }
 
-struct l_cipher *pkcs5_cipher_from_alg_id(const uint8_t *id_asn1,
+static struct l_cipher *cipher_from_pkcs12_alg_id(
+				const struct pkcs12_encryption_oid *scheme,
+				const uint8_t *params, size_t params_len,
+				const char *password, bool *out_is_block)
+{
+	uint8_t tag;
+	const uint8_t *salt;
+	const uint8_t *iterations_data;
+	size_t salt_len;
+	size_t iterations_len;
+	unsigned int iterations;
+	uint8_t *key;
+	size_t key_len;
+	struct l_cipher *cipher;
+
+	/* Same parameters as in PKCS#5 */
+	salt = asn1_der_find_elem(params, params_len, 0, &tag, &salt_len);
+	if (!salt || tag != ASN1_ID_OCTET_STRING)
+		return NULL;
+
+	iterations_data = asn1_der_find_elem(params, params_len, 1,
+						&tag, &iterations_len);
+	if (!iterations_data || tag != ASN1_ID_INTEGER ||
+			iterations_len < 1 || iterations_len > 4)
+		return NULL;
+
+	for (iterations = 0; iterations_len; iterations_len--)
+		iterations = (iterations << 8) | *iterations_data++;
+
+	if (iterations < 1 || iterations > 8192)
+		return NULL;
+
+	if (iterations_data != params + params_len)
+		return NULL;
+
+	key_len = scheme->key_length;
+	key = cert_pkcs12_pbkdf(password, &pkcs12_sha1_hash, salt, salt_len,
+				iterations, 1, key_len);
+	if (!key)
+		return NULL;
+
+	if (scheme->copy_k1) {
+		/*
+		 * 2-Key 3DES is like L_CIPHER_DES3_EDE_CBC except the last
+		 * of the 3 8-byte keys is not generated using a KDF and
+		 * instead is a copy of the first key.  In other words
+		 * the first half of the 16-byte key material is appended
+		 * at the end to produce the 24 bytes for DES3_EDE_CBC.
+		 */
+		uint8_t *key2 = l_malloc(24);
+
+		memcpy(key2, key, 16);
+		memcpy(key2 + 16, key, 8);
+		explicit_bzero(key, key_len);
+		l_free(key);
+		key = key2;
+		key_len = 24;
+	}
+
+	cipher = l_cipher_new(scheme->cipher_type, key, key_len);
+	explicit_bzero(key, key_len);
+	l_free(key);
+
+	if (!cipher)
+		return NULL;
+
+	if (scheme->iv_length) {
+		uint8_t *iv = cert_pkcs12_pbkdf(password, &pkcs12_sha1_hash,
+						salt, salt_len, iterations, 2,
+						scheme->iv_length);
+
+		if (!iv || !l_cipher_set_iv(cipher, iv, scheme->iv_length)) {
+			l_cipher_free(cipher);
+			cipher = NULL;
+		}
+
+		if (iv)
+			explicit_bzero(iv, scheme->iv_length);
+
+		l_free(iv);
+	}
+
+	if (out_is_block)
+		*out_is_block = scheme->is_block;
+
+	return cipher;
+}
+
+struct l_cipher *cert_cipher_from_pkcs_alg_id(const uint8_t *id_asn1,
 						size_t id_asn1_len,
-						const char *password)
+						const char *password,
+						bool *out_is_block)
 {
 	uint8_t tag;
 	const uint8_t *oid, *params, *salt, *iter_count_buf;
@@ -436,9 +729,13 @@ struct l_cipher *pkcs5_cipher_from_alg_id(const uint8_t *id_asn1,
 	if (asn1_der_find_elem(id_asn1, id_asn1_len, 2, &tag, &tmp_len))
 		return NULL;
 
-	if (asn1_oid_eq(&pkcs5_pbes2_oid, oid_len, oid))
-		return pkcs5_cipher_from_pbes2_params(params, params_len,
+	if (asn1_oid_eq(&pkcs5_pbes2_oid, oid_len, oid)) {
+		if (out_is_block)
+			*out_is_block = true;
+
+		return cipher_from_pkcs5_pbes2_params(params, params_len,
 							password);
+	}
 
 	/* RFC8018 section A.3 */
 
@@ -450,8 +747,18 @@ struct l_cipher *pkcs5_cipher_from_alg_id(const uint8_t *id_asn1,
 		}
 	}
 
-	if (!pbes1_scheme)
+	/* Check if this is a PKCS#12 OID */
+	if (!pbes1_scheme) {
+		for (i = 0; i < L_ARRAY_SIZE(pkcs12_encryption_oids); i++)
+			if (asn1_oid_eq(&pkcs12_encryption_oids[i].oid,
+					oid_len, oid))
+				return cipher_from_pkcs12_alg_id(
+						&pkcs12_encryption_oids[i],
+						params, params_len, password,
+						out_is_block);
+
 		return NULL;
+	}
 
 	salt = asn1_der_find_elem(params, params_len, 0, &tag, &tmp_len);
 	if (!salt || tag != ASN1_ID_OCTET_STRING || tmp_len != 8)
@@ -473,8 +780,8 @@ struct l_cipher *pkcs5_cipher_from_alg_id(const uint8_t *id_asn1,
 
 	/* RFC8018 section 6.1 */
 
-	if (!l_pkcs5_pbkdf1(pbes1_scheme->checksum_type,
-				password, salt, 8, iter_count, derived_key, 16))
+	if (!l_cert_pkcs5_pbkdf1(pbes1_scheme->checksum_type, password,
+					salt, 8, iter_count, derived_key, 16))
 		return NULL;
 
 	cipher = l_cipher_new(pbes1_scheme->cipher_type, derived_key + 0, 8);
@@ -484,5 +791,9 @@ struct l_cipher *pkcs5_cipher_from_alg_id(const uint8_t *id_asn1,
 	}
 
 	explicit_bzero(derived_key, 16);
+
+	if (out_is_block)
+		*out_is_block = true;
+
 	return cipher;
 }

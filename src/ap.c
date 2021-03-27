@@ -26,11 +26,14 @@
 
 #include <errno.h>
 #include <linux/if_ether.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 
 #include <ell/ell.h>
 
 #include "linux/nl80211.h"
 
+#include "src/missing.h"
 #include "src/iwd.h"
 #include "src/module.h"
 #include "src/scan.h"
@@ -48,11 +51,13 @@
 #include "src/wscutil.h"
 #include "src/eap-wsc.h"
 #include "src/ap.h"
+#include "src/storage.h"
+#include "src/diagnostic.h"
 
 struct ap_state {
 	struct netdev *netdev;
 	struct l_genl_family *nl80211;
-	ap_event_func_t event_func;
+	const struct ap_ops *ops;
 	ap_stopped_func_t stopped_func;
 	void *user_data;
 	struct ap_config *config;
@@ -61,7 +66,6 @@ struct ap_state {
 	enum ie_rsn_cipher_suite group_cipher;
 	uint32_t beacon_interval;
 	struct l_uintset *rates;
-	uint8_t pmk[32];
 	uint32_t start_stop_cmd_id;
 	uint32_t mlme_watch;
 	uint8_t gtk[CRYPTO_MAX_GTK_LEN];
@@ -74,8 +78,15 @@ struct ap_state {
 	uint16_t last_aid;
 	struct l_queue *sta_states;
 
+	struct l_dhcp_server *server;
+	uint32_t rtnl_add_cmd;
+	char *own_ip;
+	unsigned int ip_prefix;
+
 	bool started : 1;
 	bool gtk_set : 1;
+	bool cleanup_ip : 1;
+	bool use_ip_pool : 1;
 };
 
 struct sta_state {
@@ -104,7 +115,115 @@ struct ap_wsc_pbc_probe_record {
 	uint64_t timestamp;
 };
 
+struct ap_ip_pool {
+	uint32_t start;
+	uint32_t end;
+	uint8_t prefix;
+
+	/* Fist/last valid subnet */
+	uint8_t sub_start;
+	uint8_t sub_end;
+
+	struct l_uintset *used;
+};
+
+struct ap_ip_pool pool;
 static uint32_t netdev_watch;
+struct l_netlink *rtnl;
+
+/*
+ * Creates pool of IPs which AP intefaces can use. Each call to ip_pool_get
+ * will advance the subnet +1 so there are no IP conflicts between AP
+ * interfaces
+ */
+static bool ip_pool_create(const char *ip_prefix)
+{
+	if (!util_ip_prefix_tohl(ip_prefix, &pool.prefix, &pool.start,
+					&pool.end, NULL))
+		return false;
+
+	if (pool.prefix > 24) {
+		l_error("APRanges prefix must 24 or less (%u used)",
+				pool.prefix);
+		memset(&pool, 0, sizeof(pool));
+		return false;
+	}
+
+	/*
+	 * Find the number of subnets we can use, this will dictate the number
+	 * of AP interfaces that can be created (when using DHCP)
+	 */
+	pool.sub_start = (pool.start & 0x0000ff00) >> 8;
+	pool.sub_end = (pool.end & 0x0000ff00) >> 8;
+
+	pool.used = l_uintset_new_from_range(pool.sub_start, pool.sub_end);
+
+	return true;
+}
+
+static char *ip_pool_get()
+{
+	uint32_t ip;
+	struct in_addr ia;
+	uint8_t next_subnet = (uint8_t)l_uintset_find_unused_min(pool.used);
+
+	/* This shouldn't happen */
+	if (next_subnet < pool.sub_start || next_subnet > pool.sub_end)
+		return NULL;
+
+	l_uintset_put(pool.used, next_subnet);
+
+	ip = pool.start;
+	ip &= 0xffff00ff;
+	ip |= (next_subnet << 8);
+
+	ia.s_addr = htonl(ip);
+	return l_strdup(inet_ntoa(ia));
+}
+
+static bool ip_pool_put(const char *address)
+{
+	struct in_addr ia;
+	uint32_t ip;
+	uint8_t subnet;
+
+	if (inet_aton(address, &ia) < 0)
+		return false;
+
+	ip = ntohl(ia.s_addr);
+
+	subnet = (ip & 0x0000ff00) >> 8;
+
+	if (subnet < pool.sub_start || subnet > pool.sub_end)
+		return false;
+
+	return l_uintset_take(pool.used, subnet);
+}
+
+static void ip_pool_destroy()
+{
+	if (pool.used)
+		l_uintset_free(pool.used);
+
+	memset(&pool, 0, sizeof(pool));
+}
+
+static const char *broadcast_from_ip(const char *ip)
+{
+	struct in_addr ia;
+	uint32_t bcast;
+
+	if (inet_aton(ip, &ia) < 0)
+		return NULL;
+
+	bcast = ntohl(ia.s_addr);
+	bcast &= 0xffffff00;
+	bcast |= 0x000000ff;
+
+	ia.s_addr = htonl(bcast);
+
+	return inet_ntoa(ia);
+}
 
 void ap_config_free(struct ap_config *config)
 {
@@ -113,13 +232,14 @@ void ap_config_free(struct ap_config *config)
 
 	l_free(config->ssid);
 
-	if (config->psk) {
-		explicit_bzero(config->psk, strlen(config->psk));
-		l_free(config->psk);
-	}
-
+	explicit_bzero(config->passphrase, sizeof(config->passphrase));
+	explicit_bzero(config->psk, sizeof(config->psk));
 	l_free(config->authorized_macs);
 	l_free(config->wsc_name);
+
+	if (config->profile)
+		l_free(config->profile);
+
 	l_free(config);
 }
 
@@ -176,8 +296,6 @@ static void ap_reset(struct ap_state *ap)
 {
 	struct netdev *netdev = ap->netdev;
 
-	explicit_bzero(ap->pmk, sizeof(ap->pmk));
-
 	if (ap->mlme_watch)
 		l_genl_family_unregister(ap->nl80211, ap->mlme_watch);
 
@@ -185,6 +303,9 @@ static void ap_reset(struct ap_state *ap)
 
 	if (ap->start_stop_cmd_id)
 		l_genl_family_cancel(ap->nl80211, ap->start_stop_cmd_id);
+
+	if (ap->rtnl_add_cmd)
+		l_netlink_cancel(rtnl, ap->rtnl_add_cmd);
 
 	l_queue_destroy(ap->sta_states, ap_sta_free);
 
@@ -197,6 +318,24 @@ static void ap_reset(struct ap_state *ap)
 	l_queue_destroy(ap->wsc_pbc_probes, l_free);
 
 	ap->started = false;
+
+	/* Delete IP if one was set by IWD */
+	if (ap->cleanup_ip)
+		l_rtnl_ifaddr4_delete(rtnl, netdev_get_ifindex(netdev),
+					ap->ip_prefix, ap->own_ip,
+					broadcast_from_ip(ap->own_ip),
+					NULL, NULL, NULL);
+
+	if (ap->own_ip) {
+		/* Release IP from pool if used */
+		if (ap->use_ip_pool)
+			ip_pool_put(ap->own_ip);
+
+		l_free(ap->own_ip);
+	}
+
+	if (ap->server)
+		l_dhcp_server_stop(ap->server);
 }
 
 static void ap_del_station(struct sta_state *sta, uint16_t reason,
@@ -210,7 +349,7 @@ static void ap_del_station(struct sta_state *sta, uint16_t reason,
 	sta->associated = false;
 
 	if (sta->rsna) {
-		if (ap->event_func) {
+		if (ap->ops->handle_event) {
 			memset(&event_data, 0, sizeof(event_data));
 			event_data.mac = sta->addr;
 			event_data.reason = reason;
@@ -228,8 +367,8 @@ static void ap_del_station(struct sta_state *sta, uint16_t reason,
 	ap_stop_handshake(sta);
 
 	if (send_event)
-		ap->event_func(AP_EVENT_STATION_REMOVED, &event_data,
-				ap->user_data);
+		ap->ops->handle_event(AP_EVENT_STATION_REMOVED, &event_data,
+					ap->user_data);
 }
 
 static bool ap_sta_match_addr(const void *a, const void *b)
@@ -269,12 +408,12 @@ static void ap_new_rsna(struct sta_state *sta)
 
 	sta->rsna = true;
 
-	if (ap->event_func) {
+	if (ap->ops->handle_event) {
 		struct ap_event_station_added_data event_data = {};
 		event_data.mac = sta->addr;
 		event_data.rsn_ie = sta->assoc_rsne;
-		ap->event_func(AP_EVENT_STATION_ADDED, &event_data,
-				ap->user_data);
+		ap->ops->handle_event(AP_EVENT_STATION_ADDED, &event_data,
+					ap->user_data);
 	}
 }
 
@@ -308,11 +447,11 @@ static void ap_drop_rsna(struct sta_state *sta)
 
 	ap_stop_handshake(sta);
 
-	if (ap->event_func) {
+	if (ap->ops->handle_event) {
 		struct ap_event_station_removed_data event_data = {};
 		event_data.mac = sta->addr;
-		ap->event_func(AP_EVENT_STATION_REMOVED, &event_data,
-				ap->user_data);
+		ap->ops->handle_event(AP_EVENT_STATION_REMOVED, &event_data,
+					ap->user_data);
 	}
 }
 
@@ -380,10 +519,10 @@ static size_t ap_build_beacon_pr_head(struct ap_state *ap,
 				flag = 0x80;
 
 			*rates++ = r | flag;
+			count++;
 		}
 
-	ie_tlv_builder_set_length(&builder, rates -
-					ie_tlv_builder_get_data(&builder));
+	ie_tlv_builder_set_length(&builder, count);
 
 	/* DSSS Parameter Set IE for DSSS, HR, ERP and HT PHY rates */
 	ie_tlv_builder_next(&builder, IE_TYPE_DSSS_PARAMETER_SET);
@@ -543,49 +682,34 @@ static void ap_wsc_exit_pbc(struct ap_state *ap)
 	ap->wsc_dpid = 0;
 	ap_update_beacon(ap);
 
-	ap->event_func(AP_EVENT_PBC_MODE_EXIT, NULL, ap->user_data);
+	ap->ops->handle_event(AP_EVENT_PBC_MODE_EXIT, NULL, ap->user_data);
 }
 
 static uint32_t ap_send_mgmt_frame(struct ap_state *ap,
 					const struct mmpdu_header *frame,
-					size_t frame_len, bool wait_ack,
-					l_genl_msg_func_t callback,
+					size_t frame_len,
+					frame_xchg_cb_t callback,
 					void *user_data)
 {
-	struct l_genl_msg *msg;
-	uint32_t ifindex = netdev_get_ifindex(ap->netdev);
-	uint32_t id;
 	uint32_t ch_freq = scan_channel_to_freq(ap->config->channel,
 						SCAN_BAND_2_4_GHZ);
+	uint64_t wdev_id = netdev_get_wdev_id(ap->netdev);
+	struct iovec iov[2];
 
-	msg = l_genl_msg_new_sized(NL80211_CMD_FRAME, 128 + frame_len);
-
-	l_genl_msg_append_attr(msg, NL80211_ATTR_IFINDEX, 4, &ifindex);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_WIPHY_FREQ, 4, &ch_freq);
-	l_genl_msg_append_attr(msg, NL80211_ATTR_FRAME, frame_len, frame);
-	if (!wait_ack)
-		l_genl_msg_append_attr(msg, NL80211_ATTR_DONT_WAIT_FOR_ACK,
-					0, NULL);
-
-	if (ap->config->no_cck_rates)
-		l_genl_msg_append_attr(msg, NL80211_ATTR_TX_NO_CCK_RATE, 0,
-					NULL);
-
-
-	id = l_genl_family_send(ap->nl80211, msg, callback, user_data, NULL);
-
-	if (!id)
-		l_genl_msg_unref(msg);
-
-	return id;
+	iov[0].iov_base = (void *) frame;
+	iov[0].iov_len = frame_len;
+	iov[1].iov_base = NULL;
+	return frame_xchg_start(wdev_id, iov, ch_freq, 0, 0, 0, 0,
+					callback, user_data, NULL, NULL);
 }
 
-static void ap_start_handshake(struct sta_state *sta, bool use_eapol_start)
+static void ap_start_handshake(struct sta_state *sta, bool use_eapol_start,
+				const uint8_t *gtk_rsc)
 {
 	struct ap_state *ap = sta->ap;
 	const uint8_t *own_addr = netdev_get_address(ap->netdev);
 	struct ie_rsn_info rsn;
-	uint8_t bss_rsne[24];
+	uint8_t bss_rsne[64];
 
 	handshake_state_set_ssid(sta->hs, (void *) ap->config->ssid,
 					strlen(ap->config->ssid));
@@ -599,6 +723,10 @@ static void ap_start_handshake(struct sta_state *sta, bool use_eapol_start)
 	 */
 	ie_build_rsne(&rsn, bss_rsne);
 	handshake_state_set_authenticator_ie(sta->hs, bss_rsne);
+
+	if (gtk_rsc)
+		handshake_state_set_gtk(sta->hs, sta->ap->gtk,
+					sta->ap->gtk_index, gtk_rsc);
 
 	sta->sm = eapol_sm_new(sta->hs);
 	if (!sta->sm) {
@@ -651,25 +779,26 @@ static void ap_start_rsna(struct sta_state *sta, const uint8_t *gtk_rsc)
 	handshake_state_set_authenticator(sta->hs, true);
 	handshake_state_set_event_func(sta->hs, ap_handshake_event, sta);
 	handshake_state_set_supplicant_ie(sta->hs, sta->assoc_rsne);
-	handshake_state_set_pmk(sta->hs, sta->ap->pmk, 32);
-
-	if (gtk_rsc)
-		handshake_state_set_gtk(sta->hs, sta->ap->gtk,
-					sta->ap->gtk_index, gtk_rsc);
-
-	ap_start_handshake(sta, false);
+	handshake_state_set_pmk(sta->hs, sta->ap->config->psk, 32);
+	ap_start_handshake(sta, false, gtk_rsc);
 }
 
 static void ap_gtk_query_cb(struct l_genl_msg *msg, void *user_data)
 {
 	struct sta_state *sta = user_data;
 	const void *gtk_rsc;
+	uint8_t zero_gtk_rsc[6];
 
 	sta->gtk_query_cmd_id = 0;
 
-	gtk_rsc = nl80211_parse_get_key_seq(msg);
-	if (!gtk_rsc)
+	if (l_genl_msg_get_error(msg) < 0)
 		goto error;
+
+	gtk_rsc = nl80211_parse_get_key_seq(msg);
+	if (!gtk_rsc) {
+		memset(zero_gtk_rsc, 0, 6);
+		gtk_rsc = zero_gtk_rsc;
+	}
 
 	ap_start_rsna(sta, gtk_rsc);
 	return;
@@ -750,8 +879,9 @@ static void ap_wsc_handshake_event(struct handshake_state *hs,
 					&expiry_data);
 
 		event_data.mac = sta->addr;
-		sta->ap->event_func(AP_EVENT_REGISTRATION_SUCCESS, &event_data,
-					sta->ap->user_data);
+		sta->ap->ops->handle_event(AP_EVENT_REGISTRATION_SUCCESS,
+						&event_data,
+						sta->ap->user_data);
 		break;
 	default:
 		break;
@@ -772,36 +902,36 @@ static void ap_start_eap_wsc(struct sta_state *sta)
 	 */
 	bool wait_for_eapol_start = !sta->wsc_v2;
 
-	L_AUTO_FREE_VAR(char *, uuid_r_str) = NULL;
-	L_AUTO_FREE_VAR(char *, uuid_e_str) = NULL;
-
-	uuid_r_str = l_util_hexstring(ap->wsc_uuid_r, 16);
-	uuid_e_str = l_util_hexstring(sta->wsc_uuid_e, 16);
-
 	sta->wsc_settings = l_settings_new();
 	l_settings_set_string(sta->wsc_settings, "Security", "EAP-Method",
 				"WSC-R");
 	l_settings_set_string(sta->wsc_settings, "WSC", "EnrolleeMAC",
 				util_address_to_string(sta->addr));
-	l_settings_set_string(sta->wsc_settings, "WSC", "UUID-R",
-				uuid_r_str);
-	l_settings_set_string(sta->wsc_settings, "WSC", "UUID-E",
-				uuid_e_str);
+	l_settings_set_bytes(sta->wsc_settings, "WSC", "UUID-R",
+				ap->wsc_uuid_r, 16);
+	l_settings_set_bytes(sta->wsc_settings, "WSC", "UUID-E",
+				sta->wsc_uuid_e, 16);
 	l_settings_set_uint(sta->wsc_settings, "WSC", "RFBand",
 				WSC_RF_BAND_2_4_GHZ);
 	l_settings_set_uint(sta->wsc_settings, "WSC", "ConfigurationMethods",
 				WSC_CONFIGURATION_METHOD_PUSH_BUTTON);
 	l_settings_set_string(sta->wsc_settings, "WSC", "WPA2-SSID",
 				ap->config->ssid);
-	l_settings_set_string(sta->wsc_settings, "WSC", "WPA2-Passphrase",
-				ap->config->psk);
+
+	if (ap->config->passphrase[0])
+		l_settings_set_string(sta->wsc_settings,
+					"WSC", "WPA2-Passphrase",
+					ap->config->passphrase);
+	else
+		l_settings_set_bytes(sta->wsc_settings,
+					"WSC", "WPA2-PSK", ap->config->psk, 32);
 
 	sta->hs = netdev_handshake_state_new(ap->netdev);
 	handshake_state_set_authenticator(sta->hs, true);
 	handshake_state_set_event_func(sta->hs, ap_wsc_handshake_event, sta);
 	handshake_state_set_8021x_config(sta->hs, sta->wsc_settings);
 
-	ap_start_handshake(sta, wait_for_eapol_start);
+	ap_start_handshake(sta, wait_for_eapol_start, NULL);
 }
 
 static struct l_genl_msg *ap_build_cmd_del_key(struct ap_state *ap)
@@ -1017,16 +1147,19 @@ static bool ap_common_rates(struct l_uintset *ap_rates,
 	return false;
 }
 
-static void ap_success_assoc_resp_cb(struct l_genl_msg *msg, void *user_data)
+static void ap_success_assoc_resp_cb(int err, void *user_data)
 {
 	struct sta_state *sta = user_data;
 	struct ap_state *ap = sta->ap;
 
 	sta->assoc_resp_cmd_id = 0;
 
-	if (l_genl_msg_get_error(msg) < 0) {
-		l_error("AP (Re)Association Response not sent or not ACKed: %i",
-			l_genl_msg_get_error(msg));
+	if (err) {
+		if (err == -ECOMM)
+			l_error("AP (Re)Association Response received no ACK");
+		else
+			l_error("AP (Re)Association Response not sent %s (%i)",
+				strerror(-err), -err);
 
 		/* If we were in State 3 or 4 go to back to State 2 */
 		if (sta->associated)
@@ -1042,11 +1175,14 @@ static void ap_success_assoc_resp_cb(struct l_genl_msg *msg, void *user_data)
 	l_info("AP (Re)Association Response ACK received");
 }
 
-static void ap_fail_assoc_resp_cb(struct l_genl_msg *msg, void *user_data)
+static void ap_fail_assoc_resp_cb(int err, void *user_data)
 {
-	if (l_genl_msg_get_error(msg) < 0)
-		l_error("AP (Re)Association Response with an error status not "
-			"sent or not ACKed: %i", l_genl_msg_get_error(msg));
+	if (err == -ECOMM)
+		l_error("AP (Re)Association Response with an error status "
+			"received no ACK");
+	else if (err)
+		l_error("AP (Re)Association Response with an error status "
+			"not sent: %s (%i)", strerror(-err), -err);
 	else
 		l_info("AP (Re)Association Response with an error status "
 			"delivered OK");
@@ -1055,7 +1191,7 @@ static void ap_fail_assoc_resp_cb(struct l_genl_msg *msg, void *user_data)
 static uint32_t ap_assoc_resp(struct ap_state *ap, struct sta_state *sta,
 				const uint8_t *dest,
 				enum mmpdu_reason_code status_code,
-				bool reassoc, l_genl_msg_func_t callback)
+				bool reassoc, frame_xchg_cb_t callback)
 {
 	const uint8_t *addr = netdev_get_address(ap->netdev);
 	uint8_t mpdu_buf[128];
@@ -1136,7 +1272,7 @@ static uint32_t ap_assoc_resp(struct ap_state *ap, struct sta_state *sta,
 
 send_frame:
 	return ap_send_mgmt_frame(ap, mpdu, resp->ies + ies_len - mpdu_buf,
-					true, callback, sta);
+					callback, sta);
 }
 
 static int ap_parse_supported_rates(struct ie_tlv_iter *iter,
@@ -1335,8 +1471,8 @@ static void ap_assoc_reassoc(struct sta_state *sta, bool reassoc,
 		sta->wsc_v2 = wsc_req.version2;
 
 		event_data.mac = sta->addr;
-		ap->event_func(AP_EVENT_REGISTRATION_START, &event_data,
-				ap->user_data);
+		ap->ops->handle_event(AP_EVENT_REGISTRATION_START, &event_data,
+					ap->user_data);
 
 		/*
 		 * Since we're starting the PBC Registration Protocol
@@ -1349,7 +1485,8 @@ static void ap_assoc_reassoc(struct sta_state *sta, bool reassoc,
 			goto unsupported;
 		}
 
-		if (!(rsn_info.pairwise_ciphers & ap->ciphers)) {
+		if (__builtin_popcount(rsn_info.pairwise_ciphers) != 1 ||
+				!(rsn_info.pairwise_ciphers & ap->ciphers)) {
 			err = MMPDU_REASON_CODE_INVALID_PAIRWISE_CIPHER;
 			goto unsupported;
 		}
@@ -1610,13 +1747,15 @@ static void ap_process_wsc_probe_req(struct ap_state *ap, const uint8_t *from,
 	}
 }
 
-static void ap_probe_resp_cb(struct l_genl_msg *msg, void *user_data)
+static void ap_probe_resp_cb(int err, void *user_data)
 {
-	if (l_genl_msg_get_error(msg) < 0)
-		l_error("AP Probe Response not sent: %i",
-			l_genl_msg_get_error(msg));
+	if (err == -ECOMM)
+		l_error("AP Probe Response received no ACK");
+	else if (err)
+		l_error("AP Probe Response not sent: %s (%i)",
+			strerror(-err), -err);
 	else
-		l_info("AP Probe Response sent OK");
+		l_info("AP Probe Response delivered OK");
 }
 
 /*
@@ -1682,6 +1821,9 @@ static void ap_probe_req_cb(const struct mmpdu_header *hdr, const void *body,
 	else if (ssid && ssid_len == strlen(ap->config->ssid) && /* One SSID */
 			!memcmp(ssid, ap->config->ssid, ssid_len))
 		match = true;
+	else if (ssid && ssid_len == 7 && !memcmp(ssid, "DIRECT-", 7) &&
+			!memcmp(ssid, ap->config->ssid, 7)) /* P2P wildcard */
+		match = true;
 	else if (ssid_list) { /* SSID List */
 		ie_tlv_iter_init(&iter, ssid_list, ssid_list_len);
 
@@ -1724,7 +1866,7 @@ static void ap_probe_req_cb(const struct mmpdu_header *hdr, const void *body,
 					hdr->address_2, resp, sizeof(resp));
 	len += ap_build_beacon_pr_tail(ap, true, resp + len);
 
-	ap_send_mgmt_frame(ap, (struct mmpdu_header *) resp, len, false,
+	ap_send_mgmt_frame(ap, (struct mmpdu_header *) resp, len,
 				ap_probe_resp_cb, NULL);
 }
 
@@ -1758,11 +1900,13 @@ static void ap_disassoc_cb(const struct mmpdu_header *hdr, const void *body,
 	ap_del_station(sta, L_LE16_TO_CPU(disassoc->reason_code), true);
 }
 
-static void ap_auth_reply_cb(struct l_genl_msg *msg, void *user_data)
+static void ap_auth_reply_cb(int err, void *user_data)
 {
-	if (l_genl_msg_get_error(msg) < 0)
-		l_error("AP Authentication frame 2 not sent or not ACKed: %i",
-			l_genl_msg_get_error(msg));
+	if (err == -ECOMM)
+		l_error("AP Authentication frame 2 received no ACK");
+	else if (err)
+		l_error("AP Authentication frame 2 not sent: %s (%i)",
+			strerror(-err), -err);
 	else
 		l_info("AP Authentication frame 2 ACKed by STA");
 }
@@ -1791,7 +1935,7 @@ static void ap_auth_reply(struct ap_state *ap, const uint8_t *dest,
 	auth->transaction_sequence = L_CPU_TO_LE16(2);
 	auth->status = L_CPU_TO_LE16(status_code);
 
-	ap_send_mgmt_frame(ap, mpdu, (uint8_t *) auth + 6 - mpdu_buf, true,
+	ap_send_mgmt_frame(ap, mpdu, (uint8_t *) auth + 6 - mpdu_buf,
 				ap_auth_reply_cb, NULL);
 }
 
@@ -1907,6 +2051,22 @@ static void ap_deauth_cb(const struct mmpdu_header *hdr, const void *body,
 	ap_sta_free(sta);
 }
 
+static void do_debug(const char *str, void *user_data)
+{
+	const char *prefix = user_data;
+
+	l_info("%s%s", prefix, str);
+}
+
+static void ap_start_failed(struct ap_state *ap)
+{
+	ap->ops->handle_event(AP_EVENT_START_FAILED, NULL, ap->user_data);
+	ap_reset(ap);
+	l_genl_family_free(ap->nl80211);
+
+	l_free(ap);
+}
+
 static void ap_start_cb(struct l_genl_msg *msg, void *user_data)
 {
 	struct ap_state *ap = user_data;
@@ -1916,15 +2076,26 @@ static void ap_start_cb(struct l_genl_msg *msg, void *user_data)
 	if (l_genl_msg_get_error(msg) < 0) {
 		l_error("START_AP failed: %i", l_genl_msg_get_error(msg));
 
-		ap->event_func(AP_EVENT_START_FAILED, NULL, ap->user_data);
-		ap_reset(ap);
-		l_genl_family_free(ap->nl80211);
-		l_free(ap);
-		return;
+		goto failed;
+	}
+
+	/*
+	 * TODO: Add support for provisioning files where user could configure
+	 * specific DHCP sever settings.
+	 */
+
+	if (ap->server && !l_dhcp_server_start(ap->server)) {
+		l_error("DHCP server failed to start");
+		goto failed;
 	}
 
 	ap->started = true;
-	ap->event_func(AP_EVENT_STARTED, NULL, ap->user_data);
+	ap->ops->handle_event(AP_EVENT_STARTED, NULL, ap->user_data);
+
+	return;
+
+failed:
+	ap_start_failed(ap);
 }
 
 static struct l_genl_msg *ap_build_cmd_start_ap(struct ap_state *ap)
@@ -1938,17 +2109,26 @@ static struct l_genl_msg *ap_build_cmd_start_ap(struct ap_state *ap)
 	uint32_t ifindex = netdev_get_ifindex(ap->netdev);
 	struct wiphy *wiphy = netdev_get_wiphy(ap->netdev);
 	uint32_t hidden_ssid = NL80211_HIDDEN_SSID_NOT_IN_USE;
-	uint32_t nl_ciphers = ie_rsn_cipher_suite_to_cipher(ap->ciphers);
+	unsigned int nl_ciphers_cnt = __builtin_popcount(ap->ciphers);
+	uint32_t nl_ciphers[nl_ciphers_cnt];
+	uint32_t group_nl_cipher =
+		ie_rsn_cipher_suite_to_cipher(ap->group_cipher);
 	uint32_t nl_akm = CRYPTO_AKM_PSK;
 	uint32_t wpa_version = NL80211_WPA_VERSION_2;
 	uint32_t auth_type = NL80211_AUTHTYPE_OPEN_SYSTEM;
 	uint32_t ch_freq = scan_channel_to_freq(ap->config->channel,
 						SCAN_BAND_2_4_GHZ);
 	uint32_t ch_width = NL80211_CHAN_WIDTH_20;
+	unsigned int i;
 
 	static const uint8_t bcast_addr[6] = {
 		0xff, 0xff, 0xff, 0xff, 0xff, 0xff
 	};
+
+	for (i = 0, nl_ciphers_cnt = 0; i < 8; i++)
+		if (ap->ciphers & (1 << i))
+			nl_ciphers[nl_ciphers_cnt++] =
+				ie_rsn_cipher_suite_to_cipher(1 << i);
 
 	head_len = ap_build_beacon_pr_head(ap, MPDU_MANAGEMENT_SUBTYPE_BEACON,
 						bcast_addr, head, sizeof(head));
@@ -1976,8 +2156,10 @@ static struct l_genl_msg *ap_build_cmd_start_ap(struct ap_state *ap)
 				ap->config->ssid);
 	l_genl_msg_append_attr(cmd, NL80211_ATTR_HIDDEN_SSID, 4,
 				&hidden_ssid);
-	l_genl_msg_append_attr(cmd, NL80211_ATTR_CIPHER_SUITES_PAIRWISE, 4,
-				&nl_ciphers);
+	l_genl_msg_append_attr(cmd, NL80211_ATTR_CIPHER_SUITES_PAIRWISE,
+				nl_ciphers_cnt * 4, nl_ciphers);
+	l_genl_msg_append_attr(cmd, NL80211_ATTR_CIPHER_SUITE_GROUP, 4,
+				&group_nl_cipher);
 	l_genl_msg_append_attr(cmd, NL80211_ATTR_WPA_VERSIONS, 4, &wpa_version);
 	l_genl_msg_append_attr(cmd, NL80211_ATTR_AKM_SUITES, 4, &nl_akm);
 	l_genl_msg_append_attr(cmd, NL80211_ATTR_AUTH_TYPE, 4, &auth_type);
@@ -1993,6 +2175,191 @@ static struct l_genl_msg *ap_build_cmd_start_ap(struct ap_state *ap)
 	}
 
 	return cmd;
+}
+
+static void ap_ifaddr4_added_cb(int error, uint16_t type, const void *data,
+				uint32_t len, void *user_data)
+{
+	struct ap_state *ap = user_data;
+	struct l_genl_msg *cmd;
+
+	ap->rtnl_add_cmd = 0;
+
+	if (error) {
+		l_error("Failed to set IP address");
+		goto error;
+	}
+
+	cmd = ap_build_cmd_start_ap(ap);
+	if (!cmd)
+		goto error;
+
+	ap->start_stop_cmd_id = l_genl_family_send(ap->nl80211, cmd,
+							ap_start_cb, ap, NULL);
+	if (!ap->start_stop_cmd_id) {
+		l_genl_msg_unref(cmd);
+		goto error;
+	}
+
+	return;
+
+error:
+	ap_start_failed(ap);
+}
+
+static bool ap_parse_new_station_ies(const void *data, uint16_t len,
+					uint8_t **rsn_out,
+					struct l_uintset **rates_out)
+{
+	struct ie_tlv_iter iter;
+	uint8_t *rsn = NULL;
+	struct l_uintset *rates = NULL;
+
+	ie_tlv_iter_init(&iter, data, len);
+
+	while (ie_tlv_iter_next(&iter)) {
+		switch (ie_tlv_iter_get_tag(&iter)) {
+		case IE_TYPE_RSN:
+			if (rsn || ie_parse_rsne(&iter, NULL) < 0)
+				goto parse_error;
+
+			rsn = l_memdup(ie_tlv_iter_get_data(&iter) - 2,
+					ie_tlv_iter_get_length(&iter) + 2);
+			break;
+		case IE_TYPE_EXTENDED_SUPPORTED_RATES:
+			if (rates || ap_parse_supported_rates(&iter, &rates) <
+					0)
+				goto parse_error;
+
+			break;
+		}
+	}
+
+	*rsn_out = rsn;
+	*rates_out = rates;
+
+	return true;
+
+parse_error:
+	if (rsn)
+		l_free(rsn);
+
+	if (rates)
+		l_uintset_free(rates);
+
+	return false;
+}
+
+static void ap_handle_new_station(struct ap_state *ap, struct l_genl_msg *msg)
+{
+	struct sta_state *sta;
+	struct l_genl_attr attr;
+	uint16_t type;
+	uint16_t len;
+	const void *data;
+	uint8_t mac[6];
+	uint8_t *assoc_rsne = NULL;
+	struct l_uintset *rates = NULL;
+
+	if (!l_genl_attr_init(&attr, msg))
+		return;
+
+	while (l_genl_attr_next(&attr, &type, &len, &data)) {
+		switch (type) {
+		case NL80211_ATTR_IE:
+			if (assoc_rsne || rates)
+				goto cleanup;
+
+			if (!ap_parse_new_station_ies(data, len, &assoc_rsne,
+							&rates))
+				return;
+			break;
+		case NL80211_ATTR_MAC:
+			if (len != 6)
+				goto cleanup;
+
+			memcpy(mac, data, 6);
+			break;
+		}
+	}
+
+	if (!assoc_rsne || !rates)
+		goto cleanup;
+
+	/*
+	 * Softmac's should already have a station created. The above check
+	 * may also fail for softmac cards.
+	 */
+	sta = l_queue_find(ap->sta_states, ap_sta_match_addr, mac);
+	if (sta)
+		goto cleanup;
+
+	sta = l_new(struct sta_state, 1);
+	memcpy(sta->addr, mac, 6);
+	sta->ap = ap;
+	sta->assoc_rsne = assoc_rsne;
+	sta->rates = rates;
+	sta->aid = ++ap->last_aid;
+
+	sta->associated = true;
+
+	if (!ap->sta_states)
+		ap->sta_states = l_queue_new();
+
+	l_queue_push_tail(ap->sta_states, sta);
+
+	msg = nl80211_build_set_station_unauthorized(
+					netdev_get_ifindex(ap->netdev), mac);
+
+	if (!l_genl_family_send(ap->nl80211, msg, ap_associate_sta_cb,
+								sta, NULL)) {
+		l_genl_msg_unref(msg);
+		l_error("Issuing SET_STATION failed");
+		ap_del_station(sta, MMPDU_REASON_CODE_UNSPECIFIED, true);
+	}
+
+	return;
+
+cleanup:
+	l_free(assoc_rsne);
+	l_uintset_free(rates);
+}
+
+static void ap_handle_del_station(struct ap_state *ap, struct l_genl_msg *msg)
+{
+	struct sta_state *sta;
+	struct l_genl_attr attr;
+	uint16_t type;
+	uint16_t len;
+	const void *data;
+	uint8_t mac[6];
+	uint16_t reason = MMPDU_REASON_CODE_UNSPECIFIED;
+
+	if (!l_genl_attr_init(&attr, msg))
+		return;
+
+	while (l_genl_attr_next(&attr, &type, &len, &data)) {
+		switch (type) {
+		case NL80211_ATTR_MAC:
+			if (len != 6)
+				return;
+
+			memcpy(mac, data, 6);
+			break;
+		case NL80211_ATTR_REASON_CODE:
+			if (len != 2)
+				return;
+
+			reason = l_get_u16(data);
+		}
+	}
+
+	sta = l_queue_find(ap->sta_states, ap_sta_match_addr, mac);
+	if (!sta)
+		return;
+
+	ap_del_station(sta, reason, true);
+	ap_remove_sta(sta);
 }
 
 static void ap_mlme_notify(struct l_genl_msg *msg, void *user_data)
@@ -2011,46 +2378,287 @@ static void ap_mlme_notify(struct l_genl_msg *msg, void *user_data)
 			l_genl_family_cancel(ap->nl80211,
 						ap->start_stop_cmd_id);
 			ap->start_stop_cmd_id = 0;
-			ap->event_func(AP_EVENT_START_FAILED, NULL,
-					ap->user_data);
+			ap->ops->handle_event(AP_EVENT_START_FAILED, NULL,
+						ap->user_data);
 		} else if (ap->started) {
 			ap->started = false;
-			ap->event_func(AP_EVENT_STOPPING, NULL, ap->user_data);
+			ap->ops->handle_event(AP_EVENT_STOPPING, NULL,
+						ap->user_data);
 		}
 
 		ap_reset(ap);
 		l_genl_family_free(ap->nl80211);
 		l_free(ap);
 		break;
+	case NL80211_CMD_NEW_STATION:
+		ap_handle_new_station(ap, msg);
+		break;
+	case NL80211_CMD_DEL_STATION:
+		ap_handle_del_station(ap, msg);
+		break;
 	}
+}
+
+static bool dhcp_load_settings(struct ap_state *ap, struct l_settings *settings)
+{
+	struct l_dhcp_server *server = ap->server;
+	struct in_addr ia;
+
+	L_AUTO_FREE_VAR(char *, netmask) = l_settings_get_string(settings,
+							"IPv4", "Netmask");
+	L_AUTO_FREE_VAR(char *, gateway) = l_settings_get_string(settings,
+							"IPv4", "Gateway");
+	char **dns = l_settings_get_string_list(settings, "IPv4",
+							"DNSList", ',');
+	char **ip_range = l_settings_get_string_list(settings, "IPv4",
+							"IPRange", ',');
+	unsigned int lease_time;
+	bool ret = false;
+
+	if (!l_settings_get_uint(settings, "IPv4", "LeaseTime", &lease_time))
+		lease_time = 0;
+
+	if (ip_range && l_strv_length(ip_range) != 2)
+		goto parse_error;
+
+	if (netmask && !l_dhcp_server_set_netmask(server, netmask))
+		goto parse_error;
+
+	if (gateway && !l_dhcp_server_set_gateway(server, gateway))
+		goto parse_error;
+
+	if (dns && !l_dhcp_server_set_dns(server, dns))
+		goto parse_error;
+
+	if (ip_range && !l_dhcp_server_set_ip_range(server, ip_range[0],
+							ip_range[1]))
+		goto parse_error;
+
+	if (lease_time && !l_dhcp_server_set_lease_time(server, lease_time))
+		goto parse_error;
+
+	if (netmask && inet_pton(AF_INET, netmask, &ia) > 0)
+		ap->ip_prefix = __builtin_popcountl(ia.s_addr);
+	else
+		ap->ip_prefix = 24;
+
+	ret = true;
+
+parse_error:
+	l_strv_free(dns);
+	l_strv_free(ip_range);
+	return ret;
+}
+
+/*
+ * This will determine the IP being used for DHCP. The IP will be automatically
+ * set to ap->own_ip.
+ *
+ * The address to set (or keep) is determined in this order:
+ * 1. Address defined in provisioning file
+ * 2. Address already set on interface
+ * 3. Address in IP pool.
+ *
+ * Returns:  0 if an IP was successfully selected and needs to be set
+ *          -EALREADY if an IP was already set on the interface
+ *          -EEXIST if the IP pool ran out of IP's
+ *          -EINVAL if there was an error.
+ */
+static int ap_setup_dhcp(struct ap_state *ap, struct l_settings *settings)
+{
+	uint32_t ifindex = netdev_get_ifindex(ap->netdev);
+	struct in_addr ia;
+	uint32_t address = 0;
+	int ret = -EINVAL;
+
+	ap->server = l_dhcp_server_new(ifindex);
+	if (!ap->server) {
+		l_error("Failed to create DHCP server on %u", ifindex);
+		return -EINVAL;;
+	}
+
+	if (getenv("IWD_DHCP_DEBUG"))
+		l_dhcp_server_set_debug(ap->server, do_debug,
+							"[DHCPv4 SERV] ", NULL);
+
+	/* get the current address if there is one */
+	if (l_net_get_address(ifindex, &ia) && ia.s_addr != 0)
+		address = ia.s_addr;
+
+	if (ap->config->profile) {
+		char *addr;
+
+		addr = l_settings_get_string(settings, "IPv4", "Address");
+		if (addr) {
+			if (inet_pton(AF_INET, addr, &ia) < 0)
+				goto free_addr;
+
+			/* Is a matching address already set on interface? */
+			if (ia.s_addr == address)
+				ret = -EALREADY;
+			else
+				ret = 0;
+		} else if (address) {
+			/* No address in config, but interface has one set */
+			addr = l_strdup(inet_ntoa(ia));
+			ret = -EALREADY;
+		} else
+			goto free_addr;
+
+		/* Set the remaining DHCP options in config file */
+		if (!dhcp_load_settings(ap, settings)) {
+			ret = -EINVAL;
+			goto free_addr;
+		}
+
+		if (!l_dhcp_server_set_ip_address(ap->server, addr)) {
+			ret = -EINVAL;
+			goto free_addr;
+		}
+
+		ap->own_ip = l_strdup(addr);
+
+free_addr:
+		l_free(addr);
+
+		return ret;
+	} else if (address) {
+		/* No config file and address is already set */
+		ap->own_ip = l_strdup(inet_ntoa(ia));
+
+		return -EALREADY;
+	} else if (pool.used) {
+		/* No config file, no address set. Use IP pool */
+		ap->own_ip = ip_pool_get();
+		if (!ap->own_ip) {
+			l_error("No more IP's in pool, cannot start AP on %u",
+					ifindex);
+			return -EEXIST;
+		}
+
+		ap->use_ip_pool = true;
+		ap->ip_prefix = pool.prefix;
+
+		return 0;
+	}
+
+	return -EINVAL;
+}
+
+static int ap_load_profile_and_dhcp(struct ap_state *ap, bool *wait_dhcp)
+{
+	uint32_t ifindex = netdev_get_ifindex(ap->netdev);
+	char *passphrase;
+	L_AUTO_FREE_VAR(struct l_settings *, settings) = NULL;
+	int err;
+
+	/* No profile or DHCP settings */
+	if (!ap->config->profile && !pool.used)
+		return 0;
+
+	if (ap->config->profile) {
+		settings = l_settings_new();
+
+		if (!l_settings_load_from_file(settings, ap->config->profile))
+			return -EINVAL;
+
+		passphrase = l_settings_get_string(settings, "Security",
+							"Passphrase");
+		if (passphrase) {
+			if (strlen(passphrase) > 63) {
+				l_error("[Security].Passphrase must not exceed "
+						"63 characters");
+				l_free(passphrase);
+				return -EINVAL;
+			}
+
+			strcpy(ap->config->passphrase, passphrase);
+			l_free(passphrase);
+		}
+
+		if (!l_settings_has_group(settings, "IPv4")) {
+			*wait_dhcp = false;
+			return 0;
+		}
+	}
+
+	err = ap_setup_dhcp(ap, settings);
+	if (err == 0) {
+		/* Address change required */
+		ap->rtnl_add_cmd = l_rtnl_ifaddr4_add(rtnl, ifindex,
+					ap->ip_prefix, ap->own_ip,
+					broadcast_from_ip(ap->own_ip),
+					ap_ifaddr4_added_cb, ap, NULL);
+
+		if (!ap->rtnl_add_cmd) {
+			l_error("Failed to add IPv4 address");
+			return -EIO;
+		}
+
+		ap->cleanup_ip = true;
+
+		*wait_dhcp = true;
+
+		return 0;
+	/* Selected address already set, continue normally */
+	} else if (err == -EALREADY) {
+		*wait_dhcp = false;
+
+		return 0;
+	}
+
+	return err;
 }
 
 /*
  * Start a simple independent WPA2 AP on given netdev.
  *
- * @event_func is required and must react to AP_EVENT_START_FAILED
- * and AP_EVENT_STOPPING by forgetting the ap_state struct, which
- * is going to be freed automatically.
- * In the @config struct only .ssid and .psk need to be non-NUL,
- * other fields are optional.  If @ap_start succeeds, the returned
- * ap_state takes ownership of @config and the caller shouldn't
- * free it or any of the memory pointed to by its members (they
- * also can't be static).
+ * @ops.handle_event is required and must react to AP_EVENT_START_FAILED
+ * and AP_EVENT_STOPPING by forgetting the ap_state struct, which is
+ * going to be freed automatically.
+ * In the @config struct the .ssid field is required and one of
+ * .passphrase and .psk must be filled in.  All other fields are optional.
+ * If @ap_start succeeds, the returned ap_state takes ownership of
+ * @config and the caller shouldn't free it or any of the memory pointed
+ * to by its members (which also can't be static).
  */
 struct ap_state *ap_start(struct netdev *netdev, struct ap_config *config,
-				ap_event_func_t event_func, void *user_data)
+				const struct ap_ops *ops, int *err_out,
+				void *user_data)
 {
 	struct ap_state *ap;
 	struct wiphy *wiphy = netdev_get_wiphy(netdev);
 	struct l_genl_msg *cmd;
 	uint64_t wdev_id = netdev_get_wdev_id(netdev);
+	int err = -EINVAL;
+	bool wait_on_address = false;
+
+	if (err_out)
+		*err_out = err;
+
+	if (L_WARN_ON(!config->ssid))
+		return NULL;
+
+	if (L_WARN_ON(!config->profile && !config->passphrase[0] &&
+			util_mem_is_zero(config->psk, sizeof(config->psk))))
+		return NULL;
 
 	ap = l_new(struct ap_state, 1);
 	ap->nl80211 = l_genl_family_new(iwd_get_genl(), NL80211_GENL_NAME);
 	ap->config = config;
 	ap->netdev = netdev;
-	ap->event_func = event_func;
+	ap->ops = ops;
 	ap->user_data = user_data;
+
+	/*
+	 * This both loads a profile if required and loads DHCP settings either
+	 * by the profile itself or the IP pool (or does nothing in the case
+	 * of a profile-less configuration). wait_on_address will be set true
+	 * if an address change is required.
+	 */
+	err = ap_load_profile_and_dhcp(ap, &wait_on_address);
+	if (err < 0)
+		goto error;
 
 	if (!config->channel)
 		/* TODO: Start a Get Survey to decide the channel */
@@ -2071,6 +2679,7 @@ struct ap_state *ap_start(struct netdev *netdev, struct ap_config *config,
 	ap->ciphers = wiphy_select_cipher(wiphy, 0xffff);
 	ap->group_cipher = wiphy_select_cipher(wiphy, 0xffff);
 	ap->beacon_interval = 100;
+	ap->rates = l_uintset_new(200);
 
 	/* TODO: Pick from actual supported rates */
 	if (config->no_cck_rates) {
@@ -2083,7 +2692,6 @@ struct ap_state *ap_start(struct netdev *netdev, struct ap_config *config,
 		l_uintset_put(ap->rates, 96); /* 48 Mbps*/
 		l_uintset_put(ap->rates, 108); /* 54 Mbps*/
 	} else {
-		ap->rates = l_uintset_new(200);
 		l_uintset_put(ap->rates, 2); /* 1 Mbps*/
 		l_uintset_put(ap->rates, 11); /* 5.5 Mbps*/
 		l_uintset_put(ap->rates, 22); /* 11 Mbps*/
@@ -2091,8 +2699,11 @@ struct ap_state *ap_start(struct netdev *netdev, struct ap_config *config,
 
 	wsc_uuid_from_addr(netdev_get_address(netdev), ap->wsc_uuid_r);
 
-	if (crypto_psk_from_passphrase(config->psk, (uint8_t *) config->ssid,
-					strlen(config->ssid), ap->pmk) < 0)
+	if (config->passphrase[0] &&
+			crypto_psk_from_passphrase(config->passphrase,
+						(uint8_t *) config->ssid,
+						strlen(config->ssid),
+						config->psk) < 0)
 		goto error;
 
 	if (!frame_watch_add(wdev_id, 0, 0x0000 |
@@ -2130,6 +2741,13 @@ struct ap_state *ap_start(struct netdev *netdev, struct ap_config *config,
 	if (!ap->mlme_watch)
 		l_error("Registering for MLME notification failed");
 
+	if (wait_on_address) {
+		if (err_out)
+			*err_out = 0;
+
+		return ap;
+	}
+
 	cmd = ap_build_cmd_start_ap(ap);
 	if (!cmd)
 		goto error;
@@ -2141,9 +2759,16 @@ struct ap_state *ap_start(struct netdev *netdev, struct ap_config *config,
 		goto error;
 	}
 
+	if (err_out)
+		*err_out = 0;
+
 	return ap;
 
 error:
+	if (err_out)
+		*err_out = err;
+
+	ap->config = NULL;
 	ap_reset(ap);
 	l_genl_family_free(ap->nl80211);
 	l_free(ap);
@@ -2158,7 +2783,7 @@ static void ap_stop_cb(struct l_genl_msg *msg, void *user_data)
 	ap->start_stop_cmd_id = 0;
 
 	if (error < 0)
-		l_error("STOP_AP failed: %s (%i)", strerror(error), error);
+		l_error("STOP_AP failed: %s (%i)", strerror(-error), -error);
 
 	if (ap->stopped_func)
 		ap->stopped_func(ap->user_data);
@@ -2180,7 +2805,7 @@ static struct l_genl_msg *ap_build_cmd_stop_ap(struct ap_state *ap)
 
 /*
  * Schedule the running @ap to be stopped and freed.  The original
- * event_func and user_data are forgotten and a new callback can be
+ * ops and user_data are forgotten and a new callback can be
  * provided if the caller needs to know when the interface becomes
  * free, for example for a new ap_start call.
  *
@@ -2197,7 +2822,7 @@ void ap_shutdown(struct ap_state *ap, ap_stopped_func_t stopped_func,
 
 	if (ap->started) {
 		ap->started = false;
-		ap->event_func(AP_EVENT_STOPPING, NULL, ap->user_data);
+		ap->ops->handle_event(AP_EVENT_STOPPING, NULL, ap->user_data);
 	}
 
 	ap_reset(ap);
@@ -2250,6 +2875,8 @@ void ap_free(struct ap_state *ap)
 {
 	ap_reset(ap);
 	l_genl_family_free(ap->nl80211);
+	if (ap->server)
+		l_dhcp_server_destroy(ap->server);
 	l_free(ap);
 }
 
@@ -2340,17 +2967,32 @@ static void ap_if_event_func(enum ap_event_type type, const void *event_data,
 		if (L_WARN_ON(!ap_if->pending))
 			break;
 
+		l_dbus_object_add_interface(dbus_get_bus(),
+						netdev_get_path(ap_if->netdev),
+						IWD_AP_DIAGNOSTIC_INTERFACE,
+						ap_if);
+
 		reply = l_dbus_message_new_method_return(ap_if->pending);
 		dbus_pending_reply(&ap_if->pending, reply);
 		l_dbus_property_changed(dbus_get_bus(),
 					netdev_get_path(ap_if->netdev),
 					IWD_AP_INTERFACE, "Started");
+		l_dbus_property_changed(dbus_get_bus(),
+					netdev_get_path(ap_if->netdev),
+					IWD_AP_INTERFACE, "Name");
 		break;
 
 	case AP_EVENT_STOPPING:
+		l_dbus_object_remove_interface(dbus_get_bus(),
+						netdev_get_path(ap_if->netdev),
+						IWD_AP_DIAGNOSTIC_INTERFACE);
+
 		l_dbus_property_changed(dbus_get_bus(),
 					netdev_get_path(ap_if->netdev),
 					IWD_AP_INTERFACE, "Started");
+		l_dbus_property_changed(dbus_get_bus(),
+					netdev_get_path(ap_if->netdev),
+					IWD_AP_INTERFACE, "Name");
 
 		if (!ap_if->pending)
 			ap_if->ap = NULL;
@@ -2367,12 +3009,17 @@ static void ap_if_event_func(enum ap_event_type type, const void *event_data,
 	}
 }
 
+static const struct ap_ops ap_dbus_ops = {
+	.handle_event = ap_if_event_func,
+};
+
 static struct l_dbus_message *ap_dbus_start(struct l_dbus *dbus,
 		struct l_dbus_message *message, void *user_data)
 {
 	struct ap_if_data *ap_if = user_data;
-	const char *ssid, *wpa2_psk;
+	const char *ssid, *wpa2_passphrase;
 	struct ap_config *config;
+	int err;
 
 	if (ap_if->ap && ap_if->ap->started)
 		return dbus_error_already_exists(message);
@@ -2380,17 +3027,19 @@ static struct l_dbus_message *ap_dbus_start(struct l_dbus *dbus,
 	if (ap_if->ap || ap_if->pending)
 		return dbus_error_busy(message);
 
-	if (!l_dbus_message_get_arguments(message, "ss", &ssid, &wpa2_psk))
+	if (!l_dbus_message_get_arguments(message, "ss",
+						&ssid, &wpa2_passphrase))
 		return dbus_error_invalid_args(message);
 
 	config = l_new(struct ap_config, 1);
 	config->ssid = l_strdup(ssid);
-	config->psk = l_strdup(wpa2_psk);
+	l_strlcpy(config->passphrase, wpa2_passphrase,
+			sizeof(config->passphrase));
 
-	ap_if->ap = ap_start(ap_if->netdev, config, ap_if_event_func, ap_if);
+	ap_if->ap = ap_start(ap_if->netdev, config, &ap_dbus_ops, &err, ap_if);
 	if (!ap_if->ap) {
 		ap_config_free(config);
-		return dbus_error_invalid_args(message);
+		return dbus_error_from_errno(err, message);
 	}
 
 	ap_if->pending = l_dbus_message_ref(message);
@@ -2435,6 +3084,37 @@ static struct l_dbus_message *ap_dbus_stop(struct l_dbus *dbus,
 	return NULL;
 }
 
+static struct l_dbus_message *ap_dbus_start_profile(struct l_dbus *dbus,
+						struct l_dbus_message *message,
+						void *user_data)
+{
+	struct ap_if_data *ap_if = user_data;
+	const char *ssid;
+	struct ap_config *config;
+	int err;
+
+	if (ap_if->ap && ap_if->ap->started)
+		return dbus_error_already_exists(message);
+
+	if (ap_if->ap || ap_if->pending)
+		return dbus_error_busy(message);
+
+	if (!l_dbus_message_get_arguments(message, "s", &ssid))
+		return dbus_error_invalid_args(message);
+
+	config = l_new(struct ap_config, 1);
+	config->ssid = l_strdup(ssid);
+	/* This tells ap_start to pull settings from a profile on disk */
+	config->profile = storage_get_path("ap/%s.ap", ssid);
+
+	ap_if->ap = ap_start(ap_if->netdev, config, &ap_dbus_ops, &err, ap_if);
+	if (!ap_if->ap)
+		return dbus_error_from_errno(err, message);
+
+	ap_if->pending = l_dbus_message_ref(message);
+	return NULL;
+}
+
 static bool ap_dbus_property_get_started(struct l_dbus *dbus,
 					struct l_dbus_message *message,
 					struct l_dbus_message_builder *builder,
@@ -2448,14 +3128,35 @@ static bool ap_dbus_property_get_started(struct l_dbus *dbus,
 	return true;
 }
 
+static bool ap_dbus_property_get_name(struct l_dbus *dbus,
+					struct l_dbus_message *message,
+					struct l_dbus_message_builder *builder,
+					void *user_data)
+{
+	struct ap_if_data *ap_if = user_data;
+
+	if (!ap_if->ap || !ap_if->ap->config || !ap_if->ap->started)
+		return false;
+
+	l_dbus_message_builder_append_basic(builder, 's',
+						ap_if->ap->config->ssid);
+
+	return true;
+}
+
 static void ap_setup_interface(struct l_dbus_interface *interface)
 {
 	l_dbus_interface_method(interface, "Start", 0, ap_dbus_start, "",
-			"ss", "ssid", "wpa2_psk");
+			"ss", "ssid", "wpa2_passphrase");
 	l_dbus_interface_method(interface, "Stop", 0, ap_dbus_stop, "", "");
+	l_dbus_interface_method(interface, "StartProfile", 0,
+					ap_dbus_start_profile, "", "s",
+					"ssid");
 
 	l_dbus_interface_property(interface, "Started", 0, "b",
 					ap_dbus_property_get_started, NULL);
+	l_dbus_interface_property(interface, "Name", 0, "s",
+					ap_dbus_property_get_name, NULL);
 }
 
 static void ap_destroy_interface(void *user_data)
@@ -2473,6 +3174,90 @@ static void ap_destroy_interface(void *user_data)
 		ap_free(ap_if->ap);
 
 	l_free(ap_if);
+}
+
+struct diagnostic_data {
+	struct l_dbus_message *pending;
+	struct l_dbus_message_builder *builder;
+};
+
+static void ap_get_station_cb(const struct diagnostic_station_info *info,
+				void *user_data)
+{
+	struct diagnostic_data *data = user_data;
+
+	/* First station info */
+	if (!data->builder) {
+		struct l_dbus_message *reply =
+				l_dbus_message_new_method_return(data->pending);
+
+		data->builder = l_dbus_message_builder_new(reply);
+
+		l_dbus_message_builder_enter_array(data->builder, "a{sv}");
+	}
+
+	l_dbus_message_builder_enter_array(data->builder, "{sv}");
+	dbus_append_dict_basic(data->builder, "Address", 's',
+					util_address_to_string(info->addr));
+
+	diagnostic_info_to_dict(info, data->builder);
+
+	l_dbus_message_builder_leave_array(data->builder);
+}
+
+static void ap_get_station_destroy(void *user_data)
+{
+	struct diagnostic_data *data = user_data;
+	struct l_dbus_message *reply;
+
+	if (!data->builder) {
+		reply = l_dbus_message_new_method_return(data->pending);
+
+		data->builder = l_dbus_message_builder_new(reply);
+
+		l_dbus_message_builder_enter_array(data->builder, "a{sv}");
+	}
+
+	l_dbus_message_builder_leave_array(data->builder);
+	reply = l_dbus_message_builder_finalize(data->builder);
+	l_dbus_message_builder_destroy(data->builder);
+
+	dbus_pending_reply(&data->pending, reply);
+
+	l_free(data);
+}
+
+static struct l_dbus_message *ap_dbus_get_diagnostics(struct l_dbus *dbus,
+		struct l_dbus_message *message, void *user_data)
+{
+	struct ap_if_data *ap_if = user_data;
+	struct diagnostic_data *data;
+	int ret;
+
+	data = l_new(struct diagnostic_data, 1);
+	data->pending = l_dbus_message_ref(message);
+
+	ret = netdev_get_all_stations(ap_if->ap->netdev, ap_get_station_cb,
+					data, ap_get_station_destroy);
+
+	if (ret < 0) {
+		l_dbus_message_unref(data->pending);
+		l_free(data);
+		return dbus_error_from_errno(ret, message);
+	}
+
+	return NULL;
+}
+
+static void ap_setup_diagnostic_interface(struct l_dbus_interface *interface)
+{
+	l_dbus_interface_method(interface, "GetDiagnostics", 0,
+				ap_dbus_get_diagnostics,
+				"aa{sv}", "", "diagnostic");
+}
+
+static void ap_diagnostic_interface_destroy(void *user_data)
+{
 }
 
 static void ap_add_interface(struct netdev *netdev)
@@ -2519,10 +3304,46 @@ static void ap_netdev_watch(struct netdev *netdev,
 
 static int ap_init(void)
 {
+	const struct l_settings *settings = iwd_get_config();
+	bool dhcp_enable;
+
 	netdev_watch = netdev_watch_add(ap_netdev_watch, NULL, NULL);
 
 	l_dbus_register_interface(dbus_get_bus(), IWD_AP_INTERFACE,
 			ap_setup_interface, ap_destroy_interface, false);
+	l_dbus_register_interface(dbus_get_bus(), IWD_AP_DIAGNOSTIC_INTERFACE,
+			ap_setup_diagnostic_interface,
+			ap_diagnostic_interface_destroy, false);
+
+	/*
+	 * Reusing [General].EnableNetworkConfiguration as a switch to enable
+	 * DHCP server. If no value is found or it is false do not create a
+	 * DHCP server.
+	 */
+	if (!l_settings_get_bool(settings, "General",
+				"EnableNetworkConfiguration", &dhcp_enable))
+		dhcp_enable = false;
+
+	if (dhcp_enable) {
+		L_AUTO_FREE_VAR(char *, ip_prefix);
+
+		ip_prefix = l_settings_get_string(settings, "General",
+							"APRanges");
+		/*
+		 * In this case its assumed the user only cares about station
+		 * netconfig so we let ap_init pass but DHCP will not be
+		 * enabled.
+		 */
+		if (!ip_prefix) {
+			l_warn("[General].APRanges must be set for DHCP");
+			return 0;
+		}
+
+		if (!ip_pool_create(ip_prefix))
+			return -EINVAL;
+	}
+
+	rtnl = iwd_get_rtnl();
 
 	return 0;
 }
@@ -2531,6 +3352,8 @@ static void ap_exit(void)
 {
 	netdev_watch_remove(netdev_watch);
 	l_dbus_unregister_interface(dbus_get_bus(), IWD_AP_INTERFACE);
+
+	ip_pool_destroy();
 }
 
 IWD_MODULE(ap, ap_init, ap_exit)

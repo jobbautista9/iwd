@@ -21,7 +21,8 @@
  */
 
 struct resolve *resolve_new(uint32_t ifindex);
-void resolve_add_dns(struct resolve *resolve, uint8_t type, char **dns_list);
-void resolve_add_domain_name(struct resolve *resolve, const char *domain_name);
+void resolve_set_dns(struct resolve *resolve, char **dns_list);
+void resolve_set_domains(struct resolve *resolve, char **domain_list);
+void resolve_set_mdns(struct resolve *resolve, const char *mdns);
 void resolve_revert(struct resolve *resolve);
 void resolve_free(struct resolve *resolve);

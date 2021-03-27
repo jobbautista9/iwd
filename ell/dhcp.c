@@ -29,14 +29,19 @@
 #include <linux/types.h>
 #include <net/if_arp.h>
 #include <errno.h>
+#include <arpa/inet.h>
 
 #include "private.h"
 #include "random.h"
 #include "time.h"
+#include "time-private.h"
 #include "net.h"
 #include "timeout.h"
 #include "dhcp.h"
 #include "dhcp-private.h"
+#include "netlink.h"
+#include "rtnl.h"
+#include "acd.h"
 
 #define CLIENT_DEBUG(fmt, args...)					\
 	l_util_debug(client->debug_handler, client->debug_data,		\
@@ -48,34 +53,6 @@
 	client->state = (s)
 
 #define BITS_PER_LONG (sizeof(unsigned long) * 8)
-
-#define DHCP_OPTION_PAD 0 /* RFC 2132, Section 3.1 */
-#define DHCP_OPTION_END 255 /* RFC 2132, Section 3.2 */
-
-/* RFC 2132, Section 9.3. Option Overload */
-#define DHCP_OPTION_OVERLOAD 52
-enum dhcp_option_overload {
-	DHCP_OVERLOAD_FILE = 1,
-	DHCP_OVERLOAD_SNAME = 2,
-	DHCP_OVERLOAD_BOTH = 3,
-};
-
-/* RFC 2132, Section 9.6. DHCP Message Type */
-#define DHCP_OPTION_MESSAGE_TYPE 53
-enum dhcp_message_type {
-	DHCP_MESSAGE_TYPE_DISCOVER = 1,
-	DHCP_MESSAGE_TYPE_OFFER = 2,
-	DHCP_MESSAGE_TYPE_REQUEST = 3,
-	DHCP_MESSAGE_TYPE_DECLINE = 4,
-	DHCP_MESSAGE_TYPE_ACK = 5,
-	DHCP_MESSAGE_TYPE_NAK = 6,
-	DHCP_MESSAGE_TYPE_RELEASE = 7,
-	DHCP_MESSAGE_TYPE_INFORM = 8,
-};
-
-#define DHCP_OPTION_PARAMETER_REQUEST_LIST 55 /* Section 9.8 */
-#define DHCP_OPTION_MAXIMUM_MESSAGE_SIZE 57 /* Section 9.10 */
-#define DHCP_OPTION_CLIENT_IDENTIFIER 61 /* Section 9.14 */
 
 enum dhcp_state {
 	DHCP_STATE_INIT,
@@ -156,221 +133,6 @@ const char *_dhcp_option_to_string(uint8_t option)
 	}
 }
 
-bool _dhcp_message_iter_init(struct dhcp_message_iter *iter,
-				const struct dhcp_message *message, size_t len)
-{
-	if (!message)
-		return false;
-
-	if (len < sizeof(struct dhcp_message))
-		return false;
-
-	if (L_BE32_TO_CPU(message->magic) != DHCP_MAGIC)
-		return false;
-
-	memset(iter, 0, sizeof(*iter));
-	iter->message = message;
-	iter->message_len = len;
-	iter->max = len - sizeof(struct dhcp_message);
-	iter->options = message->options;
-	iter->can_overload = true;
-
-	return true;
-}
-
-static bool next_option(struct dhcp_message_iter *iter,
-				uint8_t *t, uint8_t *l, const void **v)
-{
-	uint8_t type;
-	uint8_t len;
-
-	while (iter->pos < iter->max) {
-		type = iter->options[iter->pos];
-
-		switch (type) {
-		case DHCP_OPTION_PAD:
-			iter->pos += 1;
-			continue;
-		case DHCP_OPTION_END:
-			return false;
-		default:
-			break;
-		}
-
-		if (iter->pos + 2 >= iter->max)
-			return false;
-
-		len = iter->options[iter->pos + 1];
-
-		if (iter->pos + 2 + len > iter->max)
-			return false;
-
-		*t = type;
-		*l = len;
-		*v = &iter->options[iter->pos + 2];
-
-		iter->pos += 2 + len;
-		return true;
-	}
-
-	return false;
-}
-
-bool _dhcp_message_iter_next(struct dhcp_message_iter *iter, uint8_t *type,
-				uint8_t *len, const void **data)
-{
-	bool r;
-	uint8_t t, l;
-	const void *v;
-
-	do {
-		r = next_option(iter, &t, &l, &v);
-		if (!r) {
-			iter->can_overload = false;
-
-			if (iter->overload_file) {
-				iter->options = iter->message->file;
-				iter->pos = 0;
-				iter->max = sizeof(iter->message->file);
-				iter->overload_file = false;
-				continue;
-			}
-
-			if (iter->overload_sname) {
-				iter->options = iter->message->sname;
-				iter->pos = 0;
-				iter->max = sizeof(iter->message->sname);
-				iter->overload_sname = false;
-				continue;
-			}
-
-			return r;
-		}
-
-		switch (t) {
-		case DHCP_OPTION_OVERLOAD:
-			if (l != 1)
-				continue;
-
-			if (!iter->can_overload)
-				continue;
-
-			if (l_get_u8(v) & DHCP_OVERLOAD_FILE)
-				iter->overload_file = true;
-
-			if (l_get_u8(v) & DHCP_OVERLOAD_SNAME)
-				iter->overload_sname = true;
-
-			continue;
-		default:
-			if (type)
-				*type = t;
-
-			if (len)
-				*len = l;
-
-			if (data)
-				*data = v;
-			return r;
-		}
-	} while (true);
-
-	return false;
-}
-
-int _dhcp_option_append(uint8_t **buf, size_t *buflen, uint8_t code,
-					size_t optlen, const void *optval)
-{
-	if (!buf || !buflen)
-		return -EINVAL;
-
-	switch (code) {
-
-	case DHCP_OPTION_PAD:
-	case DHCP_OPTION_END:
-		if (*buflen < 1)
-			return -ENOBUFS;
-
-		(*buf)[0] = code;
-		*buf += 1;
-		*buflen -= 1;
-		break;
-
-	default:
-		if (*buflen < optlen + 2)
-			return -ENOBUFS;
-
-		if (!optval)
-			return -EINVAL;
-
-		(*buf)[0] = code;
-		(*buf)[1] = optlen;
-		memcpy(&(*buf)[2], optval, optlen);
-
-		*buf += optlen + 2;
-		*buflen -= (optlen + 2);
-
-		break;
-	}
-
-	return 0;
-}
-
-static int dhcp_append_prl(const unsigned long *reqopts,
-					uint8_t **buf, size_t *buflen)
-{
-	uint8_t optlen = 0;
-	unsigned int i;
-	unsigned int j;
-
-	if (!buf || !buflen)
-		return -EINVAL;
-
-	for (i = 0; i < 256 / BITS_PER_LONG; i++)
-		optlen += __builtin_popcountl(reqopts[i]);
-
-	/*
-	 * This function assumes that there's enough space to put the PRL
-	 * into the buffer without resorting to file or sname overloading
-	 */
-	if (*buflen < optlen + 2U)
-		return -ENOBUFS;
-
-	i = 0;
-	(*buf)[i++] = DHCP_OPTION_PARAMETER_REQUEST_LIST;
-	(*buf)[i++] = optlen;
-
-	for (j = 0; j < 256; j++) {
-		if (reqopts[j / BITS_PER_LONG] & 1UL << (j % BITS_PER_LONG))
-			(*buf)[i++] = j;
-	}
-
-	*buf += optlen + 2;
-	*buflen -= (optlen + 2);
-
-	return 0;
-}
-
-static int dhcp_message_init(struct dhcp_message *message,
-				enum dhcp_op_code op,
-				uint8_t type, uint32_t xid,
-				uint8_t **opt, size_t *optlen)
-{
-	int err;
-
-	message->op = op;
-	message->xid = L_CPU_TO_BE32(xid);
-	message->magic = L_CPU_TO_BE32(DHCP_MAGIC);
-	*opt = (uint8_t *)(message + 1);
-
-	err = _dhcp_option_append(opt, optlen,
-					DHCP_OPTION_MESSAGE_TYPE, 1, &type);
-	if (err < 0)
-		return err;
-
-	return 0;
-}
-
 static void dhcp_message_set_address_type(struct dhcp_message *message,
 						uint8_t addr_type,
 						uint8_t addr_len)
@@ -405,8 +167,6 @@ static inline int dhcp_message_optimize(struct dhcp_message *message,
 	return len;
 }
 
-#define DHCP_MIN_OPTIONS_SIZE 312
-
 struct l_dhcp_client {
 	enum dhcp_state state;
 	unsigned long request_options[256 / BITS_PER_LONG];
@@ -422,12 +182,16 @@ struct l_dhcp_client {
 	struct l_timeout *timeout_resend;
 	struct l_timeout *timeout_lease;
 	struct l_dhcp_lease *lease;
+	struct l_netlink *rtnl;
+	uint32_t rtnl_add_cmdid;
+	struct l_rtnl_address *rtnl_configured_address;
 	uint8_t attempt;
 	l_dhcp_client_event_cb_t event_handler;
 	void *event_data;
 	l_dhcp_destroy_cb_t event_destroy;
 	l_dhcp_debug_cb_t debug_handler;
 	l_dhcp_destroy_cb_t debug_destroy;
+	struct l_acd *acd;
 	void *debug_data;
 	bool have_addr : 1;
 	bool override_xid : 1;
@@ -460,9 +224,6 @@ static uint16_t dhcp_attempt_secs(uint64_t start)
  */
 static uint64_t dhcp_fuzz_secs(uint32_t secs)
 {
-	uint64_t ms = secs * 1000ULL;
-	uint32_t r = l_getrandom_uint32();
-
 	/*
 	 * RFC2132, Section 4.1:
 	 * DHCP clients are responsible for all message retransmission.  The
@@ -477,12 +238,7 @@ static uint64_t dhcp_fuzz_secs(uint32_t secs)
 	 * Clients with clocks that provide resolution granularity of less than
 	 * one second may choose a non-integer randomization value.
 	 */
-	if (r & 0x80000000)
-		ms += r & 0x3ff;
-	else
-		ms -= r & 0x3ff;
-
-	return ms;
+	return _time_fuzz_secs(secs, 1);
 }
 
 /*
@@ -527,16 +283,13 @@ static uint32_t dhcp_rebind_renew_retry_time(uint64_t start_t, uint32_t expiry)
 
 static int client_message_init(struct l_dhcp_client *client,
 					struct dhcp_message *message,
-					uint8_t type,
-					uint8_t **opt, size_t *optlen)
+					struct dhcp_message_builder *builder)
 {
-	int err;
 	uint16_t max_size;
 
-	err = dhcp_message_init(message, DHCP_OP_CODE_BOOTREQUEST,
-				type, client->xid, opt, optlen);
-	if (err < 0)
-		return err;
+	message->op = DHCP_OP_CODE_BOOTREQUEST;
+	message->xid = L_CPU_TO_BE32(client->xid);
+	message->magic = L_CPU_TO_BE32(DHCP_MAGIC);
 
 	dhcp_message_set_address_type(message, client->addr_type,
 							client->addr_len);
@@ -557,20 +310,19 @@ static int client_message_init(struct l_dhcp_client *client,
 	 */
 	message->secs = L_CPU_TO_BE16(dhcp_attempt_secs(client->start_t));
 
-	err = dhcp_append_prl(client->request_options, opt, optlen);
-	if (err < 0)
-		return err;
+	if (!_dhcp_message_builder_append_prl(builder,
+						client->request_options))
+		return -EINVAL;
 
 	/*
 	 * Set the maximum DHCP message size to the minimum legal value.  This
 	 * helps some buggy DHCP servers to not send bigger packets
 	 */
 	max_size = L_CPU_TO_BE16(576);
-	err = _dhcp_option_append(opt, optlen,
+	if (!_dhcp_message_builder_append(builder,
 					DHCP_OPTION_MAXIMUM_MESSAGE_SIZE,
-					2, &max_size);
-	if (err < 0)
-		return err;
+					2, &max_size))
+		return -EINVAL;
 
 	return 0;
 }
@@ -584,7 +336,7 @@ static void dhcp_client_event_notify(struct l_dhcp_client *client,
 
 static int dhcp_client_send_discover(struct l_dhcp_client *client)
 {
-	uint8_t *opt;
+	struct dhcp_message_builder builder;
 	size_t optlen = DHCP_MIN_OPTIONS_SIZE;
 	size_t len = sizeof(struct dhcp_message) + optlen;
 	L_AUTO_FREE_VAR(struct dhcp_message *, discover);
@@ -594,36 +346,45 @@ static int dhcp_client_send_discover(struct l_dhcp_client *client)
 
 	discover = (struct dhcp_message *) l_new(uint8_t, len);
 
-	err = client_message_init(client, discover,
-					DHCP_MESSAGE_TYPE_DISCOVER,
-					&opt, &optlen);
+	_dhcp_message_builder_init(&builder, discover, len,
+					DHCP_MESSAGE_TYPE_DISCOVER);
+
+	err = client_message_init(client, discover, &builder);
 	if (err < 0)
 		return err;
 
-	if (client->hostname) {
-		err = _dhcp_option_append(&opt, &optlen,
+	if (client->hostname)
+		if (!_dhcp_message_builder_append(&builder,
 						L_DHCP_OPTION_HOST_NAME,
 						strlen(client->hostname),
-						client->hostname);
-		if (err < 0)
-			return err;
-	}
+						client->hostname))
+			return -EINVAL;
 
-	err = _dhcp_option_append(&opt, &optlen, DHCP_OPTION_END, 0, NULL);
-	if (err < 0)
-		return err;
+	_dhcp_message_builder_finalize(&builder, &len);
 
-	len = dhcp_message_optimize(discover, opt);
-
-	return client->transport->broadcast(client->transport,
+	return client->transport->l2_send(client->transport,
 					INADDR_ANY, DHCP_PORT_CLIENT,
 					INADDR_BROADCAST, DHCP_PORT_SERVER,
+					NULL,
 					discover, len);
+}
+
+static int dhcp_client_send_unicast(struct l_dhcp_client *client,
+					struct dhcp_message *request,
+					unsigned int len)
+{
+	struct sockaddr_in si;
+
+	memset(&si, 0, sizeof(si));
+	si.sin_family = AF_INET;
+	si.sin_port = L_CPU_TO_BE16(DHCP_PORT_SERVER);
+	si.sin_addr.s_addr = client->lease->server_address;
+	return client->transport->send(client->transport, &si, request, len);
 }
 
 static int dhcp_client_send_request(struct l_dhcp_client *client)
 {
-	uint8_t *opt;
+	struct dhcp_message_builder builder;
 	size_t optlen = DHCP_MIN_OPTIONS_SIZE;
 	size_t len = sizeof(struct dhcp_message) + optlen;
 	L_AUTO_FREE_VAR(struct dhcp_message *, request);
@@ -633,9 +394,11 @@ static int dhcp_client_send_request(struct l_dhcp_client *client)
 
 	request = (struct dhcp_message *) l_new(uint8_t, len);
 
-	err = client_message_init(client, request,
-					DHCP_MESSAGE_TYPE_REQUEST,
-					&opt, &optlen);
+	_dhcp_message_builder_init(&builder, request, len,
+					DHCP_MESSAGE_TYPE_REQUEST);
+
+
+	err = client_message_init(client, request, &builder);
 	if (err < 0)
 		return err;
 
@@ -656,17 +419,20 @@ static int dhcp_client_send_request(struct l_dhcp_client *client)
 		 *
 		 * NOTE: 'SELECTING' is meant to be 'REQUESTING' in the RFC
 		 */
-		err = _dhcp_option_append(&opt, &optlen,
+		if (!_dhcp_message_builder_append(&builder,
 					L_DHCP_OPTION_SERVER_IDENTIFIER,
-					4, &client->lease->server_address);
-		if (err < 0)
-			return err;
+					4, &client->lease->server_address)) {
+			CLIENT_DEBUG("Failed to append server ID");
+			return -EINVAL;
+		}
 
-		err = _dhcp_option_append(&opt, &optlen,
+		if (!_dhcp_message_builder_append(&builder,
 					L_DHCP_OPTION_REQUESTED_IP_ADDRESS,
-					4, &client->lease->address);
-		if (err < 0)
-			return err;
+					4, &client->lease->address)) {
+			CLIENT_DEBUG("Failed to append requested IP");
+			return -EINVAL;
+		}
+
 		break;
 	case DHCP_STATE_RENEWING:
 	case DHCP_STATE_REBINDING:
@@ -682,19 +448,16 @@ static int dhcp_client_send_request(struct l_dhcp_client *client)
 	}
 
 	if (client->hostname) {
-		err = _dhcp_option_append(&opt, &optlen,
+		if (!_dhcp_message_builder_append(&builder,
 						L_DHCP_OPTION_HOST_NAME,
 						strlen(client->hostname),
-						client->hostname);
-		if (err < 0)
-			return err;
+						client->hostname)) {
+			CLIENT_DEBUG("Failed to append host name");
+			return -EINVAL;
+		}
 	}
 
-	err = _dhcp_option_append(&opt, &optlen, DHCP_OPTION_END, 0, NULL);
-	if (err < 0)
-		return err;
-
-	len = dhcp_message_optimize(request, opt);
+	_dhcp_message_builder_finalize(&builder, &len);
 
 	/*
 	 * RFC2131, Section 4.1:
@@ -702,20 +465,52 @@ static int dhcp_client_send_request(struct l_dhcp_client *client)
 	 * 'server identifier' option for any unicast requests to the DHCP
 	 * server.
 	 */
-	if (client->state == DHCP_STATE_RENEWING) {
-		struct sockaddr_in si;
-		memset(&si, 0, sizeof(si));
-		si.sin_family = AF_INET;
-		si.sin_port = L_CPU_TO_BE16(DHCP_PORT_SERVER);
-		si.sin_addr.s_addr = client->lease->server_address;
-		return client->transport->send(client->transport,
-							&si, request, len);
-	}
+	if (client->state == DHCP_STATE_RENEWING)
+		return dhcp_client_send_unicast(client, request, len);
 
-	return client->transport->broadcast(client->transport,
+	return client->transport->l2_send(client->transport,
 					INADDR_ANY, DHCP_PORT_CLIENT,
 					INADDR_BROADCAST, DHCP_PORT_SERVER,
-					request, len);
+					NULL, request, len);
+}
+
+static void dhcp_client_send_release(struct l_dhcp_client *client)
+{
+	struct dhcp_message_builder builder;
+	size_t optlen = DHCP_MIN_OPTIONS_SIZE;
+	size_t len = sizeof(struct dhcp_message) + optlen;
+	L_AUTO_FREE_VAR(struct dhcp_message *, request);
+	int err;
+	struct sockaddr_in si;
+
+	CLIENT_DEBUG("");
+
+	memset(&si, 0, sizeof(si));
+	si.sin_family = AF_INET;
+	si.sin_port = L_CPU_TO_BE16(DHCP_PORT_SERVER);
+	si.sin_addr.s_addr = client->lease->server_address;
+
+	request = (struct dhcp_message *) l_new(uint8_t, len);
+
+	_dhcp_message_builder_init(&builder, request, len,
+					DHCP_MESSAGE_TYPE_RELEASE);
+
+	err = client_message_init(client, request, &builder);
+	if (err < 0)
+		return;
+
+	request->ciaddr = client->lease->address;
+
+	if (!_dhcp_message_builder_append(&builder,
+					L_DHCP_OPTION_SERVER_IDENTIFIER,
+					4, &client->lease->server_address)) {
+		CLIENT_DEBUG("Failed to append server ID");
+		return;
+	}
+
+	_dhcp_message_builder_finalize(&builder, &len);
+
+	dhcp_client_send_unicast(client, request, len);
 }
 
 static void dhcp_client_timeout_resend(struct l_timeout *timeout,
@@ -723,19 +518,30 @@ static void dhcp_client_timeout_resend(struct l_timeout *timeout,
 {
 	struct l_dhcp_client *client = user_data;
 	unsigned int next_timeout = 0;
+	int r;
 
 	CLIENT_DEBUG("");
 
 	switch (client->state) {
 	case DHCP_STATE_SELECTING:
-		if (dhcp_client_send_discover(client) < 0)
+		r = dhcp_client_send_discover(client);
+		if (r < 0) {
+			CLIENT_DEBUG("Sending discover failed: %s",
+								strerror(-r));
 			goto error;
+		}
+
 		break;
 	case DHCP_STATE_RENEWING:
 	case DHCP_STATE_REQUESTING:
 	case DHCP_STATE_REBINDING:
-		if (dhcp_client_send_request(client) < 0)
+		r = dhcp_client_send_request(client);
+		if (r < 0) {
+			CLIENT_DEBUG("Sending Request failed: %s",
+								strerror(-r));
 			goto error;
+		}
+
 		break;
 	case DHCP_STATE_INIT:
 	case DHCP_STATE_INIT_REBOOT:
@@ -787,7 +593,7 @@ static void dhcp_client_lease_expired(struct l_timeout *timeout,
 	CLIENT_DEBUG("");
 
 	l_dhcp_client_stop(client);
-	dhcp_client_event_notify(client, L_DHCP_CLIENT_EVENT_NO_LEASE);
+	dhcp_client_event_notify(client, L_DHCP_CLIENT_EVENT_LEASE_EXPIRED);
 }
 
 static void dhcp_client_t2_expired(struct l_timeout *timeout, void *user_data)
@@ -814,14 +620,18 @@ static void dhcp_client_t1_expired(struct l_timeout *timeout, void *user_data)
 {
 	struct l_dhcp_client *client = user_data;
 	uint32_t next_timeout;
+	int r;
 
 	CLIENT_DEBUG("");
 
 	CLIENT_ENTER_STATE(DHCP_STATE_RENEWING);
 	client->attempt = 1;
 
-	if (dhcp_client_send_request(client) < 0)
+	r = dhcp_client_send_request(client);
+	if  (r < 0) {
+		CLIENT_DEBUG("Sending request failed: %s", strerror(-r));
 		goto error;
+	}
 
 	next_timeout = client->lease->t2 - client->lease->t1;
 	l_timeout_modify_ms(client->timeout_lease,
@@ -839,6 +649,24 @@ static void dhcp_client_t1_expired(struct l_timeout *timeout, void *user_data)
 
 error:
 	l_dhcp_client_stop(client);
+}
+
+static void dhcp_client_address_add_cb(int error, uint16_t type,
+						const void *data, uint32_t len,
+						void *user_data)
+{
+	struct l_dhcp_client *client = user_data;
+
+	client->rtnl_add_cmdid = 0;
+
+	if (error < 0 && error != -EEXIST) {
+		l_rtnl_address_free(client->rtnl_configured_address);
+		client->rtnl_configured_address = NULL;
+		CLIENT_DEBUG("Unable to set address on ifindex: %u: %d(%s)",
+				client->ifindex, error,
+				strerror(-error));
+		return;
+	}
 }
 
 static int dhcp_client_receive_ack(struct l_dhcp_client *client,
@@ -884,6 +712,40 @@ static int dhcp_client_receive_ack(struct l_dhcp_client *client,
 			client->state == DHCP_STATE_REBOOTING)
 		r = L_DHCP_CLIENT_EVENT_LEASE_OBTAINED;
 
+	if (client->rtnl) {
+		struct l_rtnl_address *a;
+		L_AUTO_FREE_VAR(char *, ip) =
+			l_dhcp_lease_get_address(client->lease);
+		uint8_t prefix_len;
+		uint32_t l = l_dhcp_lease_get_lifetime(client->lease);
+		L_AUTO_FREE_VAR(char *, netmask) =
+				l_dhcp_lease_get_netmask(client->lease);
+		L_AUTO_FREE_VAR(char *, broadcast) =
+				l_dhcp_lease_get_broadcast(client->lease);
+		struct in_addr in_addr;
+
+		if (inet_pton(AF_INET, netmask, &in_addr) > 0)
+			prefix_len = __builtin_popcountl(in_addr.s_addr);
+		else
+			prefix_len = 24;
+
+		a = l_rtnl_address_new(ip, prefix_len);
+		l_rtnl_address_set_noprefixroute(a, true);
+		l_rtnl_address_set_lifetimes(a, l, l);
+		l_rtnl_address_set_broadcast(a, broadcast);
+
+		client->rtnl_add_cmdid =
+			l_rtnl_ifaddr_add(client->rtnl, client->ifindex, a,
+						dhcp_client_address_add_cb,
+						client, NULL);
+		if (client->rtnl_add_cmdid)
+			client->rtnl_configured_address = a;
+		else {
+			CLIENT_DEBUG("Configuring address via RTNL failed");
+			l_rtnl_address_free(a);
+		}
+	}
+
 	return r;
 }
 
@@ -919,6 +781,7 @@ static void dhcp_client_rx_message(const void *data, size_t len, void *userdata)
 	uint8_t t, l;
 	const void *v;
 	int r;
+	struct in_addr ia;
 
 	CLIENT_DEBUG("");
 
@@ -971,6 +834,7 @@ static void dhcp_client_rx_message(const void *data, size_t len, void *userdata)
 	case DHCP_STATE_RENEWING:
 	case DHCP_STATE_REBINDING:
 		if (msg_type == DHCP_MESSAGE_TYPE_NAK) {
+			CLIENT_DEBUG("Received NAK, Stopping...");
 			l_dhcp_client_stop(client);
 
 			dhcp_client_event_notify(client,
@@ -1005,17 +869,54 @@ static void dhcp_client_rx_message(const void *data, size_t len, void *userdata)
 		 * reacquisition."
 		 */
 		l_timeout_remove(client->timeout_lease);
+		client->timeout_lease = NULL;
 
 		/* Infinite lease, no need to start t1 */
 		if (client->lease->lifetime != 0xffffffffu) {
 			uint32_t next_timeout =
 					dhcp_fuzz_secs(client->lease->t1);
 
+			CLIENT_DEBUG("T1 expiring in %u ms", next_timeout);
 			client->timeout_lease =
 				l_timeout_create_ms(next_timeout,
 							dhcp_client_t1_expired,
 							client, NULL);
 		}
+
+		/* ACD is already running, no need to re-announce */
+		if (client->acd)
+			break;
+
+		client->acd = l_acd_new(client->ifindex);
+
+		if (client->debug_handler)
+			l_acd_set_debug(client->acd, client->debug_handler,
+					client->debug_data,
+					client->debug_destroy);
+
+		/*
+		 * TODO: There is no mechanism yet to deal with IPs leased by
+		 * the DHCP server which conflict with other devices. For now
+		 * the ACD object is being initialized to defend infinitely
+		 * which is effectively no different than the non-ACD behavior
+		 * (ignore conflicts and continue using address). The only
+		 * change is that announcements will be sent if conflicts are
+		 * found.
+		 */
+		l_acd_set_defend_policy(client->acd,
+						L_ACD_DEFEND_POLICY_INFINITE);
+		l_acd_set_skip_probes(client->acd, true);
+
+		ia.s_addr = client->lease->address;
+
+		/* For unit testing we don't want this to be a fatal error */
+		if (!l_acd_start(client->acd, inet_ntoa(ia))) {
+			CLIENT_DEBUG("Failed to start ACD on %s, continuing",
+						inet_ntoa(ia));
+			l_acd_destroy(client->acd);
+			client->acd = NULL;
+		}
+
 		break;
 	case DHCP_STATE_INIT_REBOOT:
 	case DHCP_STATE_REBOOTING:
@@ -1049,7 +950,8 @@ LIB_EXPORT void l_dhcp_client_destroy(struct l_dhcp_client *client)
 	if (unlikely(!client))
 		return;
 
-	l_dhcp_client_stop(client);
+	if (client->state != DHCP_STATE_INIT)
+		l_dhcp_client_stop(client);
 
 	if (client->event_destroy)
 		client->event_destroy(client->event_data);
@@ -1163,6 +1065,15 @@ bool _dhcp_client_set_transport(struct l_dhcp_client *client,
 	return true;
 }
 
+struct dhcp_transport *_dhcp_client_get_transport(struct l_dhcp_client *client)
+{
+	if (unlikely(!client))
+		return NULL;
+
+	return client->transport;
+}
+
+
 void _dhcp_client_override_xid(struct l_dhcp_client *client, uint32_t xid)
 {
 	client->override_xid = true;
@@ -1246,6 +1157,30 @@ LIB_EXPORT bool l_dhcp_client_stop(struct l_dhcp_client *client)
 	if (unlikely(!client))
 		return false;
 
+	/*
+	 * RFC 2131 Section 4.4.6
+	 * "If the client no longer requires use of its assigned network address
+	 * (e.g., the client is gracefully shut down), the client sends a
+	 * DHCPRELEASE message to the server.""
+	 */
+	if (client->state == DHCP_STATE_BOUND ||
+			client->state == DHCP_STATE_RENEWING ||
+			client->state == DHCP_STATE_REBINDING)
+		dhcp_client_send_release(client);
+
+	if (client->rtnl_add_cmdid) {
+		l_netlink_cancel(client->rtnl, client->rtnl_add_cmdid);
+		client->rtnl_add_cmdid = 0;
+	}
+
+	if (client->rtnl_configured_address) {
+		l_rtnl_ifaddr_delete(client->rtnl, client->ifindex,
+					client->rtnl_configured_address,
+					NULL, NULL, NULL);
+		l_rtnl_address_free(client->rtnl_configured_address);
+		client->rtnl_configured_address = NULL;
+	}
+
 	l_timeout_remove(client->timeout_resend);
 	client->timeout_resend = NULL;
 
@@ -1260,6 +1195,11 @@ LIB_EXPORT bool l_dhcp_client_stop(struct l_dhcp_client *client)
 
 	_dhcp_lease_free(client->lease);
 	client->lease = NULL;
+
+	if (client->acd) {
+		l_acd_destroy(client->acd);
+		client->acd = NULL;
+	}
 
 	return true;
 }
@@ -1297,5 +1237,18 @@ LIB_EXPORT bool l_dhcp_client_set_debug(struct l_dhcp_client *client,
 	client->debug_destroy = destroy;
 	client->debug_data = user_data;
 
+	return true;
+}
+
+LIB_EXPORT bool l_dhcp_client_set_rtnl(struct l_dhcp_client *client,
+					struct l_netlink *rtnl)
+{
+	if (unlikely(!client))
+		return false;
+
+	if (unlikely(client->state != DHCP_STATE_INIT))
+		return false;
+
+	client->rtnl = rtnl;
 	return true;
 }

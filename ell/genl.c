@@ -30,6 +30,7 @@
 #include <linux/genetlink.h>
 
 #include "util.h"
+#include "log.h"
 #include "queue.h"
 #include "io.h"
 #include "netlink-private.h"
@@ -795,13 +796,27 @@ static struct l_genl_msg *msg_create(const struct nlmsghdr *nlmsg)
 		if (!(nlmsg->nlmsg_flags & NLM_F_ACK_TLVS))
 			goto done;
 
+		/*
+		 * If the message is capped, then err->msg.nlmsg_len contains
+		 * the length of the original message and thus can't be used
+		 * to calculate the offset
+		 */
 		if (!(nlmsg->nlmsg_flags & NLM_F_CAPPED))
 			offset = err->msg.nlmsg_len - sizeof(struct nlmsghdr);
 
-		if (nlmsg->nlmsg_len < offset)
+		/*
+		 * Attributes start past struct nlmsgerr.  The offset is 0
+		 * for NLM_F_CAPPED messages.  Otherwise the original message
+		 * is included, and thus the offset takes err->msg.nlmsg_len
+		 * into account
+		 */
+		nla = (void *)(err + 1) + offset;
+
+		/* Calculate bytes taken up by header + nlmsgerr contents */
+		offset += sizeof(struct nlmsghdr) + sizeof(struct nlmsgerr);
+		if (nlmsg->nlmsg_len <= offset)
 			goto done;
 
-		nla = (void *)(err + 1) + offset;
 		len = nlmsg->nlmsg_len - offset;
 
 		for (; NLA_OK(nla, len); nla = NLA_NEXT(nla, len)) {
@@ -1700,7 +1715,7 @@ LIB_EXPORT bool l_genl_msg_enter_nested(struct l_genl_msg *msg, uint16_t type)
 	if (!msg_grow(msg, NLA_HDRLEN))
 		return false;
 
-	msg->nests[msg->nesting_level].type = type;
+	msg->nests[msg->nesting_level].type = type | NLA_F_NESTED;
 	msg->nests[msg->nesting_level].offset = msg->len;
 	msg->nesting_level += 1;
 
@@ -2095,13 +2110,18 @@ LIB_EXPORT void l_genl_family_free(struct l_genl_family *family)
 	while ((notify = l_queue_remove_if(genl->notify_list,
 					mcast_notify_match_by_hid,
 					L_UINT_TO_PTR(family->handle_id)))) {
-		struct genl_mcast *mcast = l_queue_find(info->mcast_list,
-						match_mcast_id,
-						L_UINT_TO_PTR(notify->group));
 
+		struct genl_mcast *mcast;
+
+		if (unlikely(L_WARN_ON(!info)))
+			goto free_notify;
+
+		mcast = l_queue_find(info->mcast_list, match_mcast_id,
+						L_UINT_TO_PTR(notify->group));
 		if (mcast)
 			drop_membership(genl, mcast);
 
+free_notify:
 		mcast_notify_free(notify);
 	}
 

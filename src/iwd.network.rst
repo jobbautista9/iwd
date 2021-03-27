@@ -71,6 +71,25 @@ the group name and a ``]`` character.  Whitespace is allowed before the
 ``[`` and after the ``]``.  A group name consists of printable characters
 other than ``[`` and ``]``.
 
+If a group name starts with the ``@`` sign, that group's content is handled
+by a parser extension instead and does not cause the previous non-extension
+group to end.  The initial ``@`` sign must be followed by a non-empty
+extension name, another ``@`` sign and a group name as defined above. The
+extension name consists of printable characters other than ``@``. No
+whitespace is allowed after the group header in this case.  The extension
+payload syntax and length are determined by the extension name.  Normal
+parsing rules defined in this section resume at the end of the payload and
+any settings after the end of the payload are handled as part of the previous
+non-extension group.
+
+Currently the only extension supported is named pem and allows embedding the
+contents of a single RFC7468 PEM-formatted payload or a sequence of multiple
+PEM payloads.  The payload should start with the ``-----BEGIN`` string on a
+line following the group header line and end with an ``-----END`` line as
+specified in the RFC.  Newline characters before, between and after PEM
+payloads are included in the extension payload.  No other extra characters
+are allowed.
+
 NAMING
 ======
 
@@ -114,15 +133,15 @@ The group ``[Settings]`` contains general settings.
 
        If enabled, the MAC address will be fully randomized on each connection.
        This option is only used if [General].AddressRandomization is set to
-       'network'. See iwd.config. This value should not be used with
+       'network'. See iwd.config. This setting should not be used with
        [Settings].AddressOverride, if both are set AddressOverride will be used.
    * - AddressOverride
      - MAC address string
 
        Override the MAC address used for connecting to this network. This option
        is only used if [General].AddressRandomization is set to 'network'. See
-       iwd.config. This value should not be used with
-       [Settings].FullAddressRandomization, if both are set AddressOverride will
+       iwd.config. This setting should not be used with
+       [Settings].AlwaysRandomizeAddress, if both are set AddressOverride will
        be used.
 
 Network Authentication Settings
@@ -153,7 +172,12 @@ authentication configuration.
    * - EAP-Method
      - one of the following methods:
 
-       AKA, AKA', GTC, MD5, MSCHAPV2, PEAP, PWD, SIM, TLS, TTLS
+       AKA, AKA', MSCHAPV2, PEAP, PWD, SIM, TLS, TTLS.
+
+       The following additional methods are allowed as TTLS/PEAP inner
+       methods:
+
+       GTC, MD5.
    * - EAP-Identity
      - string
 
@@ -187,20 +211,27 @@ authentication configuration.
    * - EAP-TLS-ClientCert
      - absolute file path or embedded pem
 
-       Path to a PEM-formatted client X.509 certificate or certificate chain
-       to send on server request.
+       Path to the client X.509 certificate or certificate chain to send on
+       server request.
    * - EAP-TLS-ClientKey
      - absolute file path or embedded pem
 
-       Path to a PEM-formatted client PKCS#8 private key corresponding to the
-       public key provided in *EAP-TLS-ClientCert*.
+       Path to the client private key corresponding to the public key provided
+       in *EAP-TLS-ClientCert*.  The recommended format is PKCS#8 PEM.
+   * - EAP-TLS-ClientKeyBundle
+     - absolute file path
+
+       As an alternative to *EAP-TLS-ClientCert* and *EAP-TLS-ClientKey* IWD
+       can load both the certificate and the private key from a container file
+       pointed by this setting.  The recommended format is PKCS#12 when this
+       is used.
    * - | EAP-TLS-
        | ClientKeyPassphrase
      - string
 
-       Decryption key for the client private key file.  This is used if the
-       private key given by *EAP-TLS-ClientKey* is encrypted.  If not provided,
-       then the agent is asked for the passphrase at connection time.
+       Decryption key for the client key files.  This should be used if the
+       certificate or the private key in the files mentioned above is encrypted.
+       When not given, the agent is asked for the passphrase at connection time.
    * - | EAP-TLS-ServerDomainMask,
        | EAP-TTLS-ServerDomainMask,
        | EAP-PEAP-ServerDomainMask
@@ -248,7 +279,7 @@ authentication configuration.
        provided.
 
 Network Configuration Settings
--------------------------------
+------------------------------
 
 The group ``[IPv4]`` contains settings for Internet Protocol version 4 (IPv4)
 network configuration with the static addresses.
@@ -270,9 +301,9 @@ network configuration with the static addresses.
        The IPv4 address of the gateway (router). This field is `required` for
        the static configuration.
    * - DNS
-     - IPv4 address string
+     - IPv4 address string list, space delimited
 
-       The IPv4 address of the Domain Name System (DNS). This field is
+       The IPv4 address(es) of the Domain Name System (DNS). This field is
        `optional`. DNS setting can be used to override the DNS entries received
        from the DHCP server.
    * - Netmask
@@ -291,6 +322,48 @@ network configuration with the static addresses.
        `optional`. DomainName setting can be used to override the DomainName
        value obtained from the DHCP server.
 
+The group ``[IPv6]`` contains settings for Internet Protocol version 6 (IPv6)
+network configuration.
+
+.. list-table::
+   :header-rows: 0
+   :stub-columns: 0
+   :widths: 20 80
+   :align: left
+
+   * - Enabled
+     - Boolean
+
+       Whether IPv6 is enabled for this network.  If not provided, then the
+       global default provided by [Network].EnableIPv6 setting will be used.
+       If IPv6 is disabled, then the 'disable_ipv6' setting in sysfs will be
+       set to 1 and no IPv6 addresses or routes will be created for this
+       network.
+   * - Address
+     - IPv6 address string
+
+       The IPv6 address to assign. This field is `required` for the static
+       configuration.  The recognized format is according to inet_pton
+       followed by '/' and prefix length.  If prefix length is omitted, then
+       128 is assumed.
+   * - Gateway
+     - IPv6 address string
+
+       The IPv6 address of the gateway (router). This field is `required` for
+       the static configuration.
+   * - DNS
+     - IPv6 address string list, space delimited
+
+       The IPv6 address(es) of the Domain Name System (DNS). This field is
+       `optional`. DNS setting can be used to override the DNS entries received
+       from the DHCPv6 server or via Router Advertisements.
+   * - DomainName
+     - string
+
+       The DomainName is the name of the local Internet domain. This field is
+       `optional`. DomainName setting can be used to override the DomainName
+       value obtained from the DHCPv6 server or via Router Advertisements.
+
 
 Embedded PEMs
 -------------
@@ -301,7 +374,7 @@ directly. This allows IEEE 802.1x network provisioning using a single file
 without any references to certificates or keys on the system.
 
 An embedded PEM can appear anywhere in the settings file using the following
-format (this example the PEM is named 'my_ca_cert'):
+format (in this example the PEM is named 'my_ca_cert'):
 
 .. code-block::
 
@@ -310,7 +383,7 @@ format (this example the PEM is named 'my_ca_cert'):
   <PEM data>
   ----- END CERTIFICATE -----
 
-After this special group tag its as simple as pasting in a PEM file including
+After this special group tag it's as simple as pasting in a PEM file including
 the BEGIN/END tags. Now 'my_ca_cert' can be used to reference the certificate
 elsewhere in the settings file by prefixing the value with 'embed:'
 

@@ -1,3 +1,20 @@
+ver 1.12:
+	Fix issue with handling retry roaming without higher RSSI.
+	Fix issue with WPA3, OWE and FILS authentication handling.
+	Fix issue with handling locally generated deauth frames.
+	Fix issue with quick scanning and connect interaction.
+	Add support for diagnostic D-Bus interfaces.
+
+ver 1.11:
+	Add support for ACD client for static configuration.
+	Add support for intelligent scan of all frequencies.
+
+ver 1.10:
+	Add support for DHCP v6 configuration.
+	Add support for DHCP server operation with AP mode.
+	Add support for IP allocation during the 4-Way Handshake.
+	Add support for P2P Group-owner handling.
+
 ver 1.9:
 	Fix issue with WPA3 connections in transition mode.
 	Fix issue with handling roaming attempt failures.

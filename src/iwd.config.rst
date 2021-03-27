@@ -67,9 +67,22 @@ The group ``[General]`` contains general settings.
        obtain the dynamic addresses from the network through the built-in
        DHCP client.
 
+       This also enables DHCP server when in AP mode when either
+       [General].APRanges is set or an AP profile is being used.
+
        The network configuration feature is disabled by default.  See
        ``[Network]`` settings for additional settings related to network
        configuration.
+
+   * - APRanges
+     - Values: <IP in prefix notation>
+
+       Sets the range of IP's used for DHCP server (AP mode). The IP should be
+       in prefix notation e.g. 192.168.1.0/24. AP's which are started in a
+       profile-less configuration will use this pool of IP's to set the AP's
+       interface address as well as default DHCP server options. Each AP will
+       get a new subnet from the range and clients will be addressed in that
+       subnet to avoid IP conflicts if multiple AP's are started.
 
    * - UseDefaultInterface
      - Values: true, **false**
@@ -120,6 +133,13 @@ The group ``[General]`` contains general settings.
 
        This can be used to control how aggressively **iwd** roams.
 
+   * - RoamRetryInterval
+     - Value: unsigned int value in seconds (default: **60**)
+
+       Specifies how long **iwd** will wait before attempting to roam again if
+       the last roam attempt failed, or if the signal of the newly connected BSS
+       is still considered weak.
+
    * - ManagementFrameProtection
      - Values: 0, **1** or 2
 
@@ -165,6 +185,14 @@ The group ``[Network]`` contains network configuration related settings.
    :widths: 20 80
    :align: left
 
+   * - EnableIPv6
+     - Values: true, **false**
+
+       Sets the global default that tells **iwd** whether it should configure
+       IPv6 addresses and routes (either provided via static settings,
+       Router Advertisements or DHCPv6 protocol).  This setting is disabled
+       by default.  This setting can also be overriden on a per-network basis.
+
    * - NameResolvingService
      - Values: resolvconf, **systemd**
 
@@ -183,6 +211,15 @@ The group ``[Network]`` contains network configuration related settings.
        the default routes. The route with lower priority offset is preferred.
 
        If not specified, ``300`` is used as default.
+
+   * - MulticastDNS
+     - Values: true, false, resolve
+
+       Configures multicast DNS on each interface. If not specified,
+       systemd-resolved's default value will remain untouched.
+       See ``man 5 systemd.network`` for details.
+
+       Only applies when ``NameResolvingService=systemd``.
 
 Blacklist
 ---------
@@ -256,6 +293,17 @@ No modification from defaults is normally required.
        **iwd** from issuing the periodic scans for the available networks while
        disconnected.  The behavior of the user-initiated scans isn't affected.
        The periodic scan is enabled by default.
+
+   * - InitialPeriodicScanInterval
+     - Values: unsigned int value in seconds (default: **10**)
+
+       The initial periodic scan interval upon disconnect.
+
+   * - MaximumPeriodicScanInterval
+     - Values: unsigned int value in seconds (default: **300**)
+
+       The maximum periodic scan interval.
+
    * - DisableRoamingScan
      - Values: true, **false**
 

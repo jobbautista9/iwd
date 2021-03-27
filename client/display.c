@@ -39,7 +39,8 @@
 #include "client/command.h"
 #include "client/display.h"
 
-#define IWD_PROMPT COLOR_GREEN "[iwd]" COLOR_OFF "# "
+#define IWD_PROMPT \
+	"\001" COLOR_GREEN "\002" "[iwd]" "\001" COLOR_OFF "\002" "# "
 #define LINE_LEN 81
 
 static struct l_signal *window_change_signal;
@@ -418,7 +419,7 @@ static void display_completion_matches(char **matches, int num_matches,
 		}
 
 		entry = l_strdup_printf("%-*s ", max_length, matches[index]);
-		strcpy(&line[line_used], entry);
+		l_strlcpy(&line[line_used], entry, sizeof(line) - line_used);
 		l_free(entry);
 
 		line_used += max_length + 1;
@@ -700,10 +701,14 @@ void display_init(void)
 	}
 
 	if (data_path) {
-		mkdir(data_path, 0700);
-
-		history_path = l_strdup_printf("%s/history", data_path);
-		read_history(history_path);
+		/*
+		 * If mkdir succeeds that means its a new directory, no need
+		 * to read the history since it doesn't exist
+		 */
+		if (mkdir(data_path, 0700) != 0) {
+			history_path = l_strdup_printf("%s/history", data_path);
+			read_history(history_path);
+		}
 
 		l_free(data_path);
 	} else {

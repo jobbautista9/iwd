@@ -1,3 +1,56 @@
+iwd (1.12-1+devuan1) unstable; urgency=medium
+
+  * New release from Debian upstream.
+
+ -- Job Bautista <jobbautista9@protonmail.com>  Sat, 27 Mar 2021 17:32:23 +0800
+
+iwd (1.12-1) unstable; urgency=medium
+
+  [ upstream ]
+  * new release
+
+  [ Jonas Smedegaard ]
+  * copyright: update coverage
+
+ -- Jonas Smedegaard <dr@jones.dk>  Wed, 17 Feb 2021 12:52:17 +0100
+
+iwd (1.11-1) unstable; urgency=medium
+
+  [ upstream ]
+  * new release
+
+  [ Jonas Smedegaard ]
+  * recommend wireless-regdb
+
+ -- Jonas Smedegaard <dr@jones.dk>  Mon, 11 Jan 2021 23:46:49 +0100
+
+iwd (1.10-1) unstable; urgency=medium
+
+  [ upstream ]
+  * new release
+
+  [ Jonas Smedegaard ]
+  * use debhelper compatibility level 13 (not 12)
+  * declare compliance with Debian Policy 4.5.1
+
+ -- Jonas Smedegaard <dr@jones.dk>  Thu, 17 Dec 2020 14:13:42 +0100
+
+iwd (1.9-2) unstable; urgency=medium
+
+  * adopt package
+  * set Rules-Requires-Root: no
+  * declare compliance with Debian Policy 4.5.0
+  * add CVE closure for previous changelog section
+  * copyright:
+    + normalize listing of copyright holders
+    + use License-Grant and License-Reference,
+      and list License sections last
+    + merge same-licensed Files sections
+    + update coverage
+  * add source script copyright-check
+
+ -- Jonas Smedegaard <dr@jones.dk>  Thu, 08 Oct 2020 01:35:19 +0200
+
 iwd (1.9-1+devuan1) unstable; urgency=medium
 
   * New release from Debian upstream.
@@ -6,6 +59,13 @@ iwd (1.9-1+devuan1) unstable; urgency=medium
 
 iwd (1.9-1) unstable; urgency=medium
 
+  [ upstream ]
+  * new release
+    + eapol: prevent key reinstallation on retransmitted Msg4/4
+      closes: bug#968996, thanks to Salvatore Bonaccorso
+      CVE-2020-17497
+
+  [ Andreas Henriksson ]
   * Recommend dbus (system bus)
     Interaction with iwd happens via dbus, i.e. as used by the iwctl
     command (or NetworkManager iwd backend).

@@ -1088,7 +1088,7 @@ static void eapol_handle_ptk_1_of_4(struct eapol_sm *sm,
 	const uint8_t *kck;
 	struct eapol_key *step2;
 	uint8_t mic[MIC_MAXLEN];
-	uint8_t *ies;
+	uint8_t ies[512];
 	size_t ies_len;
 	const uint8_t *own_ie = sm->handshake->supplicant_ie;
 	const uint8_t *pmkid;
@@ -1199,8 +1199,6 @@ static void eapol_handle_ptk_1_of_4(struct eapol_sm *sm,
 		 * Rebuild the RSNE to include the PMKR1Name and append
 		 * MDE + FTE.
 		 */
-		ies = alloca(512);
-
 		rsn_info.num_pmkids = 1;
 		rsn_info.pmkids = sm->handshake->pmk_r1_name;
 
@@ -1214,7 +1212,16 @@ static void eapol_handle_ptk_1_of_4(struct eapol_sm *sm,
 		ies_len += fte[1] + 2;
 	} else {
 		ies_len = own_ie[1] + 2;
-		ies = (uint8_t *) own_ie;
+		memcpy(ies, own_ie, ies_len);
+	}
+
+	if (sm->handshake->support_ip_allocation) {
+		/* Wi-Fi P2P Technical Specification v1.7 Table 58 */
+		ies[ies_len++] = IE_TYPE_VENDOR_SPECIFIC;
+		ies[ies_len++] = 4 + 1;
+		l_put_be32(HANDSHAKE_KDE_IP_ADDRESS_REQ, ies + ies_len);
+		ies_len += 4;
+		ies[ies_len++] = 0x01;
 	}
 
 	step2 = eapol_create_ptk_2_of_4(sm->protocol_version,
@@ -1300,8 +1307,8 @@ static void eapol_send_ptk_3_of_4(struct eapol_sm *sm)
 	ek->key_rsc[7] = 0;
 
 	/*
-	 * Just one RSNE in Key Data as we only set one cipher in ap->ciphers
-	 * currently.
+	 * Just one RSNE in Key Data as we either accept the single pairwise
+	 * cipher in the supplicant IE or fail.
 	 */
 	memcpy(key_data_buf, sm->handshake->authenticator_ie, rsne_len);
 
@@ -1313,6 +1320,21 @@ static void eapol_send_ptk_3_of_4(struct eapol_sm *sm)
 						sm->handshake->gtk_index,
 						gtk_kde);
 		key_data_len += gtk_kde[1] + 2;
+	}
+
+	if (sm->handshake->support_ip_allocation) {
+		/* Wi-Fi P2P Technical Specification v1.7 Table 59 */
+		key_data_buf[key_data_len++] = IE_TYPE_VENDOR_SPECIFIC;
+		key_data_buf[key_data_len++] = 4 + 12;
+		l_put_be32(HANDSHAKE_KDE_IP_ADDRESS_ALLOC,
+				key_data_buf + key_data_len + 0);
+		l_put_be32(sm->handshake->client_ip_addr,
+				key_data_buf + key_data_len + 4);
+		l_put_be32(sm->handshake->subnet_mask,
+				key_data_buf + key_data_len + 8);
+		l_put_be32(sm->handshake->go_ip_addr,
+				key_data_buf + key_data_len + 12);
+		key_data_len += 4 + 12;
 	}
 
 	kek = handshake_state_get_kek(sm->handshake);
@@ -1381,7 +1403,8 @@ static const uint8_t *eapol_find_rsne(const uint8_t *data, size_t data_len,
 	return first;
 }
 
-static const uint8_t *eapol_find_osen(const uint8_t *data, size_t data_len)
+static const uint8_t *eapol_find_wfa_kde(const uint8_t *data, size_t data_len,
+					uint8_t oi_type)
 {
 	struct ie_tlv_iter iter;
 
@@ -1389,7 +1412,7 @@ static const uint8_t *eapol_find_osen(const uint8_t *data, size_t data_len)
 
 	while (ie_tlv_iter_next(&iter)) {
 		if (ie_tlv_iter_get_tag(&iter) == IE_TYPE_VENDOR_SPECIFIC) {
-			if (!is_ie_wfa_ie(iter.data, iter.len, IE_WFA_OI_OSEN))
+			if (!is_ie_wfa_ie(iter.data, iter.len, oi_type))
 				continue;
 		} else
 			continue;
@@ -1442,9 +1465,24 @@ static void eapol_handle_ptk_2_of_4(struct eapol_sm *sm,
 	if (!rsne || rsne[1] != sm->handshake->supplicant_ie[1] ||
 			memcmp(rsne + 2, sm->handshake->supplicant_ie + 2,
 				rsne[1])) {
-
 		handshake_failed(sm, MMPDU_REASON_CODE_IE_DIFFERENT);
 		return;
+	}
+
+	if (sm->handshake->support_ip_allocation) {
+		const uint8_t *ip_req_kde =
+			eapol_find_wfa_kde(EAPOL_KEY_DATA(ek, sm->mic_len),
+					EAPOL_KEY_DATA_LEN(ek, sm->mic_len),
+					HANDSHAKE_KDE_IP_ADDRESS_REQ & 255);
+
+		if (ip_req_kde &&
+				(ip_req_kde[1] < 5 || ip_req_kde[6] != 0x01)) {
+			l_debug("Invalid IP Address Request KDE in frame 2/4");
+			handshake_failed(sm, MMPDU_REASON_CODE_INVALID_IE);
+			return;
+		}
+
+		sm->handshake->support_ip_allocation = ip_req_kde != NULL;
 	}
 
 	memcpy(sm->handshake->snonce, ek->key_nonce,
@@ -1472,6 +1510,28 @@ static const uint8_t *eapol_find_wpa_ie(const uint8_t *data, size_t data_len)
 	}
 
 	return NULL;
+}
+
+static bool eapol_check_ip_mask(const uint8_t *mask,
+				const uint8_t *ip1, const uint8_t *ip2)
+{
+	uint32_t mask_uint = l_get_be32(mask);
+	uint32_t ip1_uint = l_get_be32(ip1);
+	uint32_t ip2_uint = l_get_be32(ip2);
+
+	return
+		/* Check IPs are in the same subnet */
+		((ip1_uint ^ ip2_uint) & mask_uint) == 0 &&
+		/* Check IPs are different */
+		ip1_uint != ip2_uint &&
+		/* Check IPs are not subnet addresses */
+		(ip1_uint & ~mask_uint) != 0 &&
+		(ip2_uint & ~mask_uint) != 0 &&
+		/* Check IPs are not broadcast addresses */
+		(ip1_uint | mask_uint) != 0xffffffff &&
+		(ip2_uint | mask_uint) != 0xffffffff &&
+		/* Check the 1s are at the start of the mask */
+		(uint32_t) (mask_uint << __builtin_popcountl(mask_uint)) == 0;
 }
 
 static void eapol_handle_ptk_3_of_4(struct eapol_sm *sm,
@@ -1520,8 +1580,9 @@ static void eapol_handle_ptk_3_of_4(struct eapol_sm *sm,
 		rsne = eapol_find_wpa_ie(decrypted_key_data,
 					decrypted_key_data_size);
 	else if (sm->handshake->osen_ie)
-		rsne = eapol_find_osen(decrypted_key_data,
-					decrypted_key_data_size);
+		rsne = eapol_find_wfa_kde(decrypted_key_data,
+					decrypted_key_data_size,
+					IE_WFA_OI_OSEN);
 	else
 		rsne = eapol_find_rsne(decrypted_key_data,
 					decrypted_key_data_size,
@@ -1666,6 +1727,35 @@ static void eapol_handle_ptk_3_of_4(struct eapol_sm *sm,
 		igtk_len -= 2;
 	} else
 		igtk = NULL;
+
+	if (sm->handshake->support_ip_allocation) {
+		const uint8_t *ip_alloc_kde =
+			eapol_find_wfa_kde(decrypted_key_data,
+					decrypted_key_data_size,
+					HANDSHAKE_KDE_IP_ADDRESS_ALLOC & 255);
+
+		if (ip_alloc_kde &&
+				(ip_alloc_kde[1] < 16 ||
+				 !eapol_check_ip_mask(ip_alloc_kde + 10,
+							ip_alloc_kde + 6,
+							ip_alloc_kde + 14))) {
+			l_debug("Invalid IP Allocation KDE in frame 3/4");
+			handshake_failed(sm, MMPDU_REASON_CODE_INVALID_IE);
+			return;
+		}
+
+		sm->handshake->support_ip_allocation = ip_alloc_kde != NULL;
+
+		if (ip_alloc_kde) {
+			sm->handshake->client_ip_addr =
+				l_get_be32(ip_alloc_kde + 6);
+			sm->handshake->subnet_mask =
+				l_get_be32(ip_alloc_kde + 10);
+			sm->handshake->go_ip_addr =
+				l_get_be32(ip_alloc_kde + 14);
+		} else
+			l_debug("Authenticator ignored our IP Address Request");
+	}
 
 retransmit:
 	/*

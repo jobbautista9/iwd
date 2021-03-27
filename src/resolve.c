@@ -38,10 +38,9 @@
 #include "src/resolve.h"
 
 struct resolve_ops {
-	void (*add_dns)(struct resolve *resolve,
-					uint8_t type, char **dns_list);
-	void (*add_domain_name)(struct resolve *resolve,
-					const char *domain_name);
+	void (*set_dns)(struct resolve *resolve, char **dns_list);
+	void (*set_domains)(struct resolve *resolve, char **domain_list);
+	void (*set_mdns)(struct resolve *resolve, const char *mdns);
 	void (*revert)(struct resolve *resolve);
 	void (*destroy)(struct resolve *resolve);
 };
@@ -58,26 +57,37 @@ static inline void _resolve_init(struct resolve *resolve, uint32_t ifindex,
 	resolve->ops = ops;
 }
 
-void resolve_add_dns(struct resolve *resolve, uint8_t type, char **dns_list)
+void resolve_set_dns(struct resolve *resolve, char **dns_list)
 {
 	if (!dns_list || !*dns_list)
 		return;
 
-	if (!resolve->ops->add_dns)
+	if (!resolve->ops->set_dns)
 		return;
 
-	resolve->ops->add_dns(resolve, type, dns_list);
+	resolve->ops->set_dns(resolve, dns_list);
 }
 
-void resolve_add_domain_name(struct resolve *resolve, const char *domain_name)
+void resolve_set_domains(struct resolve *resolve, char **domain_list)
 {
-	if (!domain_name)
+	if (!domain_list)
 		return;
 
-	if (!resolve->ops->add_domain_name)
+	if (!resolve->ops->set_domains)
 		return;
 
-	resolve->ops->add_domain_name(resolve, domain_name);
+	resolve->ops->set_domains(resolve, domain_list);
+}
+
+void resolve_set_mdns(struct resolve *resolve, const char *mdns)
+{
+	if (!mdns)
+		return;
+
+	if (!resolve->ops->set_mdns)
+		return;
+
+	resolve->ops->set_mdns(resolve, mdns);
 }
 
 void resolve_revert(struct resolve *resolve)
@@ -114,9 +124,10 @@ struct systemd {
 	struct resolve super;
 };
 
-static void systemd_link_dns_reply(struct l_dbus_message *message,
+static void systemd_link_generic_reply(struct l_dbus_message *message,
 								void *user_data)
 {
+	const char *type = user_data;
 	const char *name;
 	const char *text;
 
@@ -125,41 +136,31 @@ static void systemd_link_dns_reply(struct l_dbus_message *message,
 
 	l_dbus_message_get_error(message, &name, &text);
 
-	l_error("resolve-systemd: Failed to modify the DNS entries. %s: %s",
-								name, text);
+	l_error("resolve-systemd: Failed to modify the %s entries. %s: %s",
+							type, name, text);
 }
 
 static bool systemd_builder_add_dns(struct l_dbus_message_builder *builder,
-						uint8_t type, const char *dns)
+							const char *dns)
 {
 	uint8_t buf[16];
 	uint8_t buf_size;
 	uint8_t i;
-	int t = (int) type;
+	int t;
 
-	l_debug("installing DNS: %s %u", dns, type);
+	l_debug("installing DNS: %s", dns);
+
+	if (inet_pton(AF_INET, dns, buf) == 1) {
+		t = AF_INET;
+		buf_size = 4;
+	} else if (inet_pton(AF_INET6, dns, buf) == 1) {
+		t = AF_INET6;
+		buf_size = 16;
+	} else
+		return false;
 
 	l_dbus_message_builder_append_basic(builder, 'i', &t);
 	l_dbus_message_builder_enter_array(builder, "y");
-
-	switch (type) {
-	case AF_INET:
-		if (inet_pton(AF_INET, dns, buf) < 1)
-			return false;
-
-		buf_size = 4;
-
-		break;
-	case AF_INET6:
-		if (inet_pton(AF_INET6, dns, buf) < 1)
-			return false;
-
-		buf_size = 16;
-
-		break;
-	default:
-		return false;
-	}
 
 	for (i = 0; i < buf_size; i++)
 		l_dbus_message_builder_append_basic(builder, 'y', &buf[i]);
@@ -169,8 +170,7 @@ static bool systemd_builder_add_dns(struct l_dbus_message_builder *builder,
 	return true;
 }
 
-static void resolve_systemd_add_dns(struct resolve *resolve,
-					uint8_t type, char **dns_list)
+static void resolve_systemd_set_dns(struct resolve *resolve, char **dns_list)
 {
 	struct l_dbus_message_builder *builder;
 	struct l_dbus_message *message;
@@ -202,9 +202,8 @@ static void resolve_systemd_add_dns(struct resolve *resolve,
 	for (; *dns_list; dns_list++) {
 		l_dbus_message_builder_enter_struct(builder, "iay");
 
-		if (systemd_builder_add_dns(builder, type, *dns_list)) {
+		if (systemd_builder_add_dns(builder, *dns_list)) {
 			l_dbus_message_builder_leave_struct(builder);
-
 			continue;
 		}
 
@@ -219,29 +218,16 @@ static void resolve_systemd_add_dns(struct resolve *resolve,
 	l_dbus_message_builder_finalize(builder);
 	l_dbus_message_builder_destroy(builder);
 
-	l_dbus_send_with_reply(dbus_get_bus(), message, systemd_link_dns_reply,
-								NULL, NULL);
+	l_dbus_send_with_reply(dbus_get_bus(), message,
+				systemd_link_generic_reply, "DNS", NULL);
 }
 
-static void systemd_link_add_domains_reply(struct l_dbus_message *message,
-								void *user_data)
-{
-	const char *name;
-	const char *text;
-
-	if (!l_dbus_message_is_error(message))
-		return;
-
-	l_dbus_message_get_error(message, &name, &text);
-
-	l_error("resolve-systemd: Failed to modify the domain entries. %s: %s",
-								name, text);
-}
-
-static void resolve_systemd_add_domain_name(struct resolve *resolve,
-						const char *domain_name)
+static void resolve_systemd_set_domains(struct resolve *resolve,
+						char **domain_list)
 {
 	struct l_dbus_message *message;
+	struct l_dbus_message_builder *builder;
+	bool f = false;
 
 	l_debug("ifindex: %u", resolve->ifindex);
 
@@ -257,11 +243,53 @@ static void resolve_systemd_add_domain_name(struct resolve *resolve,
 	if (!message)
 		return;
 
-	l_dbus_message_set_arguments(message, "ia(sb)", resolve->ifindex,
-						1, domain_name, false);
+	builder = l_dbus_message_builder_new(message);
+	if (!builder) {
+		l_dbus_message_unref(message);
+		return;
+	}
+
+	l_dbus_message_builder_append_basic(builder, 'i', &resolve->ifindex);
+	l_dbus_message_builder_enter_array(builder, "(sb)");
+
+	for (; *domain_list; domain_list++) {
+		l_dbus_message_builder_enter_struct(builder, "sb");
+		l_dbus_message_builder_append_basic(builder, 's', *domain_list);
+		l_dbus_message_builder_append_basic(builder, 'b', &f);
+		l_dbus_message_builder_leave_struct(builder);
+	}
+
+	l_dbus_message_builder_leave_array(builder);
+
+	l_dbus_message_builder_finalize(builder);
+	l_dbus_message_builder_destroy(builder);
 
 	l_dbus_send_with_reply(dbus_get_bus(), message,
-				systemd_link_add_domains_reply, NULL, NULL);
+				systemd_link_generic_reply, "domains", NULL);
+}
+
+static void resolve_systemd_set_mdns(struct resolve *resolve, const char *mdns)
+{
+	struct l_dbus_message *message;
+
+	l_debug("ifindex: %u", resolve->ifindex);
+
+	if (L_WARN_ON(!systemd_state.is_ready))
+		return;
+
+	message = l_dbus_message_new_method_call(dbus_get_bus(),
+					SYSTEMD_RESOLVED_SERVICE,
+					SYSTEMD_RESOLVED_MANAGER_PATH,
+					SYSTEMD_RESOLVED_MANAGER_INTERFACE,
+					"SetLinkMulticastDNS");
+
+	if (!message)
+		return;
+
+	l_dbus_message_set_arguments(message, "is", resolve->ifindex, mdns);
+	l_dbus_send_with_reply(dbus_get_bus(), message,
+				systemd_link_generic_reply,
+				"MulticastDNS", NULL);
 }
 
 static void resolve_systemd_revert(struct resolve *resolve)
@@ -282,8 +310,8 @@ static void resolve_systemd_revert(struct resolve *resolve)
 		return;
 
 	l_dbus_message_set_arguments(message, "i", resolve->ifindex);
-	l_dbus_send_with_reply(dbus_get_bus(), message, systemd_link_dns_reply,
-								NULL, NULL);
+	l_dbus_send_with_reply(dbus_get_bus(), message,
+				systemd_link_generic_reply, "DNS", NULL);
 }
 
 static void resolve_systemd_destroy(struct resolve *resolve)
@@ -294,8 +322,9 @@ static void resolve_systemd_destroy(struct resolve *resolve)
 }
 
 static const struct resolve_ops systemd_ops = {
-	.add_dns = resolve_systemd_add_dns,
-	.add_domain_name = resolve_systemd_add_domain_name,
+	.set_dns = resolve_systemd_set_dns,
+	.set_domains = resolve_systemd_set_domains,
+	.set_mdns = resolve_systemd_set_mdns,
 	.revert = resolve_systemd_revert,
 	.destroy = resolve_systemd_destroy,
 };
@@ -390,8 +419,7 @@ struct resolvconf {
 	char *ifname;
 };
 
-static void resolve_resolvconf_add_dns(struct resolve *resolve,
-					uint8_t type, char **dns_list)
+static void resolve_resolvconf_set_dns(struct resolve *resolve, char **dns_list)
 {
 	struct resolvconf *rc =
 			l_container_of(resolve, struct resolvconf, super);
@@ -400,6 +428,14 @@ static void resolve_resolvconf_add_dns(struct resolve *resolve,
 
 	if (L_WARN_ON(!resolvconf_path))
 		return;
+
+	if (!dns_list || !dns_list[0]) {
+		if (rc->have_dns)
+			resolvconf_invoke(rc->ifname, "dns", NULL);
+
+		rc->have_dns = false;
+		return;
+	}
 
 	content = l_string_new(0);
 
@@ -412,19 +448,33 @@ static void resolve_resolvconf_add_dns(struct resolve *resolve,
 		rc->have_dns = true;
 }
 
-static void resolve_resolvconf_add_domain_name(struct resolve *resolve,
-							const char *domain_name)
+static void resolve_resolvconf_set_domains(struct resolve *resolve,
+							char **domain_list)
 {
 	struct resolvconf *rc =
 			l_container_of(resolve, struct resolvconf, super);
-	L_AUTO_FREE_VAR(char *, domain_str) = NULL;
+	struct l_string *content;
+	L_AUTO_FREE_VAR(char *, str) = NULL;
 
 	if (L_WARN_ON(!resolvconf_path))
 		return;
 
-	domain_str = l_strdup_printf("search %s\n", domain_name);
+	if (!domain_list || !domain_list[0]) {
+		if (rc->have_domain)
+			resolvconf_invoke(rc->ifname, "domain", NULL);
 
-	if (resolvconf_invoke(rc->ifname, "domain", domain_str))
+		rc->have_domain = false;
+		return;
+	}
+
+	content = l_string_new(0);
+
+	for (; *domain_list; domain_list++)
+		l_string_append_printf(content, "search %s\n", *domain_list);
+
+	str = l_string_unwrap(content);
+
+	if (resolvconf_invoke(rc->ifname, "domain", str))
 		rc->have_domain = true;
 }
 
@@ -453,8 +503,8 @@ static void resolve_resolvconf_destroy(struct resolve *resolve)
 }
 
 static struct resolve_ops resolvconf_ops = {
-	.add_dns = resolve_resolvconf_add_dns,
-	.add_domain_name = resolve_resolvconf_add_domain_name,
+	.set_dns = resolve_resolvconf_set_dns,
+	.set_domains = resolve_resolvconf_set_domains,
 	.revert = resolve_resolvconf_revert,
 	.destroy = resolve_resolvconf_destroy,
 };

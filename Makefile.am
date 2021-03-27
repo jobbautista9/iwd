@@ -34,7 +34,6 @@ ell_headers = ell/util.h \
 			ell/io.h \
 			ell/ringbuf.h \
 			ell/log.h \
-			ell/plugin.h \
 			ell/checksum.h \
 			ell/netlink.h \
 			ell/genl.h \
@@ -51,7 +50,6 @@ ell_headers = ell/util.h \
 			ell/tls.h \
 			ell/uuid.h \
 			ell/key.h \
-			ell/pkcs5.h \
 			ell/file.h \
 			ell/dir.h \
 			ell/net.h \
@@ -60,7 +58,10 @@ ell_headers = ell/util.h \
 			ell/ecc.h \
 			ell/ecdh.h \
 			ell/time.h \
-			ell/path.h
+			ell/path.h \
+			ell/icmp6.h \
+			ell/dhcp6.h \
+			ell/acd.h
 
 ell_sources = ell/private.h \
 			ell/missing.h \
@@ -79,7 +80,6 @@ ell_sources = ell/private.h \
 			ell/io.c \
 			ell/ringbuf.c \
 			ell/log.c \
-			ell/plugin.c \
 			ell/checksum.c \
 			ell/netlink-private.h \
 			ell/netlink.c \
@@ -112,23 +112,33 @@ ell_sources = ell/private.h \
 			ell/tls-extensions.c \
 			ell/uuid.c \
 			ell/key.c \
-			ell/pkcs5-private.h \
-			ell/pkcs5.c \
 			ell/file.c \
 			ell/dir.c \
+			ell/net-private.h \
 			ell/net.c \
 			ell/dhcp-private.h \
 			ell/dhcp.c \
 			ell/dhcp-transport.c \
 			ell/dhcp-lease.c \
+			ell/dhcp-util.c \
+			ell/dhcp-server.c \
 			ell/cert-private.h \
 			ell/cert.c \
+			ell/cert-crypto.c \
 			ell/ecc-external.c \
 			ell/ecc-private.h \
 			ell/ecc.c \
 			ell/ecdh.c \
 			ell/time.c \
-			ell/path.c
+			ell/time-private.h \
+			ell/path.c \
+			ell/dhcp6.c \
+			ell/dhcp6-private.h \
+			ell/icmp6.c \
+			ell/icmp6-private.h \
+			ell/dhcp6-lease.c \
+			ell/dhcp6-transport.c \
+			ell/acd.c
 
 ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources)
 endif
@@ -161,7 +171,8 @@ man_MANS =
 endif
 
 manual_pages = src/iwd.8 src/iwd.debug.7 src/iwd.config.5 src/iwd.network.5 \
-		client/iwctl.1 monitor/iwmon.1 wired/ead.8 tools/hwsim.1
+		src/iwd.ap.5 client/iwctl.1 monitor/iwmon.1 wired/ead.8 \
+		tools/hwsim.1
 
 eap_sources = src/eap.c src/eap.h src/eap-private.h \
 				src/eap-md5.c \
@@ -185,7 +196,6 @@ if DAEMON
 libexec_PROGRAMS += src/iwd
 
 src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h src/missing.h \
-					src/plugin.h src/plugin.c \
 					src/netdev.h src/netdev.c \
 					src/wiphy.h src/wiphy.c \
 					src/device.c \
@@ -229,20 +239,16 @@ src_iwd_SOURCES = src/main.c linux/nl80211.h src/iwd.h src/missing.h \
 					src/frame-xchg.h src/frame-xchg.c \
 					src/eap-wsc.c src/eap-wsc.h \
 					src/wscutil.h src/wscutil.c \
+					src/diagnostic.h src/diagnostic.c \
 					$(eap_sources) \
 					$(builtin_sources)
 
 src_iwd_LDADD = $(ell_ldadd) -ldl
 src_iwd_DEPENDENCIES = $(ell_dependencies)
 
-if SIM_HARDCODED
-builtin_modules += sim_hardcoded
-builtin_sources += plugins/sim_hardcoded.c
-endif
-
 if OFONO
 builtin_modules += ofono
-builtin_sources += plugins/ofono.c
+builtin_sources += src/ofono.c
 endif
 
 if DBUS_POLICY
@@ -259,7 +265,8 @@ systemd_network_DATA += src/80-iwd.link
 endif
 
 if MANUAL_PAGES
-man_MANS += src/iwd.8 src/iwd.debug.7 src/iwd.config.5 src/iwd.network.5
+man_MANS += src/iwd.8 src/iwd.debug.7 src/iwd.config.5 src/iwd.network.5 \
+		src/iwd.ap.5
 endif
 endif
 
@@ -279,8 +286,9 @@ client_iwctl_SOURCES = client/main.c \
 			client/known-networks.c \
 			client/network.h client/network.c \
 			client/properties.h client/properties.c \
-			client/wsc.c client/station.c
-client_iwctl_LDADD = $(ell_ldadd) -lreadline
+			client/wsc.c client/station.c \
+			client/diagnostic.c client/diagnostic.h
+client_iwctl_LDADD = $(ell_ldadd) $(READLINE_LIBS)
 
 if MANUAL_PAGES
 man_MANS += client/iwctl.1
@@ -364,13 +372,6 @@ endif
 if MANUAL_PAGES
 man_MANS += tools/hwsim.1
 endif
-endif
-
-if TOOLS
-noinst_PROGRAMS += tools/test-runner
-
-tools_test_runner_SOURCES = tools/test-runner.c
-tools_test_runner_LDADD = $(ell_ldadd)
 endif
 
 unit_tests = unit/test-cmac-aes \
@@ -503,7 +504,7 @@ unit_test_client_SOURCES = unit/test-client.c \
 				client/display.h client/display.c \
 				client/network.h client/network.c \
 				client/properties.h client/properties.c
-unit_test_client_LDADD = $(ell_ldadd) -lreadline
+unit_test_client_LDADD = $(ell_ldadd) $(READLINE_LIBS)
 endif
 
 unit_test_sae_SOURCES = unit/test-sae.c \
@@ -542,7 +543,6 @@ endif
 CLEANFILES = src/iwd.service wired/ead.service
 
 DISTCHECK_CONFIGURE_FLAGS = --disable-dbus-policy --disable-systemd-service \
-				--enable-sim-hardcoded \
 				--enable-ofono \
 				--enable-wired \
 				--enable-hwsim \

@@ -247,9 +247,6 @@ static void wsc_enrollee_netdev_event(struct netdev *netdev,
 	case NETDEV_EVENT_AUTHENTICATING:
 	case NETDEV_EVENT_ASSOCIATING:
 		break;
-	case NETDEV_EVENT_LOST_BEACON:
-		l_debug("Lost beacon");
-		break;
 	case NETDEV_EVENT_DISCONNECT_BY_AP:
 		l_debug("Disconnect by AP");
 		wsc_enrollee_connect_cb(wsce->netdev,
@@ -536,15 +533,10 @@ static void wsc_store_credentials(struct wsc_credentials_info *creds,
 		l_debug("Storing credential for '%s(%s)'", ssid,
 						security_to_str(security));
 
-		if (security == SECURITY_PSK) {
-			char *hex = l_util_hexstring(creds[i].psk,
-						sizeof(creds[i].psk));
-
-			l_settings_set_value(settings, "Security",
-							"PreSharedKey", hex);
-			explicit_bzero(hex, strlen(hex));
-			l_free(hex);
-		}
+		if (security == SECURITY_PSK)
+			l_settings_set_bytes(settings, "Security",
+						"PreSharedKey", creds[i].psk,
+                                                sizeof(creds[i].psk));
 
 		storage_network_sync(security, ssid, settings);
 		l_settings_free(settings);
@@ -691,6 +683,7 @@ static void pin_timeout(struct l_timeout *timeout, void *user_data)
 }
 
 static bool push_button_scan_results(int err, struct l_queue *bss_list,
+					const struct scan_freq_set *freqs,
 					void *userdata)
 {
 	struct wsc_station_dbus *wsc = userdata;
@@ -795,7 +788,7 @@ static bool push_button_scan_results(int err, struct l_queue *bss_list,
 	}
 
 	wsc_cancel_scan(wsc);
-	station_set_scan_results(wsc->station, bss_list, false);
+	station_set_scan_results(wsc->station, bss_list, freqs, false);
 
 	l_debug("Found AP to connect to: %s",
 			util_address_to_string(target->addr));
@@ -845,7 +838,9 @@ static bool authorized_macs_contains(const uint8_t *authorized_macs,
 	return false;
 }
 
-static bool pin_scan_results(int err, struct l_queue *bss_list, void *userdata)
+static bool pin_scan_results(int err, struct l_queue *bss_list,
+				const struct scan_freq_set *freqs,
+				void *userdata)
 {
 	static const uint8_t wildcard_address[] =
 					{ 0xff, 0xff, 0xff, 0xff, 0xff, 0xff };
@@ -939,7 +934,7 @@ static bool pin_scan_results(int err, struct l_queue *bss_list, void *userdata)
 	}
 
 	wsc_cancel_scan(wsc);
-	station_set_scan_results(wsc->station, bss_list, false);
+	station_set_scan_results(wsc->station, bss_list, freqs, false);
 
 	l_debug("Found AP to connect to: %s",
 			util_address_to_string(target->addr));

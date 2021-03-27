@@ -70,9 +70,25 @@ configuration has been provided for a network, \fBiwd\fP will attempt to
 obtain the dynamic addresses from the network through the built\-in
 DHCP client.
 .sp
+This also enables DHCP server when in AP mode when either
+[General].APRanges is set or an AP profile is being used.
+.sp
 The network configuration feature is disabled by default.  See
 \fB[Network]\fP settings for additional settings related to network
 configuration.
+T}
+_
+T{
+APRanges
+T}	T{
+Values: <IP in prefix notation>
+.sp
+Sets the range of IP\(aqs used for DHCP server (AP mode). The IP should be
+in prefix notation e.g. 192.168.1.0/24. AP\(aqs which are started in a
+profile\-less configuration will use this pool of IP\(aqs to set the AP\(aqs
+interface address as well as default DHCP server options. Each AP will
+get a new subnet from the range and clients will be addressed in that
+subnet to avoid IP conflicts if multiple AP\(aqs are started.
 T}
 _
 T{
@@ -137,6 +153,16 @@ This can be used to control how aggressively \fBiwd\fP roams.
 T}
 _
 T{
+RoamRetryInterval
+T}	T{
+Value: unsigned int value in seconds (default: \fB60\fP)
+.sp
+Specifies how long \fBiwd\fP will wait before attempting to roam again if
+the last roam attempt failed, or if the signal of the newly connected BSS
+is still considered weak.
+T}
+_
+T{
 ManagementFrameProtection
 T}	T{
 Values: 0, \fB1\fP or 2
@@ -188,6 +214,17 @@ center;
 |l|l|.
 _
 T{
+EnableIPv6
+T}	T{
+Values: true, \fBfalse\fP
+.sp
+Sets the global default that tells \fBiwd\fP whether it should configure
+IPv6 addresses and routes (either provided via static settings,
+Router Advertisements or DHCPv6 protocol).  This setting is disabled
+by default.  This setting can also be overriden on a per\-network basis.
+T}
+_
+T{
 NameResolvingService
 T}	T{
 Values: resolvconf, \fBsystemd\fP
@@ -210,6 +247,18 @@ Configures a route priority offset used by the system to prioritize
 the default routes. The route with lower priority offset is preferred.
 .sp
 If not specified, \fB300\fP is used as default.
+T}
+_
+T{
+MulticastDNS
+T}	T{
+Values: true, false, resolve
+.sp
+Configures multicast DNS on each interface. If not specified,
+systemd\-resolved\(aqs default value will remain untouched.
+See \fBman 5 systemd.network\fP for details.
+.sp
+Only applies when \fBNameResolvingService=systemd\fP\&.
 T}
 _
 .TE
@@ -291,6 +340,22 @@ Disable periodic scan. Setting this option to \(aqtrue\(aq will prevent
 \fBiwd\fP from issuing the periodic scans for the available networks while
 disconnected.  The behavior of the user\-initiated scans isn\(aqt affected.
 The periodic scan is enabled by default.
+T}
+_
+T{
+InitialPeriodicScanInterval
+T}	T{
+Values: unsigned int value in seconds (default: \fB10\fP)
+.sp
+The initial periodic scan interval upon disconnect.
+T}
+_
+T{
+MaximumPeriodicScanInterval
+T}	T{
+Values: unsigned int value in seconds (default: \fB300\fP)
+.sp
+The maximum periodic scan interval.
 T}
 _
 T{

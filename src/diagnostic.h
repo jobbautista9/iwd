@@ -1,8 +1,8 @@
 /*
  *
- *  Embedded Linux library
+ *  Wireless daemon for Linux
  *
- *  Copyright (C) 2017  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2021  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,28 +20,33 @@
  *
  */
 
-#ifndef __ELL_PKCS5_H
-#define __ELL_PKCS5_H
+enum diagnostic_mcs_type {
+	DIAGNOSTIC_MCS_TYPE_NONE,
+	DIAGNOSTIC_MCS_TYPE_HT,
+	DIAGNOSTIC_MCS_TYPE_VHT,
+	DIAGNOSTIC_MCS_TYPE_HE,
+};
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+struct diagnostic_station_info {
+	uint8_t addr[6];
+	int8_t cur_rssi;
 
-#include <stdbool.h>
-#include <stdint.h>
+	enum diagnostic_mcs_type rx_mcs_type;
+	uint32_t rx_bitrate;
+	uint8_t rx_mcs;
+	enum diagnostic_mcs_type tx_mcs_type;
+	uint32_t tx_bitrate;
+	uint8_t tx_mcs;
 
-bool l_pkcs5_pbkdf1(enum l_checksum_type type, const char *password,
-			const uint8_t *salt, size_t salt_len,
-			unsigned int iter_count,
-			uint8_t *out_dk, size_t dk_len);
+	uint32_t expected_throughput;
 
-bool l_pkcs5_pbkdf2(enum l_checksum_type type, const char *password,
-			const uint8_t *salt, size_t salt_len,
-			unsigned int iter_count,
-			uint8_t *out_dk, size_t dk_len);
+	bool have_cur_rssi : 1;
+	bool have_rx_mcs : 1;
+	bool have_tx_mcs : 1;
+	bool have_rx_bitrate : 1;
+	bool have_tx_bitrate : 1;
+	bool have_expected_throughput : 1;
+};
 
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* __ELL_PKCS5_H */
+bool diagnostic_info_to_dict(const struct diagnostic_station_info *info,
+				struct l_dbus_message_builder *builder);

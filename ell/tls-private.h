@@ -42,12 +42,6 @@ struct tls_bulk_encryption_algorithm {
 	size_t auth_tag_length;
 };
 
-struct tls_hash_algorithm {
-	uint8_t tls_id;
-	enum l_checksum_type l_id;
-	const char *name;
-};
-
 /*
  * Support the minimum required set of handshake hash types for the
  * Certificate Verify digital signature and the Finished PRF seed so we
@@ -66,6 +60,13 @@ enum handshake_hash_type {
 	__HANDSHAKE_HASH_COUNT,
 };
 #define HANDSHAKE_HASH_MAX_SIZE	48
+
+struct tls_hash_algorithm {
+	uint8_t tls_id;
+	enum handshake_hash_type type;
+	enum l_checksum_type l_id;
+	const char *name;
+};
 
 extern const struct tls_hash_algorithm tls_handshake_hash_data[];
 
@@ -205,6 +206,7 @@ struct l_tls {
 	l_tls_debug_cb_t debug_handler;
 	l_tls_destroy_cb_t debug_destroy;
 	void *debug_data;
+	char *cert_dump_path;
 	enum l_tls_version min_version;
 	enum l_tls_version max_version;
 

@@ -1,5 +1,5 @@
 AC_PREREQ(2.60)
-AC_INIT(iwd, 1.9)
+AC_INIT(iwd, 1.12)
 
 AC_CONFIG_HEADERS(config.h)
 AC_CONFIG_AUX_DIR(build-aux)
@@ -154,6 +154,9 @@ AC_ARG_ENABLE([client], AC_HELP_STRING([--disable-client],
 if (test "${enable_client}" != "no"); then
 	AC_CHECK_HEADERS(readline/readline.h, enable_readline=yes,
 			AC_MSG_ERROR(readline header files are required))
+	PKG_CHECK_MODULES(READLINE, readline, dummy=yes, READLINE_LIBS=-lreadline)
+	AC_SUBST(READLINE_CFLAGS)
+	AC_SUBST(READLINE_LIBS)
 fi
 AM_CONDITIONAL(CLIENT, test "${enable_client}" != "no")
 
@@ -259,7 +262,7 @@ if (test "${enable_external_ell}" = "yes"); then
 			test "${enable_monitor}" != "no" ||
 			test "${enable_wired}" = "yes" ||
 			test "${enable_hwsim}" = "yes"); then
-		ell_min_version="0.33"
+		ell_min_version="0.38"
 	else
 		ell_min_version="0.5"
 	fi
@@ -290,11 +293,6 @@ AC_ARG_ENABLE([ofono], AC_HELP_STRING([--enable-ofono],
 				[enable oFono SIM authentication support]),
 					[enable_ofono=${enableval}])
 AM_CONDITIONAL(OFONO, test "${enable_ofono}" = "yes")
-
-AC_ARG_ENABLE([sim_hardcoded], AC_HELP_STRING([--enable-sim-hardcoded],
-				[enable hard coded SIM keys]),
-					[enable_sim_hardcoded=${enableval}])
-AM_CONDITIONAL(SIM_HARDCODED, test "${enable_sim_hardcoded}" = "yes")
 
 AC_CONFIG_FILES(Makefile)
 
