@@ -43,34 +43,6 @@ bool util_is_valid_sta_address(const uint8_t *addr);
 const char *util_get_domain(const char *identity);
 const char *util_get_username(const char *identity);
 
-static inline uint8_t util_bit_field(const uint8_t oct, int start, int num)
-{
-	unsigned char mask = (1 << num) - 1;
-	return (oct >> start) & mask;
-}
-
-static inline bool util_is_bit_set(const uint8_t oct, int bit)
-{
-	int mask = 1 << bit;
-	return oct & mask ? true : false;
-}
-
-static inline bool util_mem_is_zero(const uint8_t *field, size_t size)
-{
-	size_t i;
-
-	for (i = 0; i < size; i++)
-		if (field[i] != 0)
-			return false;
-
-	return true;
-}
-
-static inline void util_set_bit(uint8_t *field, unsigned int bit)
-{
-	field[bit / 8] = 1 << (bit % 8);
-}
-
 /*
  * Returns either true_value or false_value (depending if mask is 0xFF or 0x00
  * respectively).
@@ -109,5 +81,10 @@ static inline uint32_t util_secure_fill_with_msb(uint32_t val)
 
 bool util_ip_prefix_tohl(const char *ip, uint8_t *prefix, uint32_t *start_out,
 				uint32_t *end_out, uint32_t *mask_out);
+
+static inline uint32_t util_netmask_from_prefix(uint8_t prefix_len)
+{
+	return ~((1ull << (32 - prefix_len)) - 1);
+}
 
 #endif /* __UTIL_H */

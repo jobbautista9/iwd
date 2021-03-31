@@ -29,10 +29,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <errno.h>
 
 #include "ecc.h"
 #include "ecc-private.h"
 #include "random.h"
+#include "useful.h"
 #include "private.h"
 #include "missing.h"
 

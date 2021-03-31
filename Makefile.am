@@ -10,12 +10,12 @@ if EXTERNAL_ELL
 ell_cflags = @ELL_CFLAGS@
 ell_ldadd = @ELL_LIBS@
 ell_dependencies =
-ell_built_sources =
+ell_built_sources = ell/shared
 else
 ell_cflags =
 ell_ldadd = ell/libell-internal.la
 ell_dependencies = $(ell_ldadd)
-ell_built_sources = ell/internal ell/ell.h
+ell_built_sources = ell/shared ell/internal ell/ell.h
 
 noinst_LTLIBRARIES = ell/libell-internal.la
 
@@ -73,6 +73,7 @@ ell_sources = ell/private.h \
 			ell/hashmap.c \
 			ell/string.c \
 			ell/settings.c \
+			ell/main-private.h \
 			ell/main.c \
 			ell/idle.c \
 			ell/signal.c \
@@ -140,7 +141,9 @@ ell_sources = ell/private.h \
 			ell/dhcp6-transport.c \
 			ell/acd.c
 
-ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources)
+ell_shared = ell/useful.h
+
+ell_libell_internal_la_SOURCES = $(ell_headers) $(ell_sources) $(ell_shared)
 endif
 
 bin_PROGRAMS =
@@ -620,6 +623,13 @@ unit/tls-settings.8021x: unit/cert-ca.pem unit/cert-client.pem unit/cert-client-
 	$(shell cat unit/cert-client-key-pkcs8.pem >> $@)
 
 BUILT_SOURCES = $(ell_built_sources) src/builtin.h
+
+ell/shared: Makefile
+	$(AM_V_GEN)for f in $(ell_shared) ; do \
+		if [ ! -f $$f ] ; then \
+			$(LN_S) -t ell -f $(abs_srcdir)/../ell/$$f ; \
+		fi \
+	done > $@
 
 ell/internal: Makefile
 	$(AM_V_at)$(MKDIR_P) ell
