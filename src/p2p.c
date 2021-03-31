@@ -39,6 +39,7 @@
 
 #include "linux/nl80211.h"
 
+#include "ell/useful.h"
 #include "src/missing.h"
 #include "src/iwd.h"
 #include "src/wiphy.h"
@@ -114,6 +115,7 @@ struct p2p_device {
 	uint32_t conn_go_oper_freq;
 	uint8_t conn_peer_interface_addr[6];
 	struct p2p_capability_attr conn_peer_capability;
+	struct p2p_device_info_attr conn_peer_dev_info;
 
 	struct p2p_group_id_attr go_group_id;
 	struct ap_state *group;
@@ -161,6 +163,10 @@ struct p2p_wfd_properties {
 	bool uibc;
 	bool cp;
 	bool r2;
+	uint16_t raw_dev_info;
+	uint8_t associated_bssid[6];
+	uint8_t raw_coupled_sink_status;
+	uint8_t coupled_sink_mac[6];
 };
 
 static struct l_queue *p2p_device_list;
@@ -276,9 +282,9 @@ static void p2p_peer_put(void *user_data)
 static void p2p_device_discovery_start(struct p2p_device *dev);
 static void p2p_device_discovery_stop(struct p2p_device *dev);
 
-/* Callers should reserve 32 bytes */
+/* Callers should reserve 32 bytes, 64 with non-NULL @wfd_clients */
 static size_t p2p_build_wfd_ie(const struct p2p_wfd_properties *wfd,
-				uint8_t *buf)
+				const struct p2p_peer *wfd_client, uint8_t *buf)
 {
 	/*
 	 * Wi-Fi Display Technical Specification v2.1.0
@@ -323,6 +329,30 @@ static size_t p2p_build_wfd_ie(const struct p2p_wfd_properties *wfd,
 		buf[size++] = 0x01;	/* UIBC Support */
 	}
 
+	/*
+	 * Wi-Fi Display Technical Specification v2.1.0 section 5.2.3:
+	 * "If a WFD Capable GO has at least one associated client that is
+	 * WFD capable, the WFD capable GO shall include the WFD Session
+	 * Information subelement in the WFD IE in the Probe Response
+	 * frames it transmits."
+	 */
+	if (wfd_client && !L_WARN_ON(!wfd_client->wfd)) {
+		buf[size++] = WFD_SUBELEM_SESION_INFORMATION;
+		buf[size++] = 0;		/* WFD Subelement length */
+		buf[size++] = 23;
+		memcpy(buf + size, wfd_client->device_addr, 6);
+		size += 6;
+		memcpy(buf + size, wfd_client->wfd->associated_bssid, 6);
+		size += 6;
+		buf[size++] = wfd_client->wfd->raw_dev_info >> 8;
+		buf[size++] = wfd_client->wfd->raw_dev_info & 255;
+		buf[size++] = wfd_client->wfd->throughput >> 8;
+		buf[size++] = wfd_client->wfd->throughput & 255;
+		buf[size++] = wfd_client->wfd->raw_coupled_sink_status;
+		memcpy(buf + size, wfd_client->wfd->coupled_sink_mac, 6);
+		size += 6;
+	}
+
 	if (wfd->r2) {
 		buf[size++] = WFD_SUBELEM_R2_DEVICE_INFORMATION;
 		buf[size++] = 0;	/* WFD Subelement length */
@@ -333,6 +363,181 @@ static size_t p2p_build_wfd_ie(const struct p2p_wfd_properties *wfd,
 
 	buf[1] = size - 2;
 	return size;
+}
+
+static bool p2p_extract_wfd_properties(const uint8_t *ie, size_t ie_size,
+					struct p2p_wfd_properties *out)
+{
+	struct wfd_subelem_iter iter;
+	const uint8_t *devinfo = NULL;
+	const uint8_t *associated_bssid = NULL;
+	const uint8_t *coupled_sink_info = NULL;
+	const uint8_t *ext_caps = NULL;
+	const uint8_t *r2 = NULL;
+
+	if (!ie)
+		return false;
+
+	wfd_subelem_iter_init(&iter, ie, ie_size);
+
+	while (wfd_subelem_iter_next(&iter)) {
+		enum wfd_subelem_type type = wfd_subelem_iter_get_type(&iter);
+		size_t len = wfd_subelem_iter_get_length(&iter);
+		const uint8_t *data = wfd_subelem_iter_get_data(&iter);
+
+		switch (type) {
+#define SUBELEM_CHECK(var, expected_len, name)		\
+			if (len != expected_len) {	\
+				l_debug(name " length wrong in WFD IE");\
+				return false;		\
+			}				\
+							\
+			if (var) {			\
+				l_debug("Duplicate" name " in WFD IE");\
+				return false;		\
+			}				\
+							\
+			var = data;
+		case WFD_SUBELEM_WFD_DEVICE_INFORMATION:
+			SUBELEM_CHECK(devinfo, 6, "Device Information");
+			break;
+		case WFD_SUBELEM_ASSOCIATED_BSSID:
+			SUBELEM_CHECK(associated_bssid, 6, "Associated BSSID");
+			break;
+		case WFD_SUBELEM_COUPLED_SINK_INFORMATION:
+			SUBELEM_CHECK(coupled_sink_info, 7,
+					"Coupled Sink Information");
+			break;
+		case WFD_SUBELEM_EXTENDED_CAPABILITY:
+			SUBELEM_CHECK(ext_caps, 2, "Extended Capability");
+			break;
+		case WFD_SUBELEM_R2_DEVICE_INFORMATION:
+			SUBELEM_CHECK(r2, 2, "R2 Device Information");
+			break;
+#undef SUBELEM_CHECK
+		default:
+			/* Skip unknown IEs */
+			break;
+		}
+	}
+
+	if (devinfo) {
+		uint16_t capability = l_get_be16(devinfo + 0);
+		bool source;
+		bool sink;
+		uint16_t port;
+
+		source = (capability & WFD_DEV_INFO_DEVICE_TYPE) ==
+			WFD_DEV_INFO_TYPE_SOURCE ||
+			(capability & WFD_DEV_INFO_DEVICE_TYPE) ==
+			WFD_DEV_INFO_TYPE_DUAL_ROLE;
+		sink = (capability & WFD_DEV_INFO_DEVICE_TYPE) ==
+			WFD_DEV_INFO_TYPE_PRIMARY_SINK ||
+			(capability & WFD_DEV_INFO_DEVICE_TYPE) ==
+			WFD_DEV_INFO_TYPE_DUAL_ROLE;
+
+		if (!source && !sink)
+			return false;
+
+		port = l_get_be16(devinfo + 2);
+
+		if (source && port == 0) {
+			l_debug("0 port number in WFD IE Device Information");
+			return false;
+		}
+
+		memset(out, 0, sizeof(*out));
+		out->available =
+			(capability & WFD_DEV_INFO_SESSION_AVAILABILITY) ==
+			WFD_DEV_INFO_SESSION_AVAILABLE;
+		out->source = source;
+		out->sink = sink;
+		out->port = port;
+		out->cp = capability & WFD_DEV_INFO_CONTENT_PROTECTION_SUPPORT;
+		out->audio = !sink ||
+			!(capability & WFD_DEV_INFO_NO_AUDIO_AT_PRIMARY_SINK);
+		out->raw_dev_info = l_get_be16(devinfo);
+	} else {
+		l_error("Device Information missing in WFD IE");
+		return false;
+	}
+
+	if (associated_bssid)
+		memcpy(out->associated_bssid, associated_bssid, 6);
+
+	if (coupled_sink_info) {
+		out->raw_coupled_sink_status = coupled_sink_info[0];
+		memcpy(out->coupled_sink_mac, coupled_sink_info + 1, 6);
+	}
+
+	if (ext_caps && (l_get_be16(ext_caps) & 1))
+		out->uibc = 1;
+
+	if (r2) {
+		uint8_t role = l_get_be16(r2) & 3;
+
+		if ((out->source && role != 0 && role != 3) ||
+				(out->sink && role != 1 && role != 3))
+			l_debug("Invalid role in WFD R2 Device Information");
+		else
+			out->r2 = true;
+	}
+
+	return true;
+}
+
+static bool p2p_device_validate_conn_wfd(struct p2p_device *dev,
+						const uint8_t *ie,
+						ssize_t ie_size)
+{
+	struct p2p_wfd_properties wfd;
+
+	if (!dev->conn_own_wfd)
+		return true;
+
+	/*
+	 * WFD IEs are optional in Association Request/Response and P2P Public
+	 * Action frames for R2 devices and required for R1 devices.
+	 * Wi-Fi Display Technical Specification v2.1.0 section 5.2:
+	 * "A WFD R2 Device shall include the WFD IE in Beacon, Probe
+	 * Request/Response, Association Request/Response and P2P Public Action
+	 * frames in order to be interoperable with R1 devices. If a WFD R2
+	 * Device discovers that the peer device is also a WFD R2 Device, then
+	 * it may include the WFD IE in Association Request/Response and P2P
+	 * Public Action frames."
+	 */
+	if (!ie)
+		return dev->conn_own_wfd->r2;
+
+	if (!p2p_extract_wfd_properties(ie, ie_size, &wfd)) {
+		l_error("Could not parse the WFD IE contents");
+		return false;
+	}
+
+	if ((dev->conn_own_wfd->source && !wfd.sink) ||
+			(dev->conn_own_wfd->sink && !wfd.source)) {
+		l_error("Wrong role in peer's WFD IE");
+		return false;
+	}
+
+	if (wfd.r2 != dev->conn_own_wfd->r2) {
+		l_error("Wrong version in peer's WFD IE");
+		return false;
+	}
+
+	/*
+	 * Ignore the session available state because it's not 100% clear
+	 * at what point the peer switches to SESSION_NOT_AVAILABLE in its
+	 * Device Information.
+	 * But we might want to check that other bits have not changed from
+	 * what the peer reported during discovery.
+	 * Wi-Fi Display Technical Specification v2.1.0 section 4.5.2.1:
+	 * "The content of the WFD Device Information subelement should be
+	 * immutable during the period of P2P connection establishment, with
+	 * [...] exceptions [...]"
+	 */
+
+	return true;
 }
 
 /* TODO: convert to iovecs */
@@ -401,7 +606,7 @@ static uint8_t *p2p_build_scan_ies(struct p2p_device *dev, uint8_t *buf,
 		return NULL;
 
 	if (p2p_own_wfd)
-		wfd_ie_size = p2p_build_wfd_ie(p2p_own_wfd, wfd_ie);
+		wfd_ie_size = p2p_build_wfd_ie(p2p_own_wfd, NULL, wfd_ie);
 	else
 		wfd_ie_size = 0;
 
@@ -691,9 +896,72 @@ static void p2p_group_event(enum ap_event_type type, const void *event_data,
 		break;
 
 	case AP_EVENT_STATION_ADDED:
+	{
+		const struct ap_event_station_added_data *data = event_data;
+		L_AUTO_FREE_VAR(uint8_t *, p2p_data) = NULL;
+		ssize_t p2p_data_len;
+		L_AUTO_FREE_VAR(uint8_t *, wfd_data) = NULL;
+		ssize_t wfd_data_len;
+		struct p2p_association_req req_info;
+		int r;
+
+		p2p_data = ie_tlv_extract_p2p_payload(data->assoc_ies,
+							data->assoc_ies_len,
+							&p2p_data_len);
+		if (!p2p_data) {
+			l_error("Missing or invalid P2P IEs: %s (%i)",
+				strerror(-p2p_data_len), (int) -p2p_data_len);
+			goto invalid_ie;
+		}
+
+		/*
+		 * We don't need to validate most of the Association Request
+		 * P2P IE contents as we already have all the information there
+		 * may be but we need to save some of the attributes because
+		 * section 3.2.3 requires that our Group Info includes
+		 * specifically the data from the association, not any of the
+		 * earlier exchanges:
+		 * "When a P2P Client associates with a P2P Group Owner, it
+		 * provides [...] the P2P Device Info attribute (see Section
+		 * 4.1.15) and the P2P Capability attribute (see Section 4.1.4)
+		 * in the P2P IE in the Association Request frame.  This
+		 * information shall be used by the P2P Group Owner for Group
+		 * Information Advertisement.
+		 */
+		r = p2p_parse_association_req(p2p_data, p2p_data_len,
+						&req_info);
+		if (r < 0) {
+			l_error("Can't parse P2P Association Request: %s (%i)",
+				strerror(-r), -r);
+			goto invalid_ie;
+		}
+
+		/*
+		 * Most of this duplicates the information we already have in
+		 * dev->conn_peer.
+		 */
+		dev->conn_peer_capability = req_info.capability;
+		dev->conn_peer_dev_info = req_info.device_info;
+		p2p_clear_association_req(&req_info);
+
+		if (dev->conn_own_wfd)
+			wfd_data = ie_tlv_extract_p2p_payload(data->assoc_ies,
+							data->assoc_ies_len,
+							&wfd_data_len);
+
+		if (!p2p_device_validate_conn_wfd(dev, wfd_data,
+							wfd_data_len))
+			goto invalid_ie;
+
+		/* Take the chance to update WFD attributes for Session Info */
+		if (wfd_data)
+			p2p_extract_wfd_properties(wfd_data, wfd_data_len,
+							dev->conn_peer->wfd);
+
 		dev->conn_peer_added = true;
 		p2p_peer_connect_done(dev);
 		break;
+	}
 
 	case AP_EVENT_STATION_REMOVED:
 		dev->conn_peer_added = false;
@@ -704,15 +972,217 @@ static void p2p_group_event(enum ap_event_type type, const void *event_data,
 		/* Don't validate the P2P IE or WFD IE at this stage */
 		break;
 	case AP_EVENT_REGISTRATION_SUCCESS:
+		/* Update the Group Formation bit in our beacons */
 		dev->capability.group_caps &= ~P2P_GROUP_CAP_GROUP_FORMATION;
+		ap_update_beacon(dev->group);
 		break;
 	case AP_EVENT_PBC_MODE_EXIT:
 		break;
 	};
+
+	return;
+
+invalid_ie:
+	ap_station_disconnect(dev->group, dev->conn_peer_interface_addr,
+				MMPDU_REASON_CODE_INVALID_IE);
+	p2p_connect_failed(dev);
+}
+
+static size_t p2p_group_get_p2p_ie_len(struct p2p_device *dev,
+					enum mpdu_management_subtype type,
+					const struct mmpdu_header *client_frame,
+					size_t client_frame_len)
+{
+	switch (type) {
+	case MPDU_MANAGEMENT_SUBTYPE_ASSOCIATION_RESPONSE:
+	case MPDU_MANAGEMENT_SUBTYPE_REASSOCIATION_RESPONSE:
+	case MPDU_MANAGEMENT_SUBTYPE_PROBE_RESPONSE:
+	case MPDU_MANAGEMENT_SUBTYPE_BEACON:
+		return 256;
+	default:
+		return 0;
+	}
+}
+
+static size_t p2p_group_write_p2p_ie(struct p2p_device *dev,
+					enum mpdu_management_subtype type,
+					const struct mmpdu_header *client_frame,
+					size_t client_frame_len,
+					uint8_t *out_buf)
+{
+	L_AUTO_FREE_VAR(uint8_t *, p2p_ie) = NULL;
+	size_t p2p_ie_len;
+
+	switch (type) {
+	case MPDU_MANAGEMENT_SUBTYPE_ASSOCIATION_RESPONSE:
+	case MPDU_MANAGEMENT_SUBTYPE_REASSOCIATION_RESPONSE:
+	{
+		/*
+		 * Wi-Fi P2P Technical Specification v1.7 Section 4.2.5:
+		 * "If neither P2P attribute is required according to the
+		 * conditions in Table 55, then a P2P IE containing no P2P
+		 * attributes is included."
+		 * This is going to be our case.
+		 */
+		struct p2p_association_resp info = {};
+
+		p2p_ie = p2p_build_association_resp(&info, &p2p_ie_len);
+		break;
+	}
+
+	case MPDU_MANAGEMENT_SUBTYPE_PROBE_RESPONSE:
+	{
+		struct p2p_probe_resp info = {};
+		const struct mmpdu_probe_request *req =
+			mmpdu_body(client_frame);
+		size_t req_ies_len = (void *) client_frame + client_frame_len -
+			(void *) req->ies;
+		ssize_t req_p2p_data_size;
+
+		/*
+		 * Wi-Fi P2P Technical Specification v1.7 Section 3.2.2:
+		 * "A P2P Group Owner shall not include a P2P IE in the Probe
+		 * Response frame if the received Probe Request frame does
+		 * not contain a P2P IE."
+		 */
+		if (!ie_tlv_extract_p2p_payload(req->ies, req_ies_len,
+							&req_p2p_data_size))
+			return 0;
+
+		info.capability = dev->capability;
+		info.device_info = dev->device_info;
+
+		if (dev->conn_peer_added) {
+			struct p2p_client_info_descriptor client = {};
+
+			memcpy(client.device_addr,
+				dev->conn_peer_dev_info.device_addr, 6);
+			memcpy(client.interface_addr,
+				dev->conn_peer_interface_addr, 6);
+			client.device_caps =
+				dev->conn_peer_capability.device_caps;
+			client.wsc_config_methods =
+				dev->conn_peer_dev_info.wsc_config_methods;
+			client.primary_device_type =
+				dev->conn_peer_dev_info.primary_device_type;
+			l_strlcpy(client.device_name,
+					dev->conn_peer_dev_info.device_name,
+					sizeof(client.device_name));
+
+			info.group_clients = l_queue_new();
+			l_queue_push_tail(info.group_clients,
+					l_memdup(&client, sizeof(client)));
+		}
+
+		p2p_ie = p2p_build_probe_resp(&info, &p2p_ie_len);
+		p2p_clear_probe_resp(&info);
+		break;
+	}
+
+	case MPDU_MANAGEMENT_SUBTYPE_BEACON:
+	{
+		struct p2p_beacon info = {};
+
+		info.capability = dev->capability;
+		memcpy(info.device_addr, dev->addr, 6);
+		p2p_ie = p2p_build_beacon(&info, &p2p_ie_len);
+		break;
+	}
+
+	default:
+		return 0;
+	}
+
+	memcpy(out_buf, p2p_ie, p2p_ie_len);
+	return p2p_ie_len;
+}
+
+static size_t p2p_group_get_wfd_ie_len(struct p2p_device *dev,
+					enum mpdu_management_subtype type,
+					const struct mmpdu_header *client_frame,
+					size_t client_frame_len)
+{
+	switch (type) {
+	case MPDU_MANAGEMENT_SUBTYPE_ASSOCIATION_RESPONSE:
+	case MPDU_MANAGEMENT_SUBTYPE_REASSOCIATION_RESPONSE:
+		return (dev->conn_own_wfd && !dev->conn_own_wfd->r2) ? 32 : 0;
+	case MPDU_MANAGEMENT_SUBTYPE_PROBE_RESPONSE:
+	case MPDU_MANAGEMENT_SUBTYPE_BEACON:
+		return p2p_own_wfd ? 64 : 0;
+	default:
+		return 0;
+	}
+}
+
+static size_t p2p_group_write_wfd_ie(struct p2p_device *dev,
+					enum mpdu_management_subtype type,
+					const struct mmpdu_header *client_frame,
+					size_t client_frame_len,
+					uint8_t *out_buf)
+{
+	switch (type) {
+	case MPDU_MANAGEMENT_SUBTYPE_ASSOCIATION_RESPONSE:
+	case MPDU_MANAGEMENT_SUBTYPE_REASSOCIATION_RESPONSE:
+		if (dev->conn_own_wfd && !dev->conn_own_wfd->r2)
+			return p2p_build_wfd_ie(dev->conn_own_wfd, NULL,
+						out_buf);
+
+		break;
+	case MPDU_MANAGEMENT_SUBTYPE_PROBE_RESPONSE:
+		if (p2p_own_wfd)
+			return p2p_build_wfd_ie(p2p_own_wfd,
+						dev->conn_own_wfd ?
+						dev->conn_peer : NULL, out_buf);
+
+		break;
+	case MPDU_MANAGEMENT_SUBTYPE_BEACON:
+		if (p2p_own_wfd)
+			return p2p_build_wfd_ie(p2p_own_wfd, NULL, out_buf);
+
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
+
+static size_t p2p_group_get_ies_len(enum mpdu_management_subtype type,
+					const struct mmpdu_header *client_frame,
+					size_t client_frame_len,
+					void *user_data)
+{
+	struct p2p_device *dev = user_data;
+
+	return p2p_group_get_p2p_ie_len(dev, type,
+					client_frame, client_frame_len) +
+		p2p_group_get_wfd_ie_len(dev, type,
+						client_frame, client_frame_len);
+}
+
+static size_t p2p_group_write_ies(enum mpdu_management_subtype type,
+					const struct mmpdu_header *client_frame,
+					size_t client_frame_len,
+					uint8_t *out_buf, void *user_data)
+{
+	struct p2p_device *dev = user_data;
+	size_t len;
+
+	len = p2p_group_write_p2p_ie(dev, type,
+					client_frame, client_frame_len,
+					out_buf);
+	len += p2p_group_write_wfd_ie(dev, type,
+					client_frame, client_frame_len,
+					out_buf + len);
+
+	return len;
 }
 
 static const struct ap_ops p2p_go_ops = {
 	.handle_event = p2p_group_event,
+	.get_extra_ies_len = p2p_group_get_ies_len,
+	.write_extra_ies = p2p_group_write_ies,
 };
 
 static void p2p_group_start(struct p2p_device *dev)
@@ -999,7 +1469,7 @@ static void p2p_try_connect_group(struct p2p_device *dev)
 	if (dev->conn_own_wfd) {
 		ie_iov[ie_num].iov_base = wfd_ie;
 		ie_iov[ie_num].iov_len = p2p_build_wfd_ie(dev->conn_own_wfd,
-								wfd_ie);
+								NULL, wfd_ie);
 		ie_num++;
 	}
 
@@ -1148,7 +1618,7 @@ static void p2p_provision_connect(struct p2p_device *dev)
 	if (dev->conn_own_wfd) {
 		iov[iov_num].iov_base = wfd_ie;
 		iov[iov_num].iov_len = p2p_build_wfd_ie(dev->conn_own_wfd,
-							wfd_ie);
+							NULL, wfd_ie);
 		iov_num++;
 	}
 
@@ -1323,7 +1793,7 @@ static bool p2p_provision_scan_notify(int err, struct l_queue *bss_list,
 		if (dev->go_group_id.ssid[bss->ssid_len] != '\0')
 			continue;
 
-		if (!util_mem_is_zero(dev->conn_peer_interface_addr, 6) &&
+		if (!l_memeqzero(dev->conn_peer_interface_addr, 6) &&
 				memcmp(bss->addr, dev->conn_peer_interface_addr,
 					6))
 			l_debug("SSID matched but BSSID didn't match the GO's "
@@ -1419,7 +1889,7 @@ static bool p2p_provision_scan_notify(int err, struct l_queue *bss_list,
 			continue;
 		}
 
-		if (!util_mem_is_zero(amacs, 30)) {
+		if (!l_memeqzero(amacs, 30)) {
 			bool amacs_match = false;
 			int i;
 
@@ -1627,163 +2097,6 @@ static void p2p_device_fill_channel_list(struct p2p_device *dev,
 	l_queue_push_tail(attr->channel_entries, channel_entry);
 }
 
-static bool p2p_extract_wfd_properties(const uint8_t *ie, size_t ie_size,
-					struct p2p_wfd_properties *out)
-{
-	struct wfd_subelem_iter iter;
-	const uint8_t *devinfo = NULL;
-	const uint8_t *ext_caps = NULL;
-	const uint8_t *r2 = NULL;
-
-	if (!ie)
-		return false;
-
-	wfd_subelem_iter_init(&iter, ie, ie_size);
-
-	while (wfd_subelem_iter_next(&iter)) {
-		enum wfd_subelem_type type = wfd_subelem_iter_get_type(&iter);
-		size_t len = wfd_subelem_iter_get_length(&iter);
-		const uint8_t *data = wfd_subelem_iter_get_data(&iter);
-
-		switch (type) {
-#define SUBELEM_CHECK(var, expected_len, name)		\
-			if (len != expected_len) {	\
-				l_debug(name " length wrong in WFD IE");\
-				return false;		\
-			}				\
-							\
-			if (var) {			\
-				l_debug("Duplicate" name " in WFD IE");\
-				return false;		\
-			}				\
-							\
-			var = data;
-		case WFD_SUBELEM_WFD_DEVICE_INFORMATION:
-			SUBELEM_CHECK(devinfo, 6, "Device Information");
-			break;
-		case WFD_SUBELEM_EXTENDED_CAPABILITY:
-			SUBELEM_CHECK(ext_caps, 2, "Extended Capability");
-			break;
-		case WFD_SUBELEM_R2_DEVICE_INFORMATION:
-			SUBELEM_CHECK(r2, 2, "R2 Device Information");
-			break;
-#undef SUBELEM_CHECK
-		default:
-			/* Skip unknown IEs */
-			break;
-		}
-	}
-
-	if (devinfo) {
-		uint16_t capability = l_get_be16(devinfo + 0);
-		bool source;
-		bool sink;
-		uint16_t port;
-
-		source = (capability & WFD_DEV_INFO_DEVICE_TYPE) ==
-			WFD_DEV_INFO_TYPE_SOURCE ||
-			(capability & WFD_DEV_INFO_DEVICE_TYPE) ==
-			WFD_DEV_INFO_TYPE_DUAL_ROLE;
-		sink = (capability & WFD_DEV_INFO_DEVICE_TYPE) ==
-			WFD_DEV_INFO_TYPE_PRIMARY_SINK ||
-			(capability & WFD_DEV_INFO_DEVICE_TYPE) ==
-			WFD_DEV_INFO_TYPE_DUAL_ROLE;
-
-		if (!source && !sink)
-			return false;
-
-		port = l_get_be16(devinfo + 2);
-
-		if (source && port == 0) {
-			l_debug("0 port number in WFD IE Device Information");
-			return false;
-		}
-
-		memset(out, 0, sizeof(*out));
-		out->available =
-			(capability & WFD_DEV_INFO_SESSION_AVAILABILITY) ==
-			WFD_DEV_INFO_SESSION_AVAILABLE;
-		out->source = source;
-		out->sink = sink;
-		out->port = port;
-		out->cp = capability & WFD_DEV_INFO_CONTENT_PROTECTION_SUPPORT;
-		out->audio = !sink ||
-			!(capability & WFD_DEV_INFO_NO_AUDIO_AT_PRIMARY_SINK);
-	} else {
-		l_error("Device Information missing in WFD IE");
-		return false;
-	}
-
-	if (ext_caps && (l_get_be16(ext_caps) & 1))
-		out->uibc = 1;
-
-	if (r2) {
-		uint8_t role = l_get_be16(r2) & 3;
-
-		if ((out->source && role != 0 && role != 3) ||
-				(out->sink && role != 1 && role != 3))
-			l_debug("Invalid role in WFD R2 Device Information");
-		else
-			out->r2 = true;
-	}
-
-	return true;
-}
-
-static bool p2p_device_validate_conn_wfd(struct p2p_device *dev,
-						const uint8_t *ie,
-						ssize_t ie_size)
-{
-	struct p2p_wfd_properties wfd;
-
-	if (!dev->conn_own_wfd)
-		return true;
-
-	/*
-	 * WFD IEs are optional in Association Request/Response and P2P Public
-	 * Action frames for R2 devices and required for R1 devices.
-	 * Wi-Fi Display Technical Specification v2.1.0 section 5.2:
-	 * "A WFD R2 Device shall include the WFD IE in Beacon, Probe
-	 * Request/Response, Association Request/Response and P2P Public Action
-	 * frames in order to be interoperable with R1 devices. If a WFD R2
-	 * Device discovers that the peer device is also a WFD R2 Device, then
-	 * it may include the WFD IE in Association Request/Response and P2P
-	 * Public Action frames."
-	 */
-	if (!ie)
-		return dev->conn_own_wfd->r2;
-
-	if (!p2p_extract_wfd_properties(ie, ie_size, &wfd)) {
-		l_error("Could not parse the WFD IE contents");
-		return false;
-	}
-
-	if ((dev->conn_own_wfd->source && !wfd.sink) ||
-			(dev->conn_own_wfd->sink && !wfd.source)) {
-		l_error("Wrong role in peer's WFD IE");
-		return false;
-	}
-
-	if (wfd.r2 != dev->conn_own_wfd->r2) {
-		l_error("Wrong version in peer's WFD IE");
-		return false;
-	}
-
-	/*
-	 * Ignore the session available state because it's not 100% clear
-	 * at what point the peer switches to SESSION_NOT_AVAILABLE in its
-	 * Device Information.
-	 * But we might want to check that other bits have not changed from
-	 * what the peer reported during discovery.
-	 * Wi-Fi Display Technical Specification v2.1.0 section 4.5.2.1:
-	 * "The content of the WFD Device Information subelement should be
-	 * immutable during the period of P2P connection establishment, with
-	 * [...] exceptions [...]"
-	 */
-
-	return true;
-}
-
 static bool p2p_go_negotiation_confirm_cb(const struct mmpdu_header *mpdu,
 					const void *body, size_t body_len,
 					int rssi, struct p2p_device *dev)
@@ -1945,7 +2258,7 @@ static void p2p_device_go_negotiation_req_cb(const struct mmpdu_header *mpdu,
 	if (memcmp(mpdu->address_1, dev->addr, 6) ||
 			(memcmp(mpdu->address_3, dev->addr, 6) &&
 			 memcmp(mpdu->address_3, mpdu->address_2, 6) &&
-			 !util_mem_is_zero(mpdu->address_3, 6)))
+			 !l_memeqzero(mpdu->address_3, 6)))
 		return;
 
 	peer = l_queue_find(dev->peer_list, p2p_peer_match, mpdu->address_2);
@@ -2140,7 +2453,7 @@ respond:
 	if (dev->conn_own_wfd) {
 		resp_info.wfd = wfd_ie;
 		resp_info.wfd_size = p2p_build_wfd_ie(dev->conn_own_wfd,
-							wfd_ie);
+							NULL, wfd_ie);
 	}
 
 	resp_body = p2p_build_go_negotiation_resp(&resp_info, &resp_len);
@@ -2417,7 +2730,7 @@ static bool p2p_go_negotiation_resp_cb(const struct mmpdu_header *mpdu,
 	if (dev->conn_own_wfd) {
 		confirm_info.wfd = wfd_ie;
 		confirm_info.wfd_size = p2p_build_wfd_ie(dev->conn_own_wfd,
-								wfd_ie);
+								NULL, wfd_ie);
 	}
 
 	confirm_body = p2p_build_go_negotiation_confirmation(&confirm_info,
@@ -2505,7 +2818,8 @@ static void p2p_start_go_negotiation(struct p2p_device *dev)
 
 	if (dev->conn_own_wfd) {
 		info.wfd = wfd_ie;
-		info.wfd_size = p2p_build_wfd_ie(dev->conn_own_wfd, wfd_ie);
+		info.wfd_size = p2p_build_wfd_ie(dev->conn_own_wfd,
+							NULL, wfd_ie);
 	}
 
 	req_body = p2p_build_go_negotiation_req(&info, &req_len);
@@ -2643,7 +2957,8 @@ static void p2p_start_provision_discovery(struct p2p_device *dev)
 
 	if (dev->conn_own_wfd) {
 		info.wfd = wfd_ie;
-		info.wfd_size = p2p_build_wfd_ie(dev->conn_own_wfd, wfd_ie);
+		info.wfd_size = p2p_build_wfd_ie(dev->conn_own_wfd,
+							NULL, wfd_ie);
 	}
 
 	req_body = p2p_build_provision_disc_req(&info, &req_len);
@@ -3625,11 +3940,12 @@ static void p2p_device_send_probe_resp(struct p2p_device *dev,
 	if (to_conn_peer && dev->conn_own_wfd) {
 		iov[iov_len].iov_base = wfd_ie;
 		iov[iov_len].iov_len = p2p_build_wfd_ie(dev->conn_own_wfd,
-							wfd_ie);
+							NULL, wfd_ie);
 		iov_len++;
 	} else if (p2p_own_wfd) {
 		iov[iov_len].iov_base = wfd_ie;
-		iov[iov_len].iov_len = p2p_build_wfd_ie(p2p_own_wfd, wfd_ie);
+		iov[iov_len].iov_len = p2p_build_wfd_ie(p2p_own_wfd,
+							NULL, wfd_ie);
 		iov_len++;
 	}
 

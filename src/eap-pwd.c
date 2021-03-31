@@ -28,6 +28,7 @@
 
 #include <ell/ell.h>
 
+#include "ell/useful.h"
 #include "src/missing.h"
 #include "src/eap.h"
 #include "src/eap-private.h"
@@ -568,7 +569,7 @@ error:
 static void eap_pwd_process(struct eap_state *eap,
 				const uint8_t *pkt, size_t len)
 {
-	uint8_t pwd_exch = util_bit_field(pkt[0], 0, 6);
+	uint8_t pwd_exch = bit_field(pkt[0], 0, 6);
 
 	if (len < 1)
 		return;
@@ -655,9 +656,9 @@ static void eap_pwd_handle_request(struct eap_state *eap,
 	}
 
 	/* set if Total-Length parameter is include (i.e. first fragment) */
-	len_bit = util_is_bit_set(pkt[0], 7);
+	len_bit = test_bit(pkt, 7);
 	/* set on all but the last fragment */
-	more_bit = util_is_bit_set(pkt[0], 6);
+	more_bit = test_bit(pkt, 6);
 
 	/* first rx fragment */
 	if (len_bit) {

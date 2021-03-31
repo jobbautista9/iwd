@@ -30,6 +30,7 @@
 #include <errno.h>
 #include <ell/ell.h>
 
+#include "ell/useful.h"
 #include "src/missing.h"
 #include "src/module.h"
 #include "src/crypto.h"
@@ -55,7 +56,7 @@ static void *tx_user_data;
 
 #define VERIFY_IS_ZERO(field)						\
 	do {								\
-		if (!util_mem_is_zero((field), sizeof((field))))	\
+		if (!l_memeqzero((field), sizeof((field))))	\
 			return false;					\
 	} while (false)							\
 
@@ -456,7 +457,7 @@ bool eapol_verify_ptk_1_of_4(const struct eapol_key *ek, size_t mic_len)
 	VERIFY_IS_ZERO(ek->key_rsc);
 	VERIFY_IS_ZERO(ek->reserved);
 
-	if (!util_mem_is_zero(EAPOL_KEY_MIC(ek), mic_len))
+	if (!l_memeqzero(EAPOL_KEY_MIC(ek), mic_len))
 		return false;
 
 	return true;
@@ -1707,7 +1708,7 @@ static void eapol_handle_ptk_3_of_4(struct eapol_sm *sm,
 
 		/* TODO: Handle tx bit */
 
-		gtk_key_index = util_bit_field(gtk[0], 0, 2);
+		gtk_key_index = bit_field(gtk[0], 0, 2);
 		gtk += 2;
 		gtk_len -= 2;
 	} else
@@ -1898,7 +1899,7 @@ static void eapol_handle_gtk_1_of_2(struct eapol_sm *sm,
 		if (!gtk)
 			return;
 
-		gtk_key_index = util_bit_field(gtk[0], 0, 2);
+		gtk_key_index = bit_field(gtk[0], 0, 2);
 		gtk += 2;
 		gtk_len -= 2;
 	} else {
@@ -2795,6 +2796,7 @@ void __eapol_rx_packet(uint32_t ifindex, const uint8_t *src, uint16_t proto,
 	switch (eh->protocol_version) {
 	case EAPOL_PROTOCOL_VERSION_2001:
 	case EAPOL_PROTOCOL_VERSION_2004:
+	case EAPOL_PROTOCOL_VERSION_2010:
 		break;
 	default:
 		return;

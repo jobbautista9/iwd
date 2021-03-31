@@ -29,7 +29,7 @@
 #include <sys/socket.h>
 #include <linux/genetlink.h>
 
-#include "util.h"
+#include "useful.h"
 #include "log.h"
 #include "queue.h"
 #include "io.h"
@@ -1538,11 +1538,11 @@ LIB_EXPORT bool l_genl_request_family(struct l_genl *genl, const char *name,
 	struct family_request *req;
 
 	if (unlikely(!genl) || unlikely(!name))
-		return NULL;
+		return false;
 
 	len = strlen(name);
 	if (unlikely(strlen(name) >= GENL_NAMSIZ))
-		return NULL;
+		return false;
 
 	req = l_new(struct family_request, 1);
 	req->appeared_func = appeared_func;

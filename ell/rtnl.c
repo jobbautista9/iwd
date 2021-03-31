@@ -29,8 +29,9 @@
 #include <linux/icmpv6.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <errno.h>
 
-#include "util.h"
+#include "useful.h"
 #include "netlink.h"
 #include "log.h"
 #include "rtnl.h"

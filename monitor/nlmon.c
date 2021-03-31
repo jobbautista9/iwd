@@ -48,6 +48,8 @@
 #endif
 
 #include "linux/nl80211.h"
+
+#include "ell/useful.h"
 #include "src/ie.h"
 #include "src/mpdu.h"
 #include "src/eapol.h"
@@ -710,8 +712,9 @@ static void print_ie_bitfield(unsigned int level, const char *label,
 	for (i = 0; i < len * 8; i++) {
 		uint8_t byte = i / 8;
 		uint8_t bit = i % 8;
+		uint8_t masked = bytes[byte] & mask[byte];
 
-		if (!util_is_bit_set(bytes[byte] & mask[byte], bit))
+		if (!test_bit(&masked, bit))
 			continue;
 
 		print_attr(level, "%s: bit %2d: %s", label, i,
@@ -932,16 +935,16 @@ static void print_ie_wfa_hs20(unsigned int level, const char *label,
 	if (size < 1)
 		return;
 
-	pps_mo_id_present = util_is_bit_set(ptr[0], 1);
-	anpq_domain_id_present = util_is_bit_set(ptr[0], 2);
+	pps_mo_id_present = test_bit(ptr, 1);
+	anpq_domain_id_present = test_bit(ptr, 2);
 
 	print_attr(level + 1, "HS2.0 Indication Element:");
-	print_attr(level + 2, "DGAF Disabled: %u", util_is_bit_set(ptr[0], 0));
+	print_attr(level + 2, "DGAF Disabled: %u", test_bit(ptr, 0));
 	print_attr(level + 2, "PPS MO ID Present: %u", pps_mo_id_present);
 	print_attr(level + 2, "ANQP Domain ID Present: %u",
 				anpq_domain_id_present);
 
-	switch (util_bit_field(ptr[0], 4, 7)) {
+	switch (bit_field(ptr[0], 4, 7)) {
 	case 0:
 		print_attr(level + 2, "Version Number: 1.x");
 		break;
@@ -1159,10 +1162,7 @@ static void print_ie_mcs(unsigned int level, const char *label,
 		return print_ie_error(level, label, size, -EINVAL);
 
 	for (i = 0; i < 77; i++) {
-		uint8_t byte = i / 8;
-		uint8_t bit = i % 8;
-
-		if (util_is_bit_set(bytes[byte], bit))
+		if (test_bit(bytes, i))
 			print_attr(level, "%s: MCS %d", label, i);
 	}
 
@@ -1403,7 +1403,7 @@ static void print_ie_extended_capabilities(unsigned int level,
 	if (size == 0)
 		return;
 
-	spsmp = util_is_bit_set(*((uint8_t *) data), 6);
+	spsmp = test_bit(data, 6);
 
 	bytes = size < sizeof(bytemask1) ? size : sizeof(bytemask1);
 
@@ -1416,7 +1416,7 @@ static void print_ie_extended_capabilities(unsigned int level,
 
 	/* Print Service Interval Granularity */
 	if (spsmp) {
-		interval = util_bit_field(*((uint8_t *) data + 5), 1, 3);
+		interval = bit_field(*((uint8_t *) data + 5), 1, 3);
 		print_attr(level + 1,
 			"Shortest Service Interval Granularity: %d ms",
 			interval * 5 + 5);
@@ -1488,7 +1488,7 @@ static void print_ie_ht_capabilities(unsigned int level,
 				1, ht_capabilities_info_bitfield);
 
 	/* Print SM Power Save */
-	sm_power_save = util_bit_field(htc[0], 2, 2);
+	sm_power_save = bit_field(htc[0], 2, 2);
 	print_attr(level + 1, "HT Capabilities Info: bits 2-3: %s",
 			ht_capabilities_sm_power_save[sm_power_save]);
 
@@ -1497,7 +1497,7 @@ static void print_ie_ht_capabilities(unsigned int level,
 	print_ie_bitfield(level + 1, "HT Capabilities Info", data, info_mask,
 				1, ht_capabilities_info_bitfield);
 
-	rx_stbc = util_bit_field(htc[1], 0, 2);
+	rx_stbc = bit_field(htc[1], 0, 2);
 	print_attr(level + 1, "HT Capabilities Info: bits 8-9: %s",
 			ht_capabilities_rx_stbc[rx_stbc]);
 
@@ -1506,37 +1506,37 @@ static void print_ie_ht_capabilities(unsigned int level,
 	print_ie_bitfield(level + 1, "HT Capabilities Info", data, info_mask,
 				2, ht_capabilities_info_bitfield);
 
-	ampdu_exponent = util_bit_field(htc[2], 0, 2);
+	ampdu_exponent = bit_field(htc[2], 0, 2);
 	print_attr(level + 1, "A-MPDU Parameters: "
 			"Maximum A-MPDU Length Exponent: %d", ampdu_exponent);
 
-	bits = util_bit_field(htc[2], 2, 3);
+	bits = bit_field(htc[2], 2, 3);
 	print_attr(level + 1, "A-MPDU Parameters: "
 			"Minimum MPDU Start Spacing: %s",
 			ht_capabilities_min_mpdu_start_spacing[bits]);
 
 	print_ie_mcs(level + 1, "Supported MCS", htc + 3, 16);
 
-	pco = util_is_bit_set(htc[18], 0);
+	pco = test_bit(htc + 18, 0);
 	print_attr(level + 1, "HT Extended Capabilities: PCO: %s",
 			bits ? "supported" : "not supported");
 
 	if (pco) {
-		bits = util_bit_field(htc[18], 1, 2);
+		bits = bit_field(htc[18], 1, 2);
 		print_attr(level + 1, "HT Extended Capabilities: "
 				"PCO Transition Time: %s",
 				ht_capabilities_pco_transition_time[bits]);
 	}
 
-	bits = util_bit_field(htc[19], 0, 2);
+	bits = bit_field(htc[19], 0, 2);
 	print_attr(level + 1, "HT Extended Capabilities: "
 			"MCS Feedback: %s", ht_capabilities_mcs_feedback[bits]);
 
-	plus_htc = util_is_bit_set(htc[19], 2);
+	plus_htc = test_bit(htc + 19, 2);
 	print_attr(level + 1, "HT Extended Capabilities: "
 			"+HTC: %s", plus_htc ? "supported" : "not supported");
 
-	rd_responder = util_is_bit_set(htc[19], 3);
+	rd_responder = test_bit(htc + 19, 3);
 	print_attr(level + 1, "HT Extended Capabilities: "
 			"RD Responder: %s",
 			rd_responder ? "supported" : "not supported");
@@ -1591,15 +1591,15 @@ static void print_ie_rm_enabled_caps(unsigned int level,
 	print_ie_bitfield(level + 1, "Enabled", bytes,
 				bytemask1, sizeof(bytemask1), capabilities);
 
-	byte = util_bit_field(bytes[2], 2, 3);
+	byte = bit_field(bytes[2], 2, 3);
 	print_attr(level + 1, "Operating Channel Max Measurement Duration: %u",
 			byte);
 
-	byte = util_bit_field(bytes[2], 5, 3);
+	byte = bit_field(bytes[2], 5, 3);
 	print_attr(level + 1, "Non-Operating Channel Max Measurement "
 			"Duration: %u", byte);
 
-	byte = util_bit_field(bytes[3], 0, 3);
+	byte = bit_field(bytes[3], 0, 3);
 	print_attr(level + 1, "Measurement Pilot Capability: %u", byte);
 
 	print_ie_bitfield(level + 1, "Enabled", bytes + sizeof(bytemask1),
@@ -1618,7 +1618,7 @@ static void print_ie_interworking(unsigned int level,
 
 	print_attr(level, "%s: len %u", label, size);
 
-	type = util_bit_field(ptr[0], 0, 3);
+	type = bit_field(ptr[0], 0, 3);
 
 	switch (type) {
 	case 0:
@@ -1650,10 +1650,10 @@ static void print_ie_interworking(unsigned int level,
 	}
 
 	print_attr(level + 1, "Network Type: %s", msg);
-	print_attr(level + 1, "Internet: %u", util_is_bit_set(ptr[0], 4));
-	print_attr(level + 1, "ASRA: %u", util_is_bit_set(ptr[0], 5));
-	print_attr(level + 1, "ESR: %u", util_is_bit_set(ptr[0], 6));
-	print_attr(level + 1, "UESA: %u", util_is_bit_set(ptr[0], 7));
+	print_attr(level + 1, "Internet: %u", test_bit(ptr, 4));
+	print_attr(level + 1, "ASRA: %u", test_bit(ptr, 5));
+	print_attr(level + 1, "ESR: %u", test_bit(ptr, 6));
+	print_attr(level + 1, "UESA: %u", test_bit(ptr, 7));
 
 	size--;
 	ptr++;
@@ -1738,7 +1738,7 @@ static void print_ie_advertisement(unsigned int level,
 	print_attr(level, "%s: len %u", label, size);
 
 	while (size) {
-		uint8_t qr_len = util_bit_field(ptr[0], 0, 7);
+		uint8_t qr_len = bit_field(ptr[0], 0, 7);
 		uint8_t id = ptr[1];
 
 		switch (id) {
@@ -1801,21 +1801,21 @@ static void print_fils_indication(unsigned int level,
 	print_attr(level, "FILS Indication: len %u", size);
 
 	print_attr(level + 1, "Num Public Key Identifiers: %u",
-				util_bit_field(*bytes, 0, 3));
+				bit_field(*bytes, 0, 3));
 	print_attr(level + 1, "Num Realm Identifiers: %u",
-				util_bit_field(*bytes, 3, 3));
-	print_attr(level + 1, "IP configuration: %u", util_is_bit_set(*bytes, 6));
+				bit_field(*bytes, 3, 3));
+	print_attr(level + 1, "IP configuration: %u", test_bit(bytes, 6));
 	print_attr(level + 1, "Cache Identifier Included: %u",
-				util_is_bit_set(*bytes, 7));
+				test_bit(bytes, 7));
 
 	bytes++;
 
-	print_attr(level + 1, "HES-SID Included: %u", util_is_bit_set(*bytes, 0));
+	print_attr(level + 1, "HES-SID Included: %u", test_bit(bytes, 0));
 	print_attr(level + 1, "SK Auth without PFS supported: %u",
-				util_is_bit_set(*bytes, 1));
+				test_bit(bytes, 1));
 	print_attr(level + 1, "SK Auth with PFS supported: %u",
-				util_is_bit_set(*bytes, 2));
-	print_attr(level + 1, "PK Auth supported: %u", util_is_bit_set(*bytes, 3));
+				test_bit(bytes, 2));
+	print_attr(level + 1, "PK Auth supported: %u", test_bit(bytes, 3));
 
 	bytes++;
 
@@ -1947,22 +1947,21 @@ static void print_measurement_request(unsigned int level, const char *label,
 	print_attr(level + 1, "Token: %u", l_get_u8(data));
 
 	mode = l_get_u8(data + 1);
-
 	print_attr(level + 1, "Request Mode: %u", mode);
 
-	if (util_is_bit_set(mode, 0))
+	if (test_bit(&mode, 0))
 		print_attr(level + 2, "Parallel bit set");
 
-	if (util_is_bit_set(mode, 1))
+	if (test_bit(&mode, 1))
 		print_attr(level + 2, "Enable bit set");
 
-	if (util_is_bit_set(mode, 2))
+	if (test_bit(&mode, 2))
 		print_attr(level + 2, "Request bit set");
 
-	if (util_is_bit_set(mode, 3))
+	if (test_bit(&mode, 3))
 		print_attr(level + 2, "Report bit set");
 
-	if (util_is_bit_set(mode, 4))
+	if (test_bit(&mode, 4))
 		print_attr(level + 2, "Duration Mandatory set");
 
 	type = l_get_u8(data + 2);
@@ -1997,8 +1996,8 @@ static void print_measurement_report_beacon(unsigned int level,
 
 	frame_info = l_get_u8(data + 12);
 
-	print_attr(level, "PHY Type: %u", util_bit_field(frame_info, 0, 7));
-	print_attr(level, "Frame Type: %u", util_is_bit_set(frame_info, 7));
+	print_attr(level, "PHY Type: %u", bit_field(frame_info, 0, 7));
+	print_attr(level, "Frame Type: %u", test_bit(&frame_info, 7));
 	print_attr(level, "RCPI: %u", l_get_u8(data + 13));
 	print_attr(level, "RSNI: %u", l_get_u8(data + 14));
 	print_attr(level, "BSSID: "MAC, MAC_STR(((const uint8_t *)data + 15)));
@@ -2021,16 +2020,15 @@ static void print_measurement_report(unsigned int level, const char *label,
 	print_attr(level + 1, "Token: %u", l_get_u8(data));
 
 	mode = l_get_u8(data + 1);
-
 	print_attr(level + 1, "Report Mode: %u", mode);
 
-	if (util_is_bit_set(mode, 0))
+	if (test_bit(&mode, 0))
 		print_attr(level + 2, "Late bit set");
 
-	if (util_is_bit_set(mode, 1))
+	if (test_bit(&mode, 1))
 		print_attr(level + 2, "Incapable bit set");
 
-	if (util_is_bit_set(mode, 2))
+	if (test_bit(&mode, 2))
 		print_attr(level + 2, "Refused bit set");
 
 	type = l_get_u8(data + 2);
@@ -3849,7 +3847,7 @@ static void print_wfd_session_info(unsigned int level, const char *label,
 
 		print_address(level + 2, "Device address", bytes + 1);
 
-		if (util_mem_is_zero(bytes + 7, 6))
+		if (l_memeqzero(bytes + 7, 6))
 			print_attr(level+ + 2, "Not associated to an "
 					"infrastructure AP");
 		else
@@ -5417,6 +5415,85 @@ static void print_eapol(unsigned int level, const char *label,
 	print_hexdump(level + 1, data, size);
 }
 
+#define EXT_ENTRY(a) #a
+
+static const char *ext_feature_map[] = {
+	EXT_ENTRY(NL80211_EXT_FEATURE_VHT_IBSS),
+	EXT_ENTRY(NL80211_EXT_FEATURE_RRM),
+	EXT_ENTRY(NL80211_EXT_FEATURE_MU_MIMO_AIR_SNIFFER),
+	EXT_ENTRY(NL80211_EXT_FEATURE_SCAN_START_TIME),
+	EXT_ENTRY(NL80211_EXT_FEATURE_BSS_PARENT_TSF),
+	EXT_ENTRY(NL80211_EXT_FEATURE_SET_SCAN_DWELL),
+	EXT_ENTRY(NL80211_EXT_FEATURE_BEACON_RATE_LEGACY),
+	EXT_ENTRY(NL80211_EXT_FEATURE_BEACON_RATE_HT),
+	EXT_ENTRY(NL80211_EXT_FEATURE_BEACON_RATE_VHT),
+	EXT_ENTRY(NL80211_EXT_FEATURE_FILS_STA),
+	EXT_ENTRY(NL80211_EXT_FEATURE_MGMT_TX_RANDOM_TA),
+	EXT_ENTRY(NL80211_EXT_FEATURE_MGMT_TX_RANDOM_TA_CONNECTED),
+	EXT_ENTRY(NL80211_EXT_FEATURE_SCHED_SCAN_RELATIVE_RSSI),
+	EXT_ENTRY(NL80211_EXT_FEATURE_CQM_RSSI_LIST),
+	EXT_ENTRY(NL80211_EXT_FEATURE_FILS_SK_OFFLOAD),
+	EXT_ENTRY(NL80211_EXT_FEATURE_4WAY_HANDSHAKE_STA_PSK),
+	EXT_ENTRY(NL80211_EXT_FEATURE_4WAY_HANDSHAKE_STA_1X),
+	EXT_ENTRY(NL80211_EXT_FEATURE_FILS_MAX_CHANNEL_TIME),
+	EXT_ENTRY(NL80211_EXT_FEATURE_ACCEPT_BCAST_PROBE_RESP),
+	EXT_ENTRY(NL80211_EXT_FEATURE_OCE_PROBE_REQ_HIGH_TX_RATE),
+	EXT_ENTRY(NL80211_EXT_FEATURE_OCE_PROBE_REQ_DEFERRAL_SUPPRESSION),
+	EXT_ENTRY(NL80211_EXT_FEATURE_MFP_OPTIONAL),
+	EXT_ENTRY(NL80211_EXT_FEATURE_LOW_SPAN_SCAN),
+	EXT_ENTRY(NL80211_EXT_FEATURE_LOW_POWER_SCAN),
+	EXT_ENTRY(NL80211_EXT_FEATURE_HIGH_ACCURACY_SCAN),
+	EXT_ENTRY(NL80211_EXT_FEATURE_DFS_OFFLOAD),
+	EXT_ENTRY(NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211),
+	EXT_ENTRY(NL80211_EXT_FEATURE_ACK_SIGNAL_SUPPORT),
+	EXT_ENTRY(NL80211_EXT_FEATURE_TXQS),
+	EXT_ENTRY(NL80211_EXT_FEATURE_SCAN_RANDOM_SN),
+	EXT_ENTRY(NL80211_EXT_FEATURE_SCAN_MIN_PREQ_CONTENT),
+	EXT_ENTRY(NL80211_EXT_FEATURE_CAN_REPLACE_PTK0),
+	EXT_ENTRY(NL80211_EXT_FEATURE_ENABLE_FTM_RESPONDER),
+	EXT_ENTRY(NL80211_EXT_FEATURE_AIRTIME_FAIRNESS),
+	EXT_ENTRY(NL80211_EXT_FEATURE_AP_PMKSA_CACHING),
+	EXT_ENTRY(NL80211_EXT_FEATURE_SCHED_SCAN_BAND_SPECIFIC_RSSI_THOLD),
+	EXT_ENTRY(NL80211_EXT_FEATURE_EXT_KEY_ID),
+	EXT_ENTRY(NL80211_EXT_FEATURE_STA_TX_PWR),
+	EXT_ENTRY(NL80211_EXT_FEATURE_SAE_OFFLOAD),
+	EXT_ENTRY(NL80211_EXT_FEATURE_VLAN_OFFLOAD),
+	EXT_ENTRY(NL80211_EXT_FEATURE_AQL),
+	EXT_ENTRY(NL80211_EXT_FEATURE_BEACON_PROTECTION),
+	EXT_ENTRY(NL80211_EXT_FEATURE_CONTROL_PORT_NO_PREAUTH),
+	EXT_ENTRY(NL80211_EXT_FEATURE_PROTECTED_TWT),
+	EXT_ENTRY(NL80211_EXT_FEATURE_DEL_IBSS_STA),
+	EXT_ENTRY(NL80211_EXT_FEATURE_MULTICAST_REGISTRATIONS),
+	EXT_ENTRY(NL80211_EXT_FEATURE_BEACON_PROTECTION_CLIENT),
+	EXT_ENTRY(NL80211_EXT_FEATURE_SCAN_FREQ_KHZ),
+	EXT_ENTRY(NL80211_EXT_FEATURE_CONTROL_PORT_OVER_NL80211_TX_STATUS),
+	EXT_ENTRY(NL80211_EXT_FEATURE_OPERATING_CHANNEL_VALIDATION),
+	EXT_ENTRY(NL80211_EXT_FEATURE_4WAY_HANDSHAKE_AP_PSK),
+	EXT_ENTRY(NL80211_EXT_FEATURE_SAE_OFFLOAD_AP),
+	EXT_ENTRY(NL80211_EXT_FEATURE_FILS_DISCOVERY),
+	EXT_ENTRY(NL80211_EXT_FEATURE_UNSOL_BCAST_PROBE_RESP),
+	EXT_ENTRY(NL80211_EXT_FEATURE_BEACON_RATE_HE),
+};
+
+static void print_ext_features(unsigned int level, const char *label,
+					const void *data, uint16_t size)
+{
+	int i;
+	uint16_t bits;
+
+	if (L_ARRAY_SIZE(ext_feature_map) < size * 8)
+		bits = L_ARRAY_SIZE(ext_feature_map);
+	else
+		bits = size * 8;
+
+	print_attr(level, "Extended Features:");
+
+	for (i = 0; i < bits; i++) {
+		if (test_bit(data, i))
+			print_attr(level + 1, "%s", ext_feature_map[i]);
+	}
+}
+
 /*
  * Control Port sends a EAPoL frame inside ATTR_FRAME and not a management
  * frame.  So a separate table with all the possible attributes is provided
@@ -5913,7 +5990,8 @@ static const struct attr_entry attr_table[] = {
 	{ NL80211_ATTR_USE_RRM,
 			"Use RRM", ATTR_FLAG },
 	{ NL80211_ATTR_EXT_FEATURES,
-			"Extended Features" },
+			"Extended Features", ATTR_CUSTOM,
+			{ .function = print_ext_features} },
 	{ NL80211_ATTR_FILS_KEK,
 			"FILS KEK" },
 	{ NL80211_ATTR_FILS_NONCES,
