@@ -1,3 +1,11 @@
+iwd (1.13-1) experimental; urgency=medium
+
+  [ upstream ]
+  * new release;
+    closes: bug#986181, thanks to Job Bautista
+
+ -- Jonas Smedegaard <dr@jones.dk>  Thu, 01 Apr 2021 00:03:01 +0200
+
 iwd (1.12-1) unstable; urgency=medium
 
   [ upstream ]
