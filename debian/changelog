@@ -1,3 +1,17 @@
+iwd (1.13-1+devuan1) experimental; urgency=medium
+
+  * New release from Debian upstream.
+
+ -- Job Bautista <jobbautista9@protonmail.com>  Thu, 01 Apr 2021 11:34:11 +0800
+
+iwd (1.13-1) experimental; urgency=medium
+
+  [ upstream ]
+  * new release;
+    closes: bug#986181, thanks to Job Bautista
+
+ -- Jonas Smedegaard <dr@jones.dk>  Thu, 01 Apr 2021 00:03:01 +0200
+
 iwd (1.12-1+devuan1) unstable; urgency=medium
 
   * New release from Debian upstream.

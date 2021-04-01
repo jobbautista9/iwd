@@ -33,6 +33,7 @@
 
 #include "linux/nl80211.h"
 
+#include "ell/useful.h"
 #include "src/missing.h"
 #include "src/iwd.h"
 #include "src/module.h"
@@ -99,6 +100,8 @@ struct sta_state {
 	struct l_uintset *rates;
 	uint32_t assoc_resp_cmd_id;
 	struct ap_state *ap;
+	uint8_t *assoc_ies;
+	size_t assoc_ies_len;
 	uint8_t *assoc_rsne;
 	struct eapol_sm *sm;
 	struct handshake_state *hs;
@@ -213,7 +216,7 @@ static const char *broadcast_from_ip(const char *ip)
 	struct in_addr ia;
 	uint32_t bcast;
 
-	if (inet_aton(ip, &ia) < 0)
+	if (inet_aton(ip, &ia) != 1)
 		return NULL;
 
 	bcast = ntohl(ia.s_addr);
@@ -279,7 +282,7 @@ static void ap_sta_free(void *data)
 	struct ap_state *ap = sta->ap;
 
 	l_uintset_free(sta->rates);
-	l_free(sta->assoc_rsne);
+	l_free(sta->assoc_ies);
 
 	if (sta->assoc_resp_cmd_id)
 		l_genl_family_cancel(ap->nl80211, sta->assoc_resp_cmd_id);
@@ -411,7 +414,8 @@ static void ap_new_rsna(struct sta_state *sta)
 	if (ap->ops->handle_event) {
 		struct ap_event_station_added_data event_data = {};
 		event_data.mac = sta->addr;
-		event_data.rsn_ie = sta->assoc_rsne;
+		event_data.assoc_ies = sta->assoc_ies;
+		event_data.assoc_ies_len = sta->assoc_ies_len;
 		ap->ops->handle_event(AP_EVENT_STATION_ADDED, &event_data,
 					ap->user_data);
 	}
@@ -463,11 +467,336 @@ static void ap_set_rsn_info(struct ap_state *ap, struct ie_rsn_info *rsn)
 	rsn->group_cipher = ap->group_cipher;
 }
 
+static void ap_wsc_exit_pbc(struct ap_state *ap)
+{
+	if (!ap->wsc_pbc_timeout)
+		return;
+
+	l_timeout_remove(ap->wsc_pbc_timeout);
+	ap->wsc_dpid = 0;
+	ap_update_beacon(ap);
+
+	ap->ops->handle_event(AP_EVENT_PBC_MODE_EXIT, NULL, ap->user_data);
+}
+
+struct ap_pbc_record_expiry_data {
+	uint64_t min_time;
+	const uint8_t *mac;
+};
+
+static bool ap_wsc_pbc_record_expire(void *data, void *user_data)
+{
+	struct ap_wsc_pbc_probe_record *record = data;
+	const struct ap_pbc_record_expiry_data *expiry_data = user_data;
+
+	if (record->timestamp > expiry_data->min_time &&
+			memcmp(record->mac, expiry_data->mac, 6))
+		return false;
+
+	l_free(record);
+	return true;
+}
+
+#define AP_WSC_PBC_MONITOR_TIME	120
+#define AP_WSC_PBC_WALK_TIME	120
+
+static void ap_process_wsc_probe_req(struct ap_state *ap, const uint8_t *from,
+					const uint8_t *wsc_data,
+					size_t wsc_data_len)
+{
+	struct wsc_probe_request req;
+	struct ap_pbc_record_expiry_data expiry_data;
+	struct ap_wsc_pbc_probe_record *record;
+	uint64_t now;
+	bool empty;
+	uint8_t first_sta_addr[6] = {};
+	const struct l_queue_entry *entry;
+
+	if (wsc_parse_probe_request(wsc_data, wsc_data_len, &req) < 0)
+		return;
+
+	if (!(req.config_methods & WSC_CONFIGURATION_METHOD_PUSH_BUTTON))
+		return;
+
+	if (req.device_password_id != WSC_DEVICE_PASSWORD_ID_PUSH_BUTTON)
+		return;
+
+	/* Save the address of the first enrollee record */
+	record = l_queue_peek_head(ap->wsc_pbc_probes);
+	if (record)
+		memcpy(first_sta_addr, record->mac, 6);
+
+	now = l_time_now();
+
+	/*
+	 * Expire entries older than PBC Monitor Time.  While there also drop
+	 * older entries from the same Enrollee that sent us this new Probe
+	 * Request.  It's unclear whether we should also match by the UUID-E.
+	 */
+	expiry_data.min_time = now - AP_WSC_PBC_MONITOR_TIME * 1000000;
+	expiry_data.mac = from;
+	l_queue_foreach_remove(ap->wsc_pbc_probes, ap_wsc_pbc_record_expire,
+				&expiry_data);
+
+	empty = l_queue_isempty(ap->wsc_pbc_probes);
+
+	if (!ap->wsc_pbc_probes)
+		ap->wsc_pbc_probes = l_queue_new();
+
+	/* Add new record */
+	record = l_new(struct ap_wsc_pbc_probe_record, 1);
+	memcpy(record->mac, from, 6);
+	memcpy(record->uuid_e, req.uuid_e, sizeof(record->uuid_e));
+	record->timestamp = now;
+	l_queue_push_tail(ap->wsc_pbc_probes, record);
+
+	/*
+	 * If queue was non-empty and we've added one more record then we
+	 * now have seen more than one PBC enrollee during the PBC Monitor
+	 * Time and must exit "active PBC mode" due to "session overlap".
+	 * WSC v2.0.5 Section 11.3:
+	 * "Within the PBC Monitor Time, if the Registrar receives PBC
+	 * probe requests from more than one Enrollee [...] then the
+	 * Registrar SHALL signal a "session overlap" error.  As a result,
+	 * the Registrar shall refuse to enter active PBC mode and shall
+	 * also refuse to perform a PBC-based Registration Protocol
+	 * exchange [...]"
+	 */
+	if (empty)
+		return;
+
+	if (ap->wsc_pbc_timeout) {
+		l_debug("Exiting PBC mode due to Session Overlap");
+		ap_wsc_exit_pbc(ap);
+	}
+
+	/*
+	 * "If the Registrar is engaged in PBC Registration Protocol
+	 * exchange with an Enrollee and receives a Probe Request or M1
+	 * Message from another Enrollee, then the Registrar should
+	 * signal a "session overlap" error".
+	 *
+	 * For simplicity just interrupt the handshake with that enrollee.
+	 */
+	for (entry = l_queue_get_entries(ap->sta_states); entry;
+			entry = entry->next) {
+		struct sta_state *sta = entry->data;
+
+		if (!sta->associated || sta->assoc_rsne)
+			continue;
+
+		/*
+		 * Check whether this enrollee is in PBC Registration
+		 * Protocol by comparing its mac with the first (and only)
+		 * record we had in ap->wsc_pbc_probes.  If we had more
+		 * than one record we wouldn't have been in
+		 * "active PBC mode".
+		 */
+		if (memcmp(sta->addr, first_sta_addr, 6) ||
+				!memcmp(sta->addr, from, 6))
+			continue;
+
+		l_debug("Interrupting handshake with %s due to Session Overlap",
+			util_address_to_string(sta->addr));
+
+		if (sta->hs) {
+			netdev_handshake_failed(sta->hs,
+					MMPDU_REASON_CODE_DISASSOC_AP_BUSY);
+			sta->sm = NULL;
+		}
+
+		ap_remove_sta(sta);
+	}
+}
+
+static size_t ap_get_wsc_ie_len(struct ap_state *ap,
+				enum mpdu_management_subtype type,
+				const struct mmpdu_header *client_frame,
+				size_t client_frame_len)
+{
+	return 256;
+}
+
+static size_t ap_write_wsc_ie(struct ap_state *ap,
+				enum mpdu_management_subtype type,
+				const struct mmpdu_header *client_frame,
+				size_t client_frame_len,
+				uint8_t *out_buf)
+{
+	const uint8_t *from = client_frame->address_2;
+	uint8_t *wsc_data;
+	size_t wsc_data_size;
+	uint8_t *wsc_ie;
+	size_t wsc_ie_size;
+	size_t len = 0;
+
+	/* WSC IE */
+	if (type == MPDU_MANAGEMENT_SUBTYPE_PROBE_RESPONSE) {
+		struct wsc_probe_response wsc_pr = {};
+		const struct mmpdu_probe_request *req =
+			mmpdu_body(client_frame);
+		size_t req_ies_len = (void *) client_frame + client_frame_len -
+			(void *) req->ies;
+		ssize_t req_wsc_data_size;
+
+		/*
+		 * Process the client Probe Request WSC IE first as it may
+		 * cause us to exit "active PBC mode" and that will be
+		 * immediately reflected in our Probe Response WSC IE.
+		 */
+		wsc_data = ie_tlv_extract_wsc_payload(req->ies, req_ies_len,
+							&req_wsc_data_size);
+		if (wsc_data) {
+			ap_process_wsc_probe_req(ap, from, wsc_data,
+							req_wsc_data_size);
+			l_free(wsc_data);
+		}
+
+		wsc_pr.version2 = true;
+		wsc_pr.state = WSC_STATE_CONFIGURED;
+
+		if (ap->wsc_pbc_timeout) {
+			wsc_pr.selected_registrar = true;
+			wsc_pr.device_password_id = ap->wsc_dpid;
+			wsc_pr.selected_reg_config_methods =
+				WSC_CONFIGURATION_METHOD_PUSH_BUTTON;
+		}
+
+		wsc_pr.response_type = WSC_RESPONSE_TYPE_AP;
+		memcpy(wsc_pr.uuid_e, ap->wsc_uuid_r, sizeof(wsc_pr.uuid_e));
+		wsc_pr.primary_device_type =
+			ap->config->wsc_primary_device_type;
+
+		if (ap->config->wsc_name)
+			l_strlcpy(wsc_pr.device_name, ap->config->wsc_name,
+					sizeof(wsc_pr.device_name));
+
+		wsc_pr.config_methods =
+			WSC_CONFIGURATION_METHOD_PUSH_BUTTON;
+
+		if (ap->config->authorized_macs_num) {
+			size_t len;
+
+			len = ap->config->authorized_macs_num * 6;
+			if (len > sizeof(wsc_pr.authorized_macs))
+				len = sizeof(wsc_pr.authorized_macs);
+
+			memcpy(wsc_pr.authorized_macs,
+				ap->config->authorized_macs, len);
+		}
+
+		wsc_data = wsc_build_probe_response(&wsc_pr, &wsc_data_size);
+	} else if (type == MPDU_MANAGEMENT_SUBTYPE_BEACON) {
+		struct wsc_beacon wsc_beacon = {};
+
+		wsc_beacon.version2 = true;
+		wsc_beacon.state = WSC_STATE_CONFIGURED;
+
+		if (ap->wsc_pbc_timeout) {
+			wsc_beacon.selected_registrar = true;
+			wsc_beacon.device_password_id = ap->wsc_dpid;
+			wsc_beacon.selected_reg_config_methods =
+				WSC_CONFIGURATION_METHOD_PUSH_BUTTON;
+		}
+
+		if (ap->config->authorized_macs_num) {
+			size_t len;
+
+			len = ap->config->authorized_macs_num * 6;
+			if (len > sizeof(wsc_beacon.authorized_macs))
+				len = sizeof(wsc_beacon.authorized_macs);
+
+			memcpy(wsc_beacon.authorized_macs,
+				ap->config->authorized_macs, len);
+		}
+
+		wsc_data = wsc_build_beacon(&wsc_beacon, &wsc_data_size);
+	} else if (L_IN_SET(type, MPDU_MANAGEMENT_SUBTYPE_ASSOCIATION_RESPONSE,
+			MPDU_MANAGEMENT_SUBTYPE_REASSOCIATION_RESPONSE)) {
+		struct wsc_association_response wsc_resp = {};
+		struct sta_state *sta =
+			l_queue_find(ap->sta_states, ap_sta_match_addr, from);
+
+		if (!sta || sta->assoc_rsne)
+			return 0;
+
+		wsc_resp.response_type = WSC_RESPONSE_TYPE_AP;
+		wsc_resp.version2 = sta->wsc_v2;
+
+		wsc_data = wsc_build_association_response(&wsc_resp,
+								&wsc_data_size);
+	} else
+		return 0;
+
+	if (!wsc_data) {
+		l_error("wsc_build_<mgmt-subtype> error (stype 0x%x)", type);
+		return 0;
+	}
+
+	wsc_ie = ie_tlv_encapsulate_wsc_payload(wsc_data, wsc_data_size,
+						&wsc_ie_size);
+	l_free(wsc_data);
+
+	if (!wsc_ie) {
+		l_error("ie_tlv_encapsulate_wsc_payload error (stype 0x%x)",
+			type);
+		return 0;
+	}
+
+	memcpy(out_buf + len, wsc_ie, wsc_ie_size);
+	len += wsc_ie_size;
+	l_free(wsc_ie);
+
+	return len;
+}
+
+static size_t ap_get_extra_ies_len(struct ap_state *ap,
+					enum mpdu_management_subtype type,
+					const struct mmpdu_header *client_frame,
+					size_t client_frame_len)
+{
+	size_t len = 0;
+
+	len += ap_get_wsc_ie_len(ap, type, client_frame, client_frame_len);
+
+	if (ap->ops->get_extra_ies_len)
+		len += ap->ops->get_extra_ies_len(type, client_frame,
+							client_frame_len,
+							ap->user_data);
+
+	return len;
+}
+
+static size_t ap_write_extra_ies(struct ap_state *ap,
+					enum mpdu_management_subtype type,
+					const struct mmpdu_header *client_frame,
+					size_t client_frame_len,
+					uint8_t *out_buf)
+{
+	size_t len = 0;
+
+	len += ap_write_wsc_ie(ap, type, client_frame, client_frame_len,
+				out_buf + len);
+
+	if (ap->ops->write_extra_ies)
+		len += ap->ops->write_extra_ies(type,
+						client_frame, client_frame_len,
+						out_buf + len, ap->user_data);
+
+	return len;
+}
+
 /*
  * Build a Beacon frame or a Probe Response frame's header and body until
  * the TIM IE.  Except for the optional TIM IE which is inserted by the
  * kernel when needed, our contents for both frames are the same.
  * See Beacon format in 8.3.3.2 and Probe Response format in 8.3.3.10.
+ *
+ * 802.11-2016, Section 9.4.2.1:
+ * "The frame body components specified for many management subtypes result
+ * in elements ordered by ascending values of the Element ID field and then
+ * the Element ID Extension field (when present), with the exception of the
+ * MIC Management element (9.4.2.55)."
  */
 static size_t ap_build_beacon_pr_head(struct ap_state *ap,
 					enum mpdu_management_subtype stype,
@@ -533,15 +862,13 @@ static size_t ap_build_beacon_pr_head(struct ap_state *ap,
 }
 
 /* Beacon / Probe Response frame portion after the TIM IE */
-static size_t ap_build_beacon_pr_tail(struct ap_state *ap, bool pr,
-					uint8_t *out_buf)
+static size_t ap_build_beacon_pr_tail(struct ap_state *ap,
+					enum mpdu_management_subtype stype,
+					const struct mmpdu_header *req,
+					size_t req_len, uint8_t *out_buf)
 {
 	size_t len;
 	struct ie_rsn_info rsn;
-	uint8_t *wsc_data;
-	size_t wsc_data_size;
-	uint8_t *wsc_ie;
-	size_t wsc_ie_size;
 
 	/* TODO: Country IE between TIM IE and RSNE */
 
@@ -551,85 +878,7 @@ static size_t ap_build_beacon_pr_tail(struct ap_state *ap, bool pr,
 		return 0;
 	len = 2 + out_buf[1];
 
-	/* WSC IE */
-	if (pr) {
-		struct wsc_probe_response wsc_pr = {};
-
-		wsc_pr.version2 = true;
-		wsc_pr.state = WSC_STATE_CONFIGURED;
-
-		if (ap->wsc_pbc_timeout) {
-			wsc_pr.selected_registrar = true;
-			wsc_pr.device_password_id = ap->wsc_dpid;
-			wsc_pr.selected_reg_config_methods =
-				WSC_CONFIGURATION_METHOD_PUSH_BUTTON;
-		}
-
-		wsc_pr.response_type = WSC_RESPONSE_TYPE_AP;
-		memcpy(wsc_pr.uuid_e, ap->wsc_uuid_r, sizeof(wsc_pr.uuid_e));
-		wsc_pr.primary_device_type =
-			ap->config->wsc_primary_device_type;
-
-		if (ap->config->wsc_name)
-			l_strlcpy(wsc_pr.device_name, ap->config->wsc_name,
-					sizeof(wsc_pr.device_name));
-
-		wsc_pr.config_methods =
-			WSC_CONFIGURATION_METHOD_PUSH_BUTTON;
-
-		if (ap->config->authorized_macs_num) {
-			size_t len;
-
-			len = ap->config->authorized_macs_num * 6;
-			if (len > sizeof(wsc_pr.authorized_macs))
-				len = sizeof(wsc_pr.authorized_macs);
-
-			memcpy(wsc_pr.authorized_macs,
-				ap->config->authorized_macs, len);
-		}
-
-		wsc_data = wsc_build_probe_response(&wsc_pr, &wsc_data_size);
-	} else {
-		struct wsc_beacon wsc_beacon = {};
-
-		wsc_beacon.version2 = true;
-		wsc_beacon.state = WSC_STATE_CONFIGURED;
-
-		if (ap->wsc_pbc_timeout) {
-			wsc_beacon.selected_registrar = true;
-			wsc_beacon.device_password_id = ap->wsc_dpid;
-			wsc_beacon.selected_reg_config_methods =
-				WSC_CONFIGURATION_METHOD_PUSH_BUTTON;
-		}
-
-		if (ap->config->authorized_macs_num) {
-			size_t len;
-
-			len = ap->config->authorized_macs_num * 6;
-			if (len > sizeof(wsc_beacon.authorized_macs))
-				len = sizeof(wsc_beacon.authorized_macs);
-
-			memcpy(wsc_beacon.authorized_macs,
-				ap->config->authorized_macs, len);
-		}
-
-		wsc_data = wsc_build_beacon(&wsc_beacon, &wsc_data_size);
-	}
-
-	if (!wsc_data)
-		return 0;
-
-	wsc_ie = ie_tlv_encapsulate_wsc_payload(wsc_data, wsc_data_size,
-						&wsc_ie_size);
-	l_free(wsc_data);
-
-	if (!wsc_ie)
-		return 0;
-
-	memcpy(out_buf + len, wsc_ie, wsc_ie_size);
-	len += wsc_ie_size;
-	l_free(wsc_ie);
-
+	len += ap_write_extra_ies(ap, stype, req, req_len, out_buf + len);
 	return len;
 }
 
@@ -641,19 +890,27 @@ static void ap_set_beacon_cb(struct l_genl_msg *msg, void *user_data)
 		l_error("SET_BEACON failed: %s (%i)", strerror(-error), -error);
 }
 
-static void ap_update_beacon(struct ap_state *ap)
+void ap_update_beacon(struct ap_state *ap)
 {
 	struct l_genl_msg *cmd;
-	uint8_t head[256], tail[256];
+	uint8_t head[256];
+	L_AUTO_FREE_VAR(uint8_t *, tail) =
+		l_malloc(256 + ap_get_extra_ies_len(ap,
+						MPDU_MANAGEMENT_SUBTYPE_BEACON,
+						NULL, 0));
 	size_t head_len, tail_len;
 	uint64_t wdev_id = netdev_get_wdev_id(ap->netdev);
 	static const uint8_t bcast_addr[6] = {
 		0xff, 0xff, 0xff, 0xff, 0xff, 0xff
 	};
 
+	if (L_WARN_ON(!ap->started))
+		return;
+
 	head_len = ap_build_beacon_pr_head(ap, MPDU_MANAGEMENT_SUBTYPE_BEACON,
 						bcast_addr, head, sizeof(head));
-	tail_len = ap_build_beacon_pr_tail(ap, false, tail);
+	tail_len = ap_build_beacon_pr_tail(ap, MPDU_MANAGEMENT_SUBTYPE_BEACON,
+						NULL, 0, tail);
 	if (L_WARN_ON(!head_len || !tail_len))
 		return;
 
@@ -671,18 +928,6 @@ static void ap_update_beacon(struct ap_state *ap)
 
 	l_genl_msg_unref(cmd);
 	l_error("Issuing SET_BEACON failed");
-}
-
-static void ap_wsc_exit_pbc(struct ap_state *ap)
-{
-	if (!ap->wsc_pbc_timeout)
-		return;
-
-	l_timeout_remove(ap->wsc_pbc_timeout);
-	ap->wsc_dpid = 0;
-	ap_update_beacon(ap);
-
-	ap->ops->handle_event(AP_EVENT_PBC_MODE_EXIT, NULL, ap->user_data);
 }
 
 static uint32_t ap_send_mgmt_frame(struct ap_state *ap,
@@ -805,24 +1050,6 @@ static void ap_gtk_query_cb(struct l_genl_msg *msg, void *user_data)
 
 error:
 	ap_del_station(sta, MMPDU_REASON_CODE_UNSPECIFIED, true);
-}
-
-struct ap_pbc_record_expiry_data {
-	uint64_t min_time;
-	const uint8_t *mac;
-};
-
-static bool ap_wsc_pbc_record_expire(void *data, void *user_data)
-{
-	struct ap_wsc_pbc_probe_record *record = data;
-	const struct ap_pbc_record_expiry_data *expiry_data = user_data;
-
-	if (record->timestamp > expiry_data->min_time &&
-			memcmp(record->mac, expiry_data->mac, 6))
-		return false;
-
-	l_free(record);
-	return true;
 }
 
 static void ap_stop_handshake_schedule(struct sta_state *sta)
@@ -1191,10 +1418,15 @@ static void ap_fail_assoc_resp_cb(int err, void *user_data)
 static uint32_t ap_assoc_resp(struct ap_state *ap, struct sta_state *sta,
 				const uint8_t *dest,
 				enum mmpdu_reason_code status_code,
-				bool reassoc, frame_xchg_cb_t callback)
+				bool reassoc, const struct mmpdu_header *req,
+				size_t req_len, frame_xchg_cb_t callback)
 {
 	const uint8_t *addr = netdev_get_address(ap->netdev);
-	uint8_t mpdu_buf[128];
+	enum mpdu_management_subtype stype = reassoc ?
+		MPDU_MANAGEMENT_SUBTYPE_REASSOCIATION_RESPONSE :
+		MPDU_MANAGEMENT_SUBTYPE_ASSOCIATION_RESPONSE;
+	L_AUTO_FREE_VAR(uint8_t *, mpdu_buf) =
+		l_malloc(128 + ap_get_extra_ies_len(ap, stype, req, req_len));
 	struct mmpdu_header *mpdu = (void *) mpdu_buf;
 	struct mmpdu_association_response *resp;
 	size_t ies_len = 0;
@@ -1206,9 +1438,7 @@ static uint32_t ap_assoc_resp(struct ap_state *ap, struct sta_state *sta,
 	/* Header */
 	mpdu->fc.protocol_version = 0;
 	mpdu->fc.type = MPDU_TYPE_MANAGEMENT;
-	mpdu->fc.subtype = reassoc ?
-		MPDU_MANAGEMENT_SUBTYPE_REASSOCIATION_RESPONSE :
-		MPDU_MANAGEMENT_SUBTYPE_ASSOCIATION_RESPONSE;
+	mpdu->fc.subtype = stype;
 	memcpy(mpdu->address_1, dest, 6);	/* DA */
 	memcpy(mpdu->address_2, addr, 6);	/* SA */
 	memcpy(mpdu->address_3, addr, 6);	/* BSSID */
@@ -1239,38 +1469,9 @@ static uint32_t ap_assoc_resp(struct ap_state *ap, struct sta_state *sta,
 	resp->ies[ies_len++] = count;
 	ies_len += count;
 
-	if (sta && !sta->assoc_rsne) {
-		struct wsc_association_response wsc_resp = {};
-		uint8_t *wsc_data;
-		size_t wsc_data_len;
-		uint8_t *wsc_ie;
-		size_t wsc_ie_len;
+	ies_len += ap_write_extra_ies(ap, stype, req, req_len,
+					resp->ies + ies_len);
 
-		wsc_resp.response_type = WSC_RESPONSE_TYPE_AP;
-		wsc_resp.version2 = sta->wsc_v2;
-
-		wsc_data = wsc_build_association_response(&wsc_resp,
-								&wsc_data_len);
-		if (!wsc_data) {
-			l_error("wsc_build_beacon error");
-			goto send_frame;
-		}
-
-		wsc_ie = ie_tlv_encapsulate_wsc_payload(wsc_data, wsc_data_len,
-							&wsc_ie_len);
-		l_free(wsc_data);
-
-		if (!wsc_ie) {
-			l_error("ie_tlv_encapsulate_wsc_payload error");
-			goto send_frame;
-		}
-
-		memcpy(resp->ies + ies_len, wsc_ie, wsc_ie_len);
-		ies_len += wsc_ie_len;
-		l_free(wsc_ie);
-	}
-
-send_frame:
 	return ap_send_mgmt_frame(ap, mpdu, resp->ies + ies_len - mpdu_buf,
 					callback, sta);
 }
@@ -1345,8 +1546,9 @@ static int ap_parse_supported_rates(struct ie_tlv_iter *iter,
  */
 static void ap_assoc_reassoc(struct sta_state *sta, bool reassoc,
 				const struct mmpdu_field_capability *capability,
-				uint16_t listen_interval, const uint8_t *ies,
-				size_t ies_len)
+				uint16_t listen_interval,
+				const uint8_t *ies, size_t ies_len,
+				const struct mmpdu_header *req)
 {
 	struct ap_state *ap = sta->ap;
 	const char *ssid = NULL;
@@ -1471,6 +1673,8 @@ static void ap_assoc_reassoc(struct sta_state *sta, bool reassoc,
 		sta->wsc_v2 = wsc_req.version2;
 
 		event_data.mac = sta->addr;
+		event_data.assoc_ies = ies;
+		event_data.assoc_ies_len = ies_len;
 		ap->ops->handle_event(AP_EVENT_REGISTRATION_START, &event_data,
 					ap->user_data);
 
@@ -1521,15 +1725,20 @@ static void ap_assoc_reassoc(struct sta_state *sta, bool reassoc,
 
 	sta->rates = rates;
 
-	if (sta->assoc_rsne)
-		l_free(sta->assoc_rsne);
+	l_free(sta->assoc_ies);
 
-	if (rsn)
-		sta->assoc_rsne = l_memdup(rsn, rsn[1] + 2);
-	else
+	if (rsn) {
+		sta->assoc_ies = l_memdup(ies, ies_len);
+		sta->assoc_ies_len = ies_len;
+		sta->assoc_rsne = sta->assoc_ies + (rsn - ies);
+	} else {
+		sta->assoc_ies = NULL;
 		sta->assoc_rsne = NULL;
+	}
 
 	sta->assoc_resp_cmd_id = ap_assoc_resp(ap, sta, sta->addr, 0, reassoc,
+						req, (void *) ies + ies_len -
+						(void *) req,
 						ap_success_assoc_resp_cb);
 	if (!sta->assoc_resp_cmd_id)
 		l_error("Sending success (Re)Association Response failed");
@@ -1561,6 +1770,7 @@ bad_frame:
 	l_free(wsc_data);
 
 	if (!ap_assoc_resp(ap, sta, sta->addr, err, reassoc,
+				req, (void *) ies + ies_len - (void *) req,
 				ap_fail_assoc_resp_cb))
 		l_error("Sending error (Re)Association Response failed");
 }
@@ -1585,7 +1795,8 @@ static void ap_assoc_req_cb(const struct mmpdu_header *hdr, const void *body,
 	if (!sta) {
 		if (!ap_assoc_resp(ap, NULL, from,
 				MMPDU_REASON_CODE_STA_REQ_ASSOC_WITHOUT_AUTH,
-				false, ap_fail_assoc_resp_cb))
+				false, hdr, body + body_len - (void *) hdr,
+				ap_fail_assoc_resp_cb))
 			l_error("Sending error Association Response failed");
 
 		return;
@@ -1593,7 +1804,7 @@ static void ap_assoc_req_cb(const struct mmpdu_header *hdr, const void *body,
 
 	ap_assoc_reassoc(sta, false, &req->capability,
 				L_LE16_TO_CPU(req->listen_interval),
-				req->ies, body_len - sizeof(*req));
+				req->ies, body_len - sizeof(*req), hdr);
 }
 
 /* 802.11-2016 9.3.3.8 */
@@ -1627,124 +1838,14 @@ static void ap_reassoc_req_cb(const struct mmpdu_header *hdr, const void *body,
 
 	ap_assoc_reassoc(sta, true, &req->capability,
 				L_LE16_TO_CPU(req->listen_interval),
-				req->ies, body_len - sizeof(*req));
+				req->ies, body_len - sizeof(*req), hdr);
 	return;
 
 bad_frame:
-	if (!ap_assoc_resp(ap, NULL, from, err, true, ap_fail_assoc_resp_cb))
+	if (!ap_assoc_resp(ap, NULL, from, err, true,
+				hdr, body + body_len - (void *) hdr,
+				ap_fail_assoc_resp_cb))
 		l_error("Sending error Reassociation Response failed");
-}
-
-#define AP_WSC_PBC_MONITOR_TIME	120
-#define AP_WSC_PBC_WALK_TIME	120
-
-static void ap_process_wsc_probe_req(struct ap_state *ap, const uint8_t *from,
-					const uint8_t *wsc_data,
-					size_t wsc_data_len)
-{
-	struct wsc_probe_request req;
-	struct ap_pbc_record_expiry_data expiry_data;
-	struct ap_wsc_pbc_probe_record *record;
-	uint64_t now;
-	bool empty;
-	uint8_t first_sta_addr[6] = {};
-	const struct l_queue_entry *entry;
-
-	if (wsc_parse_probe_request(wsc_data, wsc_data_len, &req) < 0)
-		return;
-
-	if (!(req.config_methods & WSC_CONFIGURATION_METHOD_PUSH_BUTTON))
-		return;
-
-	if (req.device_password_id != WSC_DEVICE_PASSWORD_ID_PUSH_BUTTON)
-		return;
-
-	/* Save the address of the first enrollee record */
-	record = l_queue_peek_head(ap->wsc_pbc_probes);
-	if (record)
-		memcpy(first_sta_addr, record->mac, 6);
-
-	now = l_time_now();
-
-	/*
-	 * Expire entries older than PBC Monitor Time.  While there also drop
-	 * older entries from the same Enrollee that sent us this new Probe
-	 * Request.  It's unclear whether we should also match by the UUID-E.
-	 */
-	expiry_data.min_time = now - AP_WSC_PBC_MONITOR_TIME * 1000000;
-	expiry_data.mac = from;
-	l_queue_foreach_remove(ap->wsc_pbc_probes, ap_wsc_pbc_record_expire,
-				&expiry_data);
-
-	empty = l_queue_isempty(ap->wsc_pbc_probes);
-
-	if (!ap->wsc_pbc_probes)
-		ap->wsc_pbc_probes = l_queue_new();
-
-	/* Add new record */
-	record = l_new(struct ap_wsc_pbc_probe_record, 1);
-	memcpy(record->mac, from, 6);
-	memcpy(record->uuid_e, req.uuid_e, sizeof(record->uuid_e));
-	record->timestamp = now;
-	l_queue_push_tail(ap->wsc_pbc_probes, record);
-
-	/*
-	 * If queue was non-empty and we've added one more record then we
-	 * now have seen more than one PBC enrollee during the PBC Monitor
-	 * Time and must exit "active PBC mode" due to "session overlap".
-	 * WSC v2.0.5 Section 11.3:
-	 * "Within the PBC Monitor Time, if the Registrar receives PBC
-	 * probe requests from more than one Enrollee [...] then the
-	 * Registrar SHALL signal a "session overlap" error.  As a result,
-	 * the Registrar shall refuse to enter active PBC mode and shall
-	 * also refuse to perform a PBC-based Registration Protocol
-	 * exchange [...]"
-	 */
-	if (empty)
-		return;
-
-	if (ap->wsc_pbc_timeout) {
-		l_debug("Exiting PBC mode due to Session Overlap");
-		ap_wsc_exit_pbc(ap);
-	}
-
-	/*
-	 * "If the Registrar is engaged in PBC Registration Protocol
-	 * exchange with an Enrollee and receives a Probe Request or M1
-	 * Message from another Enrollee, then the Registrar should
-	 * signal a "session overlap" error".
-	 *
-	 * For simplicity just interrupt the handshake with that enrollee.
-	 */
-	for (entry = l_queue_get_entries(ap->sta_states); entry;
-			entry = entry->next) {
-		struct sta_state *sta = entry->data;
-
-		if (!sta->associated || sta->assoc_rsne)
-			continue;
-
-		/*
-		 * Check whether this enrollee is in PBC Registration
-		 * Protocol by comparing its mac with the first (and only)
-		 * record we had in ap->wsc_pbc_probes.  If we had more
-		 * than one record we wouldn't have been in
-		 * "active PBC mode".
-		 */
-		if (memcmp(sta->addr, first_sta_addr, 6) ||
-				!memcmp(sta->addr, from, 6))
-			continue;
-
-		l_debug("Interrupting handshake with %s due to Session Overlap",
-			util_address_to_string(sta->addr));
-
-		if (sta->hs) {
-			netdev_handshake_failed(sta->hs,
-					MMPDU_REASON_CODE_DISASSOC_AP_BUSY);
-			sta->sm = NULL;
-		}
-
-		ap_remove_sta(sta);
-	}
 }
 
 static void ap_probe_resp_cb(int err, void *user_data)
@@ -1774,9 +1875,10 @@ static void ap_probe_req_cb(const struct mmpdu_header *hdr, const void *body,
 	struct ie_tlv_iter iter;
 	const uint8_t *bssid = netdev_get_address(ap->netdev);
 	bool match = false;
-	uint8_t resp[512];
-	uint8_t *wsc_data;
-	ssize_t wsc_data_len;
+	L_AUTO_FREE_VAR(uint8_t *, resp) =
+		l_malloc(512 + ap_get_extra_ies_len(ap,
+				MPDU_MANAGEMENT_SUBTYPE_PROBE_RESPONSE, hdr,
+				body + body_len - (void *) hdr));
 
 	l_info("AP Probe Request from %s",
 		util_address_to_string(hdr->address_2));
@@ -1849,22 +1951,13 @@ static void ap_probe_req_cb(const struct mmpdu_header *hdr, const void *body,
 	if (!match)
 		return;
 
-	/*
-	 * Process the WSC IE first as it may cause us to exit "active PBC
-	 * mode" and that can be immediately reflected in our Probe Response.
-	 */
-	wsc_data = ie_tlv_extract_wsc_payload(req->ies, body_len - sizeof(*req),
-						&wsc_data_len);
-	if (wsc_data) {
-		ap_process_wsc_probe_req(ap, hdr->address_2,
-						wsc_data, wsc_data_len);
-		l_free(wsc_data);
-	}
-
 	len = ap_build_beacon_pr_head(ap,
 					MPDU_MANAGEMENT_SUBTYPE_PROBE_RESPONSE,
 					hdr->address_2, resp, sizeof(resp));
-	len += ap_build_beacon_pr_tail(ap, true, resp + len);
+	len += ap_build_beacon_pr_tail(ap,
+					MPDU_MANAGEMENT_SUBTYPE_PROBE_RESPONSE,
+					hdr, body + body_len - (void *) hdr,
+					resp + len);
 
 	ap_send_mgmt_frame(ap, (struct mmpdu_header *) resp, len,
 				ap_probe_resp_cb, NULL);
@@ -2079,11 +2172,6 @@ static void ap_start_cb(struct l_genl_msg *msg, void *user_data)
 		goto failed;
 	}
 
-	/*
-	 * TODO: Add support for provisioning files where user could configure
-	 * specific DHCP sever settings.
-	 */
-
 	if (ap->server && !l_dhcp_server_start(ap->server)) {
 		l_error("DHCP server failed to start");
 		goto failed;
@@ -2102,7 +2190,11 @@ static struct l_genl_msg *ap_build_cmd_start_ap(struct ap_state *ap)
 {
 	struct l_genl_msg *cmd;
 
-	uint8_t head[256], tail[256];
+	uint8_t head[256];
+	L_AUTO_FREE_VAR(uint8_t *, tail) =
+		l_malloc(256 + ap_get_extra_ies_len(ap,
+						MPDU_MANAGEMENT_SUBTYPE_BEACON,
+						NULL, 0));
 	size_t head_len, tail_len;
 
 	uint32_t dtim_period = 3;
@@ -2132,7 +2224,8 @@ static struct l_genl_msg *ap_build_cmd_start_ap(struct ap_state *ap)
 
 	head_len = ap_build_beacon_pr_head(ap, MPDU_MANAGEMENT_SUBTYPE_BEACON,
 						bcast_addr, head, sizeof(head));
-	tail_len = ap_build_beacon_pr_tail(ap, false, tail);
+	tail_len = ap_build_beacon_pr_tail(ap, MPDU_MANAGEMENT_SUBTYPE_BEACON,
+						NULL, 0, tail);
 
 	if (!head_len || !tail_len)
 		return NULL;
@@ -2418,24 +2511,38 @@ static bool dhcp_load_settings(struct ap_state *ap, struct l_settings *settings)
 	if (!l_settings_get_uint(settings, "IPv4", "LeaseTime", &lease_time))
 		lease_time = 0;
 
-	if (ip_range && l_strv_length(ip_range) != 2)
-		goto parse_error;
+	if (gateway && !l_dhcp_server_set_gateway(server, gateway)) {
+		l_error("[IPv4].Gateway value error");
+		goto error;
+	}
 
-	if (netmask && !l_dhcp_server_set_netmask(server, netmask))
-		goto parse_error;
+	if (dns && !l_dhcp_server_set_dns(server, dns)) {
+		l_error("[IPv4].DNSList value error");
+		goto error;
+	}
 
-	if (gateway && !l_dhcp_server_set_gateway(server, gateway))
-		goto parse_error;
+	if (netmask && !l_dhcp_server_set_netmask(server, netmask)) {
+		l_error("[IPv4].Netmask value error");
+		goto error;
+	}
 
-	if (dns && !l_dhcp_server_set_dns(server, dns))
-		goto parse_error;
+	if (ip_range) {
+		if (l_strv_length(ip_range) != 2) {
+			l_error("Two addresses expected in [IPv4].IPRange");
+			goto error;
+		}
 
-	if (ip_range && !l_dhcp_server_set_ip_range(server, ip_range[0],
-							ip_range[1]))
-		goto parse_error;
+		if (!l_dhcp_server_set_ip_range(server, ip_range[0],
+							ip_range[1])) {
+			l_error("Error setting IP range from [IPv4].IPRange");
+			goto error;
+		}
+	}
 
-	if (lease_time && !l_dhcp_server_set_lease_time(server, lease_time))
-		goto parse_error;
+	if (lease_time && !l_dhcp_server_set_lease_time(server, lease_time)) {
+		l_error("[IPv4].LeaseTime value error");
+		goto error;
+	}
 
 	if (netmask && inet_pton(AF_INET, netmask, &ia) > 0)
 		ap->ip_prefix = __builtin_popcountl(ia.s_addr);
@@ -2444,7 +2551,7 @@ static bool dhcp_load_settings(struct ap_state *ap, struct l_settings *settings)
 
 	ret = true;
 
-parse_error:
+error:
 	l_strv_free(dns);
 	l_strv_free(ip_range);
 	return ret;
@@ -2549,8 +2656,8 @@ static int ap_load_profile_and_dhcp(struct ap_state *ap, bool *wait_dhcp)
 {
 	uint32_t ifindex = netdev_get_ifindex(ap->netdev);
 	char *passphrase;
-	L_AUTO_FREE_VAR(struct l_settings *, settings) = NULL;
-	int err;
+	struct l_settings *settings = NULL;
+	int err = -EINVAL;
 
 	/* No profile or DHCP settings */
 	if (!ap->config->profile && !pool.used)
@@ -2560,7 +2667,7 @@ static int ap_load_profile_and_dhcp(struct ap_state *ap, bool *wait_dhcp)
 		settings = l_settings_new();
 
 		if (!l_settings_load_from_file(settings, ap->config->profile))
-			return -EINVAL;
+			goto cleanup;
 
 		passphrase = l_settings_get_string(settings, "Security",
 							"Passphrase");
@@ -2569,7 +2676,7 @@ static int ap_load_profile_and_dhcp(struct ap_state *ap, bool *wait_dhcp)
 				l_error("[Security].Passphrase must not exceed "
 						"63 characters");
 				l_free(passphrase);
-				return -EINVAL;
+				goto cleanup;
 			}
 
 			strcpy(ap->config->passphrase, passphrase);
@@ -2578,7 +2685,8 @@ static int ap_load_profile_and_dhcp(struct ap_state *ap, bool *wait_dhcp)
 
 		if (!l_settings_has_group(settings, "IPv4")) {
 			*wait_dhcp = false;
-			return 0;
+			err = 0;
+			goto cleanup;
 		}
 	}
 
@@ -2592,21 +2700,22 @@ static int ap_load_profile_and_dhcp(struct ap_state *ap, bool *wait_dhcp)
 
 		if (!ap->rtnl_add_cmd) {
 			l_error("Failed to add IPv4 address");
-			return -EIO;
+			err = -EIO;
+			goto cleanup;
 		}
 
 		ap->cleanup_ip = true;
 
 		*wait_dhcp = true;
-
-		return 0;
+		err = 0;
 	/* Selected address already set, continue normally */
 	} else if (err == -EALREADY) {
 		*wait_dhcp = false;
-
-		return 0;
+		err = 0;
 	}
 
+cleanup:
+	l_settings_free(settings);
 	return err;
 }
 
@@ -2640,7 +2749,7 @@ struct ap_state *ap_start(struct netdev *netdev, struct ap_config *config,
 		return NULL;
 
 	if (L_WARN_ON(!config->profile && !config->passphrase[0] &&
-			util_mem_is_zero(config->psk, sizeof(config->psk))))
+			l_memeqzero(config->psk, sizeof(config->psk))))
 		return NULL;
 
 	ap = l_new(struct ap_state, 1);
@@ -3108,8 +3217,10 @@ static struct l_dbus_message *ap_dbus_start_profile(struct l_dbus *dbus,
 	config->profile = storage_get_path("ap/%s.ap", ssid);
 
 	ap_if->ap = ap_start(ap_if->netdev, config, &ap_dbus_ops, &err, ap_if);
-	if (!ap_if->ap)
+	if (!ap_if->ap) {
+		ap_config_free(config);
 		return dbus_error_from_errno(err, message);
+	}
 
 	ap_if->pending = l_dbus_message_ref(message);
 	return NULL;

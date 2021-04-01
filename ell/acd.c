@@ -28,8 +28,10 @@
 #include <netinet/if_ether.h>
 #include <net/if_arp.h>
 #include <arpa/inet.h>
+#include <errno.h>
 
 #include "private.h"
+#include "useful.h"
 #include "acd.h"
 #include "util.h"
 #include "io.h"

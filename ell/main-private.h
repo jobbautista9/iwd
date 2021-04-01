@@ -1,8 +1,8 @@
 /*
  *
- *  Wireless daemon for Linux
+ *  Embedded Linux library
  *
- *  Copyright (C) 2013-2019  Intel Corporation. All rights reserved.
+ *  Copyright (C) 2021  Intel Corporation. All rights reserved.
  *
  *  This library is free software; you can redistribute it and/or
  *  modify it under the terms of the GNU Lesser General Public
@@ -20,24 +20,19 @@
  *
  */
 
-/*
- * Set a maximum to prevent sending too much data to the kernel when hashing
- * the password (or any other crypto operations involving the password).
- * This value is not tied to IEEE or any RFC's, just chosen to be long enough
- */
-#define IWD_MAX_PASSWORD_LEN	2048
+typedef void (*watch_event_cb_t) (int fd, uint32_t events, void *user_data);
+typedef void (*watch_destroy_cb_t) (void *user_data);
 
-struct l_genl;
-struct l_genl_family;
+typedef void (*idle_event_cb_t) (void *user_data);
+typedef void (*idle_destroy_cb_t) (void *user_data);
 
-const struct l_settings *iwd_get_config(void);
-struct l_genl *iwd_get_genl(void);
-struct l_netlink *iwd_get_rtnl(void);
+int watch_add(int fd, uint32_t events, watch_event_cb_t callback,
+				void *user_data, watch_destroy_cb_t destroy);
+int watch_modify(int fd, uint32_t events, bool force);
+int watch_remove(int fd, bool epoll_del);
+int watch_clear(int fd);
 
-void netdev_shutdown(void);
-
-const char *iwd_get_iface_whitelist(void);
-const char *iwd_get_iface_blacklist(void);
-
-const char *iwd_get_phy_whitelist(void);
-const char *iwd_get_phy_blacklist(void);
+#define IDLE_FLAG_NO_WARN_DANGLING 0x10000000
+int idle_add(idle_event_cb_t callback, void *user_data, uint32_t flags,
+		idle_destroy_cb_t destroy);
+void idle_remove(int id);

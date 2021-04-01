@@ -29,9 +29,11 @@
 #include <netinet/ip.h>
 #include <arpa/inet.h>
 #include <string.h>
+#include <errno.h>
 
 #include "strv.h"
 #include "private.h"
+#include "useful.h"
 #include "dhcp6-private.h"
 #include "dhcp6.h"
 #include "net-private.h"

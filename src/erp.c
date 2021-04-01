@@ -30,6 +30,7 @@
 
 #include <ell/ell.h>
 
+#include "ell/useful.h"
 #include "src/missing.h"
 #include "src/iwd.h"
 #include "src/module.h"
@@ -433,7 +434,7 @@ int erp_rx_packet(struct erp_state *erp, const uint8_t *pkt, size_t len)
 	if (type != ERP_TYPE_REAUTH)
 		goto eap_failed;
 
-	r = util_is_bit_set(pkt[5], 0);
+	r = test_bit(pkt + 5, 0);
 	if (r)
 		goto eap_failed;
 

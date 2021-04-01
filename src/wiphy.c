@@ -38,6 +38,7 @@
 
 #include "linux/nl80211.h"
 
+#include "ell/useful.h"
 #include "src/missing.h"
 #include "src/iwd.h"
 #include "src/module.h"
@@ -95,6 +96,7 @@ struct wiphy {
 	bool support_adhoc_rsn:1;
 	bool support_qos_set_map:1;
 	bool support_cmds_auth_assoc:1;
+	bool support_fw_roam:1;
 	bool soft_rfkill : 1;
 	bool hard_rfkill : 1;
 	bool offchannel_tx_ok : 1;
@@ -122,6 +124,52 @@ enum ie_rsn_cipher_suite wiphy_select_cipher(struct wiphy *wiphy, uint16_t mask)
 		return IE_RSN_CIPHER_SUITE_BIP;
 
 	return 0;
+}
+
+static bool wiphy_can_connect_sae(struct wiphy *wiphy)
+{
+	/*
+	 * SAE support in the kernel is a complete mess in that there are 3
+	 * different ways the hardware can support SAE:
+	 *
+	 * 1. Cards which allow SAE in userspace, meaning they support both
+	 *    CMD_AUTHENTICATE and CMD_ASSOCIATE as well as advertise support
+	 *    for FEATURE_SAE (SoftMAC).
+	 *
+	 * 2. Cards which allow SAE to be offloaded to hardware. These cards
+	 *    do not support AUTH/ASSOC commands, do not advertise FEATURE_SAE,
+	 *    but advertise support for EXT_FEATURE_SAE_OFFLOAD. With these
+	 *    cards the entire SAE protocol as well as the subsequent 4-way
+	 *    handshake are all done in the driver/firmware (fullMAC).
+	 *
+	 * 3. TODO: Cards which allow SAE in userspace via CMD_EXTERNAL_AUTH.
+	 *    These cards do not support AUTH/ASSOC commands but do implement
+	 *    CMD_EXTERNAL_AUTH which is supposed to allow userspace to
+	 *    generate Authenticate frames as it would for case (1). As it
+	 *    stands today only one driver actually uses CMD_EXTERNAL_AUTH and
+	 *    for now IWD will not allow connections to SAE networks using this
+	 *    mechanism.
+	 */
+
+	if (wiphy_has_feature(wiphy, NL80211_FEATURE_SAE)) {
+		/* Case (1) */
+		if (wiphy->support_cmds_auth_assoc)
+			return true;
+
+		/*
+		 * Case (3)
+		 *
+		 * TODO: No support for CMD_EXTERNAL_AUTH yet.
+		 */
+		return false;
+	} else {
+		/* Case (2) */
+		if (wiphy_has_ext_feature(wiphy,
+					NL80211_EXT_FEATURE_SAE_OFFLOAD))
+			return true;
+
+		return false;
+	}
 }
 
 enum ie_rsn_akm_suite wiphy_select_akm(struct wiphy *wiphy,
@@ -186,19 +234,8 @@ enum ie_rsn_akm_suite wiphy_select_akm(struct wiphy *wiphy,
 				goto wpa2_personal;
 			}
 
-			/*
-			 * TODO: Only SoftMAC (mac80211) drivers are currently
-			 * capable of SAE since it requires ability to send
-			 * Authenticate and Associate frames (which is given by
-			 * support_cmds_auth_assoc).  FullMAC drivers require
-			 * SAE offload which we do not support nor supported
-			 * in any upstream driver as of this time.
-			 */
-			if (!wiphy_has_feature(wiphy, NL80211_FEATURE_SAE) ||
-					!wiphy->support_cmds_auth_assoc) {
-				l_debug("No HW WPA3 support, trying WPA2");
+			if (!wiphy_can_connect_sae(wiphy))
 				goto wpa2_personal;
-			}
 
 			if (info.akm_suites &
 					IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256)
@@ -374,15 +411,7 @@ bool wiphy_can_connect(struct wiphy *wiphy, struct scan_bss *bss)
 		switch (rsn_info.akm_suites) {
 		case IE_RSN_AKM_SUITE_SAE_SHA256:
 		case IE_RSN_AKM_SUITE_FT_OVER_SAE_SHA256:
-			/*
-			 * if the AP ONLY supports SAE/WPA3, then we can only
-			 * connect if the wiphy feature is supported. Otherwise
-			 * the AP may list SAE as one of the AKM's but also
-			 * support PSK (hybrid). In this case we still want to
-			 * allow a connection even if SAE is not supported.
-			 */
-			if (!wiphy_has_feature(wiphy, NL80211_FEATURE_SAE) ||
-						!wiphy->support_cmds_auth_assoc)
+			if (!wiphy_can_connect_sae(wiphy))
 				return false;
 
 			break;
@@ -400,6 +429,11 @@ bool wiphy_can_connect(struct wiphy *wiphy, struct scan_bss *bss)
 		return false;
 
 	return true;
+}
+
+bool wiphy_supports_cmds_auth_assoc(struct wiphy *wiphy)
+{
+	return wiphy->support_cmds_auth_assoc;
 }
 
 bool wiphy_has_feature(struct wiphy *wiphy, uint32_t feature)
@@ -428,7 +462,7 @@ bool wiphy_rrm_capable(struct wiphy *wiphy)
 bool wiphy_has_ext_feature(struct wiphy *wiphy, uint32_t feature)
 {
 	return feature < sizeof(wiphy->ext_features) * 8 &&
-		util_is_bit_set(wiphy->ext_features[feature >> 3], feature & 7);
+		test_bit(wiphy->ext_features, feature);
 }
 
 uint8_t wiphy_get_max_num_ssids_per_scan(struct wiphy *wiphy)
@@ -459,6 +493,11 @@ bool wiphy_can_offchannel_tx(struct wiphy *wiphy)
 bool wiphy_supports_qos_set_map(struct wiphy *wiphy)
 {
 	return wiphy->support_qos_set_map;
+}
+
+bool wiphy_supports_firmware_roam(struct wiphy *wiphy)
+{
+	return wiphy->support_fw_roam;
 }
 
 const char *wiphy_get_driver(struct wiphy *wiphy)
@@ -515,7 +554,7 @@ static void wiphy_address_constrain(struct wiphy *wiphy, uint8_t addr[static 6])
 	 * also not valid
 	 */
 	addr[5] &= 0xfe;
-	if (util_mem_is_zero(addr + 3, 3))
+	if (l_memeqzero(addr + 3, 3))
 		addr[5] = 0x01;
 }
 
@@ -989,6 +1028,9 @@ static void wiphy_parse_attributes(struct wiphy *wiphy,
 			else
 				wiphy->max_roc_duration = *((uint32_t *) data);
 			break;
+		case NL80211_ATTR_ROAM_SUPPORT:
+			wiphy->support_fw_roam = true;
+			break;
 		}
 	}
 }
@@ -1158,18 +1200,18 @@ static void wiphy_set_station_capability_bits(struct wiphy *wiphy)
 		anqp_disabled = true;
 
 	/* Set BSS Transition Management */
-	util_set_bit(ext_capa + 2, 19);
+	set_bit(ext_capa + 2, 19);
 
 	/* Set Interworking */
 	if (!anqp_disabled)
-		util_set_bit(ext_capa + 2, 31);
+		set_bit(ext_capa + 2, 31);
 
 	/* Set QoS Map */
 	if (wiphy->support_qos_set_map)
-		util_set_bit(ext_capa + 2, 32);
+		set_bit(ext_capa + 2, 32);
 
 	/* Set FILS */
-	util_set_bit(ext_capa + 2, 72);
+	set_bit(ext_capa + 2, 72);
 }
 
 static void wiphy_setup_rm_enabled_capabilities(struct wiphy *wiphy)
@@ -1257,7 +1299,7 @@ void wiphy_create_complete(struct wiphy *wiphy)
 {
 	wiphy_register(wiphy);
 
-	if (util_mem_is_zero(wiphy->permanent_addr, 6)) {
+	if (l_memeqzero(wiphy->permanent_addr, 6)) {
 		int err = wiphy_get_permanent_addr_from_sysfs(wiphy);
 
 		if (err < 0)
