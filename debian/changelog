@@ -1,3 +1,9 @@
+iwd (1.13-2) unstable; urgency=medium
+
+  * release to unstable
+
+ -- Jonas Smedegaard <dr@jones.dk>  Tue, 20 Apr 2021 08:22:14 +0200
+
 iwd (1.13-1) experimental; urgency=medium
 
   [ upstream ]
