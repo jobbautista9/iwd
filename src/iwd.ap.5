@@ -2,7 +2,7 @@
 .
 .TH IWD.AP 5 "20 October 2020" "iwd" "Linux Connectivity"
 .SH NAME
-iwd.ap \- Configuration of IWD access point
+iwd.ap \- Configuration of IWD access points
 .
 .nr rst2man-indent-level 0
 .
@@ -38,15 +38,34 @@ iwd.ap \- Access point provisioning files
 Description of access point provisioning files.
 .SH DESCRIPTION
 .sp
-An access point provisioning files define the configuration of an IWD access
+An access point provisioning file defines the configuration of an IWD access
 point. These files live in \fI$STATE_DIRECTORY\fP/ap (/var/lib/iwd/ap by default).
+They are read when the \fInet.connman.iwd.AccessPoint.StartProfile(ssid)\fP DBus
+method is used.
 .SH FILE FORMAT
 .sp
-See \fIiwd.network\fP for details on the file format.
+See \fIiwd.network\fP for details on the settings file syntax.
 .SH SETTINGS
 .sp
 The settings are split into several categories.  Each category has a group
-associated with it and described in separate tables below.
+associated with it and is described in the corresponding table below.
+.SS General Settings
+.sp
+The group \fB[General]\fP contains general AP configuration.
+.TS
+center;
+|l|l|.
+_
+T{
+Channel
+T}	T{
+Channel number
+.sp
+Optional channel number for the access point to operate on.  Only the
+2.4GHz\-band channels are currently allowed.
+T}
+_
+.TE
 .SS Network Authentication Settings
 .sp
 The group \fB[Security]\fP contains settings for Wi\-Fi security and authentication
@@ -60,14 +79,40 @@ Passphrase
 T}	T{
 8..63 character string
 .sp
-Passphrase to be used with this access point.
+WPA\-PSK Passphrase to be used with this access point.  At least one of
+\fIPassphrase\fP, \fIPreSharedKey\fP must be present.
+T}
+_
+T{
+PreSharedKey
+T}	T{
+64\-character hex\-string
+.sp
+Processed passphrase for this network in the form of a hex\-encoded
+32\-byte pre\-shared key.  Either this or \fIPassphrase\fP must be present.
 T}
 _
 .TE
-.SS DHCP Server Settings
+.SS IPv4 Network Configuration
 .sp
-The group \fB[IPv4]\fP contains settings for IWD\(aqs built in DHCP server. All
-settings are optional.
+The group \fB[IPv4]\fP contains settings for IWD\(aqs built\-in DHCP server.  All
+settings are optional.  They\(aqre used if network configuration was enabled as
+described in \fBiwd.config(5)\fP\&.  Omitting the \fB[IPv4]\fP group disables
+network configuration for this access point so if an all\-defaults DHCP setup
+is desired, the group header line must still be present:
+.INDENT 0.0
+.INDENT 3.5
+.sp
+.nf
+.ft C
+# Enable network configuration
+[IPv4]
+
+[other groups follow]
+.ft P
+.fi
+.UNINDENT
+.UNINDENT
 .TS
 center;
 |l|l|.
@@ -75,13 +120,14 @@ _
 T{
 Address
 T}	T{
-IP Address of AP
+Local IP address
 .sp
-Optional address for the DHCP server/access point. If provided this
-address will be set on the AP interface and any other DHCP server options
-will be derived from this address, unless they are overriden inside the
-AP profile. If [IPv4].Address is not provided and no IP address is set
-on the interface prior to calling StartProfile the IP pool will be used.
+Optional local address pool for the access point and the DHCP server.
+If provided this addresss will be set on the AP interface and any other
+DHCP server options will be derived from it, unless they are overridden
+by other settings below.  If \fIAddress\fP is not provided and no IP
+address is set on the interface prior to calling \fIStartProfile\fP,  the IP
+pool defined by the global \fB[General].APRanges\fP setting will be used.
 T}
 _
 T{
@@ -89,22 +135,22 @@ Gateway
 T}	T{
 IP Address of gateway
 .sp
-IP address of gateway. This will inherit from [IPv4].Address if not
-provided.
+IP address of the gateway to be advertised by DHCP. This will fall back
+to the local IP address if not provided.
 T}
 _
 T{
 Netmask
 T}	T{
-Netmask of DHCP server
+Local netmask of the AP
 .sp
-This will be generated from [IPv4].Address if not provided.
+This will be generated from \fB[IPv4].Address\fP if not provided.
 T}
 _
 T{
 DNSList
 T}	T{
-List of DNS servers
+List of DNS servers as a comma\-separated IP address list
 .sp
 A list of DNS servers which will be advertised by the DHCP server. If
 not provided no DNS servers will be sent by the DHCP server.
@@ -113,7 +159,7 @@ _
 T{
 LeaseTime
 T}	T{
-Time limit for DHCP leases
+Time limit for DHCP leases in seconds
 .sp
 Override the default lease time.
 T}
@@ -121,10 +167,50 @@ _
 T{
 IPRange
 T}	T{
-Range of IPs to use for the DHCP server
+Range of IPs given as two addresses separated by a comma
 .sp
-If not provided a default range will be chosen which is the DHCP server
-address + 1 to 254.
+From and to addresses of the range assigned to clients through DHCP.
+If not provided the range from local address + 1 to .254 will be used.
+T}
+_
+.TE
+.SS Wi\-Fi Simple Configuration
+.sp
+The group \fB[WSC]\fP fine\-tunes some Wi\-Fi Simple Configuration local parameters
+(formerly known as WPS, Wi\-Fi Protected Setup.)
+.TS
+center;
+|l|l|.
+_
+T{
+DeviceName
+T}	T{
+1..32\-character string
+.sp
+Optional Device Name string for the AP to advertise as.  Defaults to
+the SSID.
+T}
+_
+T{
+PrimaryDeviceType
+T}	T{
+Subcategory string or a 64\-bit integer
+.sp
+Optional Primary Device Type for the AP to advertise as.  Defaults to
+PC computer.  Can be specified as a lower\-case WSC v2.0.5 subcategory
+string or a 64\-bit integer encoding, from MSB to LSB: the 16\-bit
+category ID, the 24\-bit OUI, the 8\-bit OUI type and the 16\-bit
+subcategory ID.
+T}
+_
+T{
+AuthorizedMACs
+T}	T{
+Comma\-separated MAC address list
+.sp
+Optional list of Authorized MAC addresses for the WSC registrar to
+check on association.  Each address is specified in the
+colon\-hexadecimal notation.  Defaults to no MAC\-based checks.
 T}
 _
 .TE
