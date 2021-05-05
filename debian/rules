@@ -2,13 +2,11 @@
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
+# ignore known failing tests
+export XFAIL_TESTS = test-wsc test-eap-sim
+
 %:
 	dh $@
-
-# testsuite doesn't pass on buildds, possibly because of too old kernel?
-# Make it non-fatal for now...
-override_dh_auto_test:
-	dh_auto_test || true
 
 override_dh_installsystemd:
 	dh_installsystemd --no-enable --no-start --no-stop-on-upgrade
