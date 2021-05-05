@@ -1,6 +1,6 @@
 Test-Command:
  set -e;
- XFAIL_TESTS='test-wsc test-eap-sim' make -j2 check VERBOSE=1;
+ make -j2 check VERBOSE=1;
 Depends:
  build-essential,
  @,
