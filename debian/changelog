@@ -1,3 +1,35 @@
+iwd (1.14-2+devuan1) unstable; urgency=medium
+
+  * New release from Debian upstream.
+
+ -- Job Bautista <jobbautista9@protonmail.com>  Thu, 06 May 2021 11:31:45 +0800
+
+iwd (1.14-2) unstable; urgency=medium
+
+  * fix stop avoid tests in autopkgtest
+    (seemingly fail only during build)
+
+ -- Jonas Smedegaard <dr@jones.dk>  Wed, 05 May 2021 18:29:12 +0200
+
+iwd (1.14-1) unstable; urgency=medium
+
+  [ upstream ]
+  * new bugfix release
+
+  [ Jonas Smedegaard ]
+  * tighten build-time tests,
+    ignoring only known failing tests test-wsc test-eap-sim
+    (not the whole testsuite)
+  * add autopkgtest
+
+ -- Jonas Smedegaard <dr@jones.dk>  Wed, 05 May 2021 17:35:37 +0200
+
+iwd (1.13-2) unstable; urgency=medium
+
+  * release to unstable
+
+ -- Jonas Smedegaard <dr@jones.dk>  Tue, 20 Apr 2021 08:22:14 +0200
+
 iwd (1.13-1+devuan1) experimental; urgency=medium
 
   * New release from Debian upstream.

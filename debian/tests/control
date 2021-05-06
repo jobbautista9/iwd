@@ -1,0 +1,8 @@
+Test-Command:
+ set -e;
+ make -j2 check VERBOSE=1;
+Depends:
+ build-essential,
+ @,
+ @builddeps@,
+Restrictions: build-needed, allow-stderr

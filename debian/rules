@@ -2,6 +2,9 @@
 
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
+# ignore known failing tests
+export XFAIL_TESTS = test-wsc test-eap-sim
+
 %:
 	dh $@
 
